@@ -13,14 +13,19 @@
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down",
     "test": "vitest run",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "webapp:dev": "npm run dev --prefix webapp",
+    "webapp:build": "npm run build --prefix webapp",
+    "build:all": "npm run build && npm run webapp:build"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.700.0",
+    "@hono/node-server": "^1.19.9",
     "@xenova/transformers": "^2.17.0",
     "canvas": "^3.2.1",
     "exif-reader": "^2.0.1",
     "face-api.js": "^0.22.2",
+    "hono": "^4.11.7",
     "pg": "^8.13.0",
     "sharp": "^0.33.5"
   },

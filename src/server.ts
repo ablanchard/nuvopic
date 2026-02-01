@@ -1,67 +1,44 @@
-import * as http from "http";
+import { Hono } from "hono";
+import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { handler } from "./index.js";
 import { logger } from "./logger.js";
+import api from "./api/router.js";
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
 
-const server = http.createServer(async (req, res) => {
-  // CORS headers
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+const app = new Hono();
 
-  // Handle preflight
-  if (req.method === "OPTIONS") {
-    res.writeHead(204);
-    res.end();
-    return;
+// Health check endpoint
+app.get("/health", (c) => c.json({ status: "ok" }));
+
+// Mount API routes
+app.route("/api/v1", api);
+
+// Process endpoint (existing Lambda-style handler)
+app.post("/process", async (c) => {
+  try {
+    const event = await c.req.json();
+    const result = await handler(event);
+    return c.json(JSON.parse(result.body), result.statusCode as 200 | 400 | 500);
+  } catch (error) {
+    logger.error("Error processing request:", error);
+    return c.json(
+      { error: error instanceof Error ? error.message : "Unknown error" },
+      500
+    );
   }
-
-  // Health check endpoint
-  if (req.url === "/health" && req.method === "GET") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok" }));
-    return;
-  }
-
-  // Process endpoint
-  if (req.url === "/process" && req.method === "POST") {
-    let body = "";
-
-    req.on("data", (chunk) => {
-      body += chunk.toString();
-    });
-
-    req.on("end", async () => {
-      try {
-        const event = JSON.parse(body);
-        const result = await handler(event);
-
-        res.writeHead(result.statusCode, {
-          "Content-Type": "application/json",
-        });
-        res.end(result.body);
-      } catch (error) {
-        logger.error("Error processing request:", error);
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            error: error instanceof Error ? error.message : "Unknown error",
-          })
-        );
-      }
-    });
-
-    return;
-  }
-
-  // 404 for other routes
-  res.writeHead(404, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ error: "Not found" }));
 });
 
-server.listen(PORT, () => {
+// Serve static files from webapp/dist in production
+app.use("/*", serveStatic({ root: "./webapp/dist" }));
+
+// Fallback to index.html for SPA routing
+app.get("*", serveStatic({ path: "./webapp/dist/index.html" }));
+
+serve({ fetch: app.fetch, port: PORT }, () => {
   logger.info(`Server listening on port ${PORT}`);
   logger.info(`Health check: http://localhost:${PORT}/health`);
+  logger.info(`API: http://localhost:${PORT}/api/v1`);
   logger.info(`Process endpoint: http://localhost:${PORT}/process`);
 });

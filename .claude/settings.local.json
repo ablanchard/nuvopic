@@ -5,7 +5,13 @@
       "Bash(npm run build:*)",
       "Bash(npm test:*)",
       "Bash(npm run test:integration:*)",
-      "Bash(npm show:*)"
+      "Bash(npm show:*)",
+      "Bash(npm run dev:*)",
+      "Bash(npm run webapp:dev:*)",
+      "Bash(npm run docker:up:*)",
+      "Bash(set -a)",
+      "Bash(source:*)",
+      "Bash(set +a)"
     ]
   }
 }
