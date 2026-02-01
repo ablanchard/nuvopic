@@ -1,0 +1,37 @@
+{
+  "name": "gphoto",
+  "version": "1.0.0",
+  "description": "Google Photos alternative - serverless photo processing pipeline",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "download-models": "tsx scripts/download-models.ts",
+    "init-db": "tsx scripts/init-db.ts",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.700.0",
+    "@xenova/transformers": "^2.17.0",
+    "canvas": "^3.2.1",
+    "exif-reader": "^2.0.1",
+    "face-api.js": "^0.22.2",
+    "pg": "^8.13.0",
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

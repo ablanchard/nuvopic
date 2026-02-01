@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+models/face-api/
+models/transformers/
+*.log
+.DS_Store
