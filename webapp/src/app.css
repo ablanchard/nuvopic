@@ -42,6 +42,24 @@ body {
   font-size: 1rem;
 }
 
+.size-slider {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.size-slider label {
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.size-slider input[type="range"] {
+  width: 120px;
+  cursor: pointer;
+}
+
 .app-content {
   display: flex;
   gap: 1rem;
@@ -147,15 +165,17 @@ body {
 
 .date-inputs {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 0.5rem;
 }
 
 .date-inputs input {
-  flex: 1;
+  width: 100%;
   padding: 0.25rem;
   border: 1px solid #ddd;
   border-radius: 4px;
+  min-width: 0;
 }
 
 .main-content {
@@ -171,7 +191,6 @@ body {
 
 .photo-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 1rem;
 }
 
@@ -351,6 +370,6 @@ body {
   }
 
   .photo-grid {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, 1fr) !important;
   }
 }

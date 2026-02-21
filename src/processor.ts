@@ -4,6 +4,7 @@ import {
   generateThumbnail,
   generateCaption,
   detectFaces,
+  parseDateFromFilename,
 } from "./extractors/index.js";
 import {
   insertPhoto,
@@ -12,6 +13,7 @@ import {
   getPhotoByS3Path,
 } from "./db/queries.js";
 import { logger } from "./logger.js";
+import { PROCESS_VERSION } from "./version.js";
 
 export interface ProcessPhotoInput {
   s3Bucket: string;
@@ -72,17 +74,21 @@ export async function processPhoto(
       ? facesResult.value
       : (errors.push(`Faces: ${facesResult.reason}`), logger.error("Faces error:", facesResult.reason), []);
 
+  // Use EXIF date, falling back to date parsed from filename
+  const takenAt = exif.takenAt ?? parseDateFromFilename(s3Key);
+
   // Check if photo already exists
   const existingPhoto = await getPhotoByS3Path(s3Path);
 
   // Insert or update photo record
   const photoId = await insertPhoto({
     s3Path,
-    takenAt: exif.takenAt,
+    takenAt,
     locationLat: exif.location?.lat,
     locationLng: exif.location?.lng,
     description: caption,
     thumbnail: thumbnail?.buffer,
+    processVersion: PROCESS_VERSION,
   });
 
   // Delete existing faces if updating
@@ -102,7 +108,7 @@ export async function processPhoto(
   const output: ProcessPhotoOutput = {
     photoId,
     s3Path,
-    takenAt: exif.takenAt,
+    takenAt,
     location: exif.location,
     description: caption,
     facesDetected: faces.length,
@@ -112,7 +118,7 @@ export async function processPhoto(
 
   logger.info(`Processed ${s3Path}:`, {
     photoId,
-    takenAt: exif.takenAt?.toISOString(),
+    takenAt: takenAt?.toISOString(),
     hasLocation: !!exif.location,
     description: caption?.substring(0, 50),
     facesDetected: faces.length,

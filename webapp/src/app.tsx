@@ -4,7 +4,7 @@ import { PhotoGrid } from './components/PhotoGrid';
 import { TagFilter } from './components/TagFilter';
 import { PersonList } from './components/PersonList';
 import { DateFilter } from './components/DateFilter';
-import { resetFilters } from './state/filters';
+import { resetFilters, photoSize } from './state/filters';
 import type { Photo } from './api/client';
 import './app.css';
 
@@ -14,8 +14,21 @@ export function App() {
   return (
     <div class="app">
       <header class="app-header">
-        <h1>Photos</h1>
+        <h1>NuvoPic</h1>
         <SearchBar />
+        <div class="size-slider">
+          <label>Size</label>
+          <input
+            type="range"
+            min="100"
+            max="400"
+            step="25"
+            value={photoSize.value}
+            onInput={(e) => {
+              photoSize.value = parseInt((e.target as HTMLInputElement).value);
+            }}
+          />
+        </div>
       </header>
 
       <div class="app-content">

@@ -116,3 +116,53 @@ function convertGpsToDecimal(coords: number[], ref: string): number {
 
   return decimal;
 }
+
+/**
+ * Attempt to extract a date from a filename when EXIF data is unavailable.
+ * Supports common patterns:
+ *   - IMG_20231015_143022.jpg  (Android)
+ *   - 20231015_143022.jpg
+ *   - 2023-10-15_14-30-22.jpg
+ *   - 2023-10-15 14.30.22.jpg
+ *   - Photo 2023-10-15 at 14.30.22.jpg (Apple)
+ *   - Screenshot_2023-10-15-14-30-22.png
+ *   - PXL_20231015_143022123.jpg (Pixel)
+ */
+export function parseDateFromFilename(filename: string): Date | null {
+  // Strip path, keep only the basename
+  const basename = filename.replace(/^.*[\\/]/, "");
+
+  // Pattern 1: YYYYMMDD_HHMMSS (e.g. IMG_20231015_143022, PXL_20231015_143022123)
+  const p1 = basename.match(/(\d{4})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])[_-](\d{2})(\d{2})(\d{2})/);
+  if (p1) {
+    const [, year, month, day, hour, minute, second] = p1;
+    const date = new Date(Date.UTC(+year, +month - 1, +day, +hour, +minute, +second));
+    if (!isNaN(date.getTime())) return date;
+  }
+
+  // Pattern 2: YYYY-MM-DD[_ T at]HH[-.]MM[-.]SS (e.g. 2023-10-15_14-30-22, Photo 2023-10-15 at 14.30.22)
+  const p2 = basename.match(/(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])[\s_T-]+(?:at\s+)?(\d{2})[.\-:](\d{2})[.\-:](\d{2})/);
+  if (p2) {
+    const [, year, month, day, hour, minute, second] = p2;
+    const date = new Date(Date.UTC(+year, +month - 1, +day, +hour, +minute, +second));
+    if (!isNaN(date.getTime())) return date;
+  }
+
+  // Pattern 3: YYYY-MM-DD only (no time component)
+  const p3 = basename.match(/(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])/);
+  if (p3) {
+    const [, year, month, day] = p3;
+    const date = new Date(Date.UTC(+year, +month - 1, +day));
+    if (!isNaN(date.getTime())) return date;
+  }
+
+  // Pattern 4: YYYYMMDD only (e.g. 20231015_photo.jpg)
+  const p4 = basename.match(/(\d{4})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])/);
+  if (p4) {
+    const [, year, month, day] = p4;
+    const date = new Date(Date.UTC(+year, +month - 1, +day));
+    if (!isNaN(date.getTime())) return date;
+  }
+
+  return null;
+}

@@ -23,18 +23,23 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      # Webhook notification target for auto-processing
+      MINIO_NOTIFY_WEBHOOK_ENABLE_PRIMARY: "on"
+      MINIO_NOTIFY_WEBHOOK_ENDPOINT_PRIMARY: "http://host.docker.internal:8080/webhook/s3"
     ports:
       - "9000:9000"
       - "9001:9001"
     volumes:
       - minio_data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  # Create default bucket
+  # Create default bucket and configure S3 event notifications
   minio-setup:
     image: minio/mc
     depends_on:
@@ -45,6 +50,11 @@ services:
       mc alias set myminio http://minio:9000 minioadmin minioadmin;
       mc mb myminio/photos --ignore-existing;
       mc anonymous set download myminio/photos;
+      mc event add myminio/photos arn:minio:sqs::PRIMARY:webhook --event put --suffix .jpg;
+      mc event add myminio/photos arn:minio:sqs::PRIMARY:webhook --event put --suffix .jpeg;
+      mc event add myminio/photos arn:minio:sqs::PRIMARY:webhook --event put --suffix .png;
+      mc event add myminio/photos arn:minio:sqs::PRIMARY:webhook --event put --suffix .heic;
+      mc event add myminio/photos arn:minio:sqs::PRIMARY:webhook --event put --suffix .webp;
       exit 0;
       "
 

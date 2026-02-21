@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS photos (
     location_name TEXT,
     description TEXT,
     thumbnail BYTEA,
+    process_version TEXT,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -59,9 +60,21 @@ BEGIN
     END IF;
 END $$;
 
+-- Migrations: add columns that may be missing on existing databases
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'photos' AND column_name = 'process_version'
+    ) THEN
+        ALTER TABLE photos ADD COLUMN process_version TEXT;
+    END IF;
+END $$;
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_photos_taken_at ON photos(taken_at);
 CREATE INDEX IF NOT EXISTS idx_photos_s3_path ON photos(s3_path);
+CREATE INDEX IF NOT EXISTS idx_photos_process_version ON photos(process_version);
 CREATE INDEX IF NOT EXISTS idx_faces_photo_id ON faces(photo_id);
 CREATE INDEX IF NOT EXISTS idx_faces_person_id ON faces(person_id);
 CREATE INDEX IF NOT EXISTS idx_photo_tags_tag_id ON photo_tags(tag_id);

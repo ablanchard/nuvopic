@@ -1,4 +1,4 @@
-export { extractExif, type ExifData } from "./exif.js";
+export { extractExif, parseDateFromFilename, type ExifData } from "./exif.js";
 export {
   generateThumbnail,
   type ThumbnailResult,

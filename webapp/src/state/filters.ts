@@ -6,6 +6,7 @@ export const selectedPerson = signal<string | null>(null);
 export const dateFrom = signal<string | null>(null);
 export const dateTo = signal<string | null>(null);
 export const currentPage = signal(1);
+export const photoSize = signal(200);
 
 export const filters = computed(() => ({
   search: searchQuery.value || undefined,

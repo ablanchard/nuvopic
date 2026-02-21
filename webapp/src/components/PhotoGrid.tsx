@@ -2,7 +2,7 @@ import { useState } from 'preact/hooks';
 import { useSignalEffect } from '@preact/signals';
 import { api } from '../api/client';
 import type { Photo, PhotoListResponse } from '../api/client';
-import { filters, setPage } from '../state/filters';
+import { filters, setPage, photoSize } from '../state/filters';
 import { PhotoCard } from './PhotoCard';
 
 interface PhotoGridProps {
@@ -39,7 +39,10 @@ export function PhotoGrid({ onPhotoClick }: PhotoGridProps) {
 
   return (
     <div class="photo-grid-container">
-      <div class="photo-grid">
+      <div
+        class="photo-grid"
+        style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${photoSize.value}px, 1fr))` }}
+      >
         {data.photos.map((photo) => (
           <PhotoCard
             key={photo.id}

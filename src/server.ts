@@ -24,6 +24,42 @@ app.get("/login", handleLoginPage);
 app.post("/login", handleLogin);
 app.post("/logout", handleLogout);
 
+// S3 webhook endpoint (public — called by MinIO/S3 notifications)
+// Optionally secured via WEBHOOK_SECRET env var (passed as ?token= query param)
+app.post("/webhook/s3", async (c) => {
+  const webhookSecret = process.env.WEBHOOK_SECRET;
+  if (webhookSecret) {
+    const token = c.req.query("token");
+    if (token !== webhookSecret) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+  }
+
+  try {
+    const event = await c.req.json();
+    logger.info(`Webhook received: ${JSON.stringify(event).slice(0, 200)}`);
+
+    // MinIO sends { EventName, Key, Records } — normalize to S3 event format
+    const s3Event = event.Records ? event : { Records: event.Records };
+
+    // Process asynchronously — return 200 immediately
+    handler(s3Event).then((result) => {
+      const body = JSON.parse(result.body);
+      logger.info(`Webhook processing complete: ${body.processed} photos processed`);
+    }).catch((error) => {
+      logger.error("Webhook processing error:", error);
+    });
+
+    return c.json({ status: "accepted" }, 202);
+  } catch (error) {
+    logger.error("Webhook error:", error);
+    return c.json(
+      { error: error instanceof Error ? error.message : "Unknown error" },
+      500
+    );
+  }
+});
+
 // Auth middleware - protects everything below
 app.use("*", authMiddleware);
 

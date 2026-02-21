@@ -9,6 +9,7 @@ export interface PhotoRecord {
   location_name: string | null;
   description: string | null;
   thumbnail: Buffer | null;
+  process_version: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -35,6 +36,7 @@ export interface InsertPhotoParams {
   locationName?: string | null;
   description?: string | null;
   thumbnail?: Buffer | null;
+  processVersion?: string | null;
 }
 
 export interface InsertFaceParams {
@@ -50,8 +52,8 @@ export interface InsertFaceParams {
 
 export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
   const result = await query<{ id: string }>(
-    `INSERT INTO photos (s3_path, taken_at, location_lat, location_lng, location_name, description, thumbnail)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO photos (s3_path, taken_at, location_lat, location_lng, location_name, description, thumbnail, process_version)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (s3_path) DO UPDATE SET
        taken_at = COALESCE(EXCLUDED.taken_at, photos.taken_at),
        location_lat = COALESCE(EXCLUDED.location_lat, photos.location_lat),
@@ -59,6 +61,7 @@ export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
        location_name = COALESCE(EXCLUDED.location_name, photos.location_name),
        description = COALESCE(EXCLUDED.description, photos.description),
        thumbnail = COALESCE(EXCLUDED.thumbnail, photos.thumbnail),
+       process_version = COALESCE(EXCLUDED.process_version, photos.process_version),
        updated_at = NOW()
      RETURNING id`,
     [
@@ -69,6 +72,7 @@ export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
       params.locationName ?? null,
       params.description ?? null,
       params.thumbnail ?? null,
+      params.processVersion ?? null,
     ]
   );
 
@@ -117,6 +121,19 @@ export async function getFacesByPhotoId(photoId: string): Promise<FaceRecord[]> 
   const result = await query<FaceRecord>(
     "SELECT * FROM faces WHERE photo_id = $1",
     [photoId]
+  );
+
+  return result.rows;
+}
+
+export async function getPhotosToReprocess(
+  belowVersion: string
+): Promise<Pick<PhotoRecord, "id" | "s3_path" | "process_version">[]> {
+  const result = await query<Pick<PhotoRecord, "id" | "s3_path" | "process_version">>(
+    `SELECT id, s3_path, process_version FROM photos
+     WHERE process_version IS NULL OR process_version < $1
+     ORDER BY created_at ASC`,
+    [belowVersion]
   );
 
   return result.rows;

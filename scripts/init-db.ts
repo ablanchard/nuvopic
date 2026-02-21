@@ -13,11 +13,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  const ssl = process.env.DATABASE_SSL === "true"
+    ? { rejectUnauthorized: false }
+    : undefined;
+
   const pool = new Pool({
     connectionString,
-    ssl: connectionString.includes("supabase.co")
-      ? { rejectUnauthorized: false }
-      : undefined,
+    ssl,
   });
 
   try {
