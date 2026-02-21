@@ -4,15 +4,15 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: gphoto
-      POSTGRES_PASSWORD: gphoto
-      POSTGRES_DB: gphoto
+      POSTGRES_USER: nuvopic
+      POSTGRES_PASSWORD: nuvopic
+      POSTGRES_DB: nuvopic
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gphoto"]
+      test: ["CMD-SHELL", "pg_isready -U nuvopic"]
       interval: 5s
       timeout: 5s
       retries: 5

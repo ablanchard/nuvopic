@@ -6,7 +6,7 @@ import * as path from "path";
 const { Pool } = pg;
 
 // Set test environment variables
-process.env.DATABASE_URL = "postgres://gphoto:gphoto@localhost:5432/gphoto";
+process.env.DATABASE_URL = "postgres://nuvopic:nuvopic@localhost:5432/nuvopic";
 process.env.S3_ENDPOINT = "http://localhost:9000";
 process.env.S3_BUCKET = "photos";
 process.env.S3_ACCESS_KEY_ID = "minioadmin";

@@ -1,7 +1,7 @@
 {
-  "name": "gphoto",
+  "name": "nuvopic",
   "version": "1.0.0",
-  "description": "Google Photos alternative - serverless photo processing pipeline",
+  "description": "Visualize and organize your photos stored on cloud storage",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {

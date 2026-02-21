@@ -4,13 +4,28 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { handler } from "./index.js";
 import { logger } from "./logger.js";
 import api from "./api/router.js";
+import {
+  authMiddleware,
+  isAuthEnabled,
+  handleLoginPage,
+  handleLogin,
+  handleLogout,
+} from "./auth/handlers.js";
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
 
 const app = new Hono();
 
-// Health check endpoint
+// Health check endpoint (always public)
 app.get("/health", (c) => c.json({ status: "ok" }));
+
+// Auth routes (public)
+app.get("/login", handleLoginPage);
+app.post("/login", handleLogin);
+app.post("/logout", handleLogout);
+
+// Auth middleware - protects everything below
+app.use("*", authMiddleware);
 
 // Mount API routes
 app.route("/api/v1", api);
@@ -38,6 +53,7 @@ app.get("*", serveStatic({ path: "./webapp/dist/index.html" }));
 
 serve({ fetch: app.fetch, port: PORT }, () => {
   logger.info(`Server listening on port ${PORT}`);
+  logger.info(`Auth: ${isAuthEnabled() ? "enabled" : "disabled (no AUTH_PASSWORD set)"}`);
   logger.info(`Health check: http://localhost:${PORT}/health`);
   logger.info(`API: http://localhost:${PORT}/api/v1`);
   logger.info(`Process endpoint: http://localhost:${PORT}/process`);

@@ -59,6 +59,11 @@ export interface PhotoFilters {
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
+  if (response.status === 401) {
+    // Session expired or not authenticated - redirect to login
+    window.location.href = '/login';
+    throw new Error('Unauthorized');
+  }
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Request failed' }));
     throw new Error(error.error || 'Request failed');

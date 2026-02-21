@@ -1,42 +1,64 @@
-# GPhoto
+# NuvoPic
 
-A Google Photos alternative with serverless photo processing. Photos are stored in S3, metadata is extracted and stored in PostgreSQL for fast querying by the web UI.
+A self-hosted app to visualize and organize your photos stored on cloud storage, with AI-powered photo processing. Runs on any cloud provider or your own server.
 
 ## Features
 
 - **EXIF extraction**: Date taken, GPS coordinates
-- **AI-generated descriptions**: Using Transformers.js (runs locally, no API calls)
-- **Face detection**: Extracts face bounding boxes and embeddings for later recognition
+- **AI-generated descriptions**: Using Transformers.js (runs locally, no external API)
+- **Face detection**: Extracts face bounding boxes and embeddings for recognition
 - **Thumbnails**: 200x200 JPEG for fast UI loading
 - **Tags**: User-defined tags for organizing photos
+- **Web UI**: Responsive photo gallery with search, filters, and face management
+- **Authentication**: Built-in password auth (optional)
 - **S3 triggers**: Automatic processing when photos are uploaded
 
 ## Architecture
 
 ```
-S3 Photo → Serverless Function → PostgreSQL (Supabase)
-                ↓
-    ┌──────────┬──────────┬──────────┬──────────┐
-    │ EXIF     │ AI       │ Face     │ Thumbnail │
-    │ Parser   │ Caption  │ Detector │ Generator │
-    └──────────┴──────────┴──────────┴──────────┘
+                    ┌────────────────────────┐
+                    │  Docker Container       │
+                    │  ┌──────────────────┐   │
+                    │  │ Hono HTTP Server │   │
+    Browser ────────┼──│  ├─ Auth         │   │
+                    │  │  ├─ API          │   │
+                    │  │  └─ Static files  │   │
+                    │  └──────────────────┘   │
+                    │  ┌──────────────────┐   │
+                    │  │ Photo Processor  │   │
+                    │  │  ├─ EXIF         │   │
+                    │  │  ├─ AI Caption   │   │
+                    │  │  ├─ Faces        │   │
+                    │  │  └─ Thumbnail    │   │
+                    │  └──────────────────┘   │
+                    └──────────┬──────────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              │                                  │
+   ┌──────────▼──────────┐         ┌─────────────▼──────────┐
+   │ PostgreSQL + pgvector│         │ S3-compatible Storage  │
+   │ (any provider)       │         │ (any provider)         │
+   └──────────────────────┘         └────────────────────────┘
 ```
 
 ## Tech Stack
 
 - **Runtime**: Node.js 20+ / TypeScript
+- **HTTP framework**: Hono
 - **Image captioning**: Transformers.js with ViT-GPT2
 - **Face detection**: face-api.js with SSD MobileNet
 - **Thumbnails**: sharp
-- **Database**: PostgreSQL with pgvector (Supabase)
-- **Storage**: Any S3-compatible storage (AWS S3, MinIO, Cloudflare R2)
+- **Frontend**: Preact + Vite
+- **Database**: PostgreSQL with pgvector (any provider)
+- **Storage**: Any S3-compatible storage (AWS S3, Scaleway, Cloudflare R2, MinIO)
 
-## Quick Start
+## Quick Start (Local Development)
 
 ### 1. Install dependencies
 
 ```bash
 npm install
+cd webapp && npm install && cd ..
 ```
 
 ### 2. Download AI models
@@ -57,7 +79,6 @@ This starts PostgreSQL (with pgvector) and MinIO (S3-compatible storage).
 
 ```bash
 cp .env.local .env
-# Edit .env if needed
 ```
 
 ### 5. Initialize database
@@ -69,8 +90,87 @@ npm run init-db
 ### 6. Run the server
 
 ```bash
+# Backend (port 8080)
 npm run dev
+
+# Frontend (port 5173, proxies API to 8080)
+npm run webapp:dev
 ```
+
+## Self-Hosting
+
+The application is designed to be deployed on **any cloud provider** that supports Docker containers.
+
+### Requirements
+
+- **Docker** (or Node.js 20+)
+- **PostgreSQL** with the [pgvector](https://github.com/pgvector/pgvector) extension
+- **S3-compatible object storage** for photo files
+
+### Generic Docker Deployment
+
+```bash
+# Build the image
+docker build -f deploy/docker/Dockerfile -t nuvopic .
+
+# Run with environment variables
+docker run -p 8080:8080 \
+  -e DATABASE_URL='postgres://user:pass@host:5432/db' \
+  -e DATABASE_SSL='true' \
+  -e S3_BUCKET='my-photos' \
+  -e S3_ACCESS_KEY_ID='...' \
+  -e S3_SECRET_ACCESS_KEY='...' \
+  -e S3_REGION='us-east-1' \
+  -e S3_ENDPOINT='https://s3.provider.com' \
+  -e AUTH_PASSWORD='your-password' \
+  -e JWT_SECRET='your-secret' \
+  nuvopic
+```
+
+### Provider-Specific Guides
+
+| Provider | Guide | Scale to Zero |
+|----------|-------|---------------|
+| **Scaleway** | [deploy/scaleway/README.md](deploy/scaleway/README.md) | Yes (Serverless Containers) |
+| **AWS** | [deploy/aws-lambda/](deploy/aws-lambda/) | Yes (Lambda) |
+| **Any Docker host** | See above | No |
+
+### Database Providers
+
+Any PostgreSQL provider with pgvector support works:
+
+- [Supabase](https://supabase.com) - Free tier available
+- [Neon](https://neon.tech) - Free tier, serverless PostgreSQL
+- [Scaleway Serverless SQL](https://www.scaleway.com/en/serverless-sql-database/) - pgvector supported
+- Self-hosted PostgreSQL with pgvector extension
+
+### Storage Providers
+
+Any S3-compatible object storage works:
+
+- [Scaleway Object Storage](https://www.scaleway.com/en/object-storage/)
+- [AWS S3](https://aws.amazon.com/s3/)
+- [Cloudflare R2](https://developers.cloudflare.com/r2/)
+- [MinIO](https://min.io/) (self-hosted)
+
+## Configuration
+
+| Variable | Required | Description | Default |
+|----------|----------|-------------|---------|
+| `DATABASE_URL` | Yes | PostgreSQL connection string | |
+| `DATABASE_SSL` | No | Enable SSL for database connections | `false` |
+| `S3_BUCKET` | Yes | S3 bucket name | |
+| `S3_ACCESS_KEY_ID` | Yes | S3 access key | |
+| `S3_SECRET_ACCESS_KEY` | Yes | S3 secret key | |
+| `S3_REGION` | Yes | S3 region | |
+| `S3_ENDPOINT` | No | Custom S3 endpoint (non-AWS providers) | AWS default |
+| `S3_FORCE_PATH_STYLE` | No | Use path-style S3 URLs (MinIO) | `false` |
+| `AUTH_PASSWORD` | No | Password for app access | Disabled |
+| `JWT_SECRET` | No* | Secret for session tokens | Required if AUTH_PASSWORD is set |
+| `PORT` | No | HTTP server port | `8080` |
+| `LOG_LEVEL` | No | Logging level | `info` |
+
+\* Required when `AUTH_PASSWORD` is set. Generate with: `openssl rand -hex 32`
 
 ## Usage
 
@@ -125,44 +225,16 @@ curl -X POST http://localhost:8080/process \
 ### tags / photo_tags
 Many-to-many relationship for user-defined tags.
 
-## Deployment
-
-### AWS Lambda
-
-```bash
-cd deploy/aws-lambda
-npm install -g serverless
-serverless deploy
-```
-
-The S3 trigger automatically processes new photos when uploaded.
-
-### Docker (Cloud Run, etc.)
-
-```bash
-docker build -f deploy/docker/Dockerfile -t gphoto .
-docker run -p 8080:8080 --env-file .env gphoto
-```
-
-## Configuration
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| DATABASE_URL | PostgreSQL connection string | `postgres://user:pass@host:5432/db` |
-| S3_ENDPOINT | S3 endpoint (optional for AWS) | `http://localhost:9000` |
-| S3_BUCKET | Bucket name | `photos` |
-| S3_ACCESS_KEY_ID | AWS access key | |
-| S3_SECRET_ACCESS_KEY | AWS secret key | |
-| S3_REGION | AWS region | `us-east-1` |
-| S3_FORCE_PATH_STYLE | Use path-style URLs (for MinIO) | `true` |
-
 ## Scripts
 
 | Command | Description |
 |---------|-------------|
-| `npm run build` | Compile TypeScript |
-| `npm run dev` | Run dev server with hot reload |
-| `npm run start` | Run production server |
+| `npm run build` | Compile TypeScript (backend) |
+| `npm run dev` | Run backend dev server with hot reload |
+| `npm start` | Run production server |
+| `npm run webapp:dev` | Run frontend dev server |
+| `npm run webapp:build` | Build frontend for production |
+| `npm run build:all` | Build backend + frontend |
 | `npm run download-models` | Download face-api.js models |
 | `npm run init-db` | Initialize database schema |
 | `npm run docker:up` | Start local PostgreSQL + MinIO |
@@ -170,7 +242,7 @@ docker run -p 8080:8080 --env-file .env gphoto
 
 ## Face Recognition
 
-Face detection extracts 128-dimensional embeddings that can be used for recognition. The recognition workflow:
+Face detection extracts 128-dimensional embeddings for recognition. The workflow:
 
 1. Pipeline detects faces and stores embeddings
 2. User assigns faces to persons in the UI
@@ -189,8 +261,6 @@ LIMIT 5;
 
 ### Unit Tests
 
-Run unit tests (no external services required):
-
 ```bash
 npm test
 ```
@@ -200,23 +270,10 @@ npm test
 E2E tests require Docker for PostgreSQL and MinIO:
 
 ```bash
-# Start services
 npm run docker:up
-
-# Download models (required for face/caption tests)
 npm run download-models
-
-# Run E2E tests
 npm run test:integration
 ```
-
-The E2E tests:
-- Upload a test image to MinIO
-- Process it through the full pipeline
-- Verify metadata is stored correctly in PostgreSQL
-- Test S3 event format handling
-- Test tag functionality
-- Verify idempotent reprocessing (upsert)
 
 ## License
 

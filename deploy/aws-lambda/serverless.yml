@@ -1,4 +1,4 @@
-service: gphoto
+service: nuvopic
 
 frameworkVersion: "3"
 

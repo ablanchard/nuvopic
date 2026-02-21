@@ -11,14 +11,16 @@ export function getPool(): pg.Pool {
       throw new Error("DATABASE_URL environment variable is required");
     }
 
+    const sslEnabled =
+      process.env.DATABASE_SSL === "true" ||
+      connectionString.includes("sslmode=require");
+
     pool = new Pool({
       connectionString,
       max: 10,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,
-      ssl: connectionString.includes("supabase.co")
-        ? { rejectUnauthorized: false }
-        : undefined,
+      ssl: sslEnabled ? { rejectUnauthorized: false } : undefined,
     });
   }
 

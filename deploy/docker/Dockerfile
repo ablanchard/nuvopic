@@ -1,7 +1,8 @@
 # Multi-stage build for smaller image
+# This Dockerfile is provider-agnostic and works on any container platform.
 
-# Build stage
-FROM node:20-slim AS builder
+# ---- Build stage: backend ----
+FROM node:20-slim AS backend-builder
 
 WORKDIR /app
 
@@ -30,7 +31,27 @@ COPY src ./src
 # Build TypeScript
 RUN npm run build
 
-# Production stage
+# ---- Build stage: webapp ----
+FROM node:20-slim AS webapp-builder
+
+WORKDIR /app/webapp
+
+# Copy webapp package files
+COPY webapp/package*.json ./
+
+# Install webapp dependencies
+RUN npm ci
+
+# Copy webapp source and config files
+COPY webapp/tsconfig*.json ./
+COPY webapp/vite.config.ts ./
+COPY webapp/index.html ./
+COPY webapp/src ./src
+
+# Build webapp
+RUN npm run build
+
+# ---- Production stage ----
 FROM node:20-slim
 
 WORKDIR /app
@@ -51,8 +72,11 @@ COPY package*.json ./
 # Install production dependencies only
 RUN npm ci --omit=dev
 
-# Copy built files from builder
-COPY --from=builder /app/dist ./dist
+# Copy built backend from builder
+COPY --from=backend-builder /app/dist ./dist
+
+# Copy built webapp from builder
+COPY --from=webapp-builder /app/webapp/dist ./webapp/dist
 
 # Copy models
 COPY models ./models
@@ -71,5 +95,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s \
     CMD node -e "require('http').get('http://localhost:8080/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"
 
-# Start command - wrap handler for HTTP
+# Start the server
 CMD ["node", "dist/server.js"]
