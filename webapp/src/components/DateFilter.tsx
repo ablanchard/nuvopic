@@ -1,4 +1,4 @@
-import { dateFrom, dateTo, currentPage } from '../state/filters';
+import { dateFrom, dateTo, filterVersion } from '../state/filters';
 
 export function DateFilter() {
   return (
@@ -10,7 +10,7 @@ export function DateFilter() {
           value={dateFrom.value || ''}
           onInput={(e) => {
             dateFrom.value = (e.target as HTMLInputElement).value || null;
-            currentPage.value = 1;
+            filterVersion.value++;
           }}
         />
         <span>to</span>
@@ -19,7 +19,7 @@ export function DateFilter() {
           value={dateTo.value || ''}
           onInput={(e) => {
             dateTo.value = (e.target as HTMLInputElement).value || null;
-            currentPage.value = 1;
+            filterVersion.value++;
           }}
         />
       </div>

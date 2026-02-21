@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { api } from '../api/client';
 import type { Tag } from '../api/client';
-import { selectedTag, currentPage } from '../state/filters';
+import { selectedTag, filterVersion } from '../state/filters';
 
 export function TagFilter() {
   const [tags, setTags] = useState<Tag[]>([]);
@@ -31,7 +31,7 @@ export function TagFilter() {
             class={`tag-chip ${selectedTag.value === tag.id ? 'active' : ''}`}
             onClick={() => {
               selectedTag.value = selectedTag.value === tag.id ? null : tag.id;
-              currentPage.value = 1;
+              filterVersion.value++;
             }}
           >
             {tag.name}

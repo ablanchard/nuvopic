@@ -5,8 +5,10 @@ export const selectedTag = signal<string | null>(null);
 export const selectedPerson = signal<string | null>(null);
 export const dateFrom = signal<string | null>(null);
 export const dateTo = signal<string | null>(null);
-export const currentPage = signal(1);
 export const photoSize = signal(200);
+
+// Bumped whenever filters change, so PhotoGrid knows to reset accumulated photos
+export const filterVersion = signal(0);
 
 export const filters = computed(() => ({
   search: searchQuery.value || undefined,
@@ -14,7 +16,6 @@ export const filters = computed(() => ({
   person: selectedPerson.value || undefined,
   from: dateFrom.value || undefined,
   to: dateTo.value || undefined,
-  page: currentPage.value,
 }));
 
 export function resetFilters() {
@@ -23,9 +24,5 @@ export function resetFilters() {
   selectedPerson.value = null;
   dateFrom.value = null;
   dateTo.value = null;
-  currentPage.value = 1;
-}
-
-export function setPage(page: number) {
-  currentPage.value = page;
+  filterVersion.value++;
 }

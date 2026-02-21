@@ -238,31 +238,20 @@ body {
   color: #fff;
 }
 
-.pagination {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 1rem;
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid #eee;
+.photo-grid-count {
+  font-size: 0.85rem;
+  color: #999;
+  margin-bottom: 0.75rem;
 }
 
-.pagination button {
-  padding: 0.5rem 1rem;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  background: #fff;
-  cursor: pointer;
+.scroll-sentinel {
+  padding: 1rem 0;
+  text-align: center;
 }
 
-.pagination button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.pagination button:not(:disabled):hover {
-  background: #f0f0f0;
+.loading-more {
+  color: #999;
+  font-size: 0.9rem;
 }
 
 .loading,

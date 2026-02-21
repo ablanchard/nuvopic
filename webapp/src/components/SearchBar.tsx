@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
-import { searchQuery, currentPage } from '../state/filters';
+import { searchQuery, filterVersion } from '../state/filters';
 
 export function SearchBar() {
   const [value, setValue] = useState(searchQuery.value);
@@ -9,7 +9,7 @@ export function SearchBar() {
     const timer = setTimeout(() => {
       if (value !== searchQuery.value) {
         searchQuery.value = value;
-        currentPage.value = 1;
+        filterVersion.value++;
       }
     }, 300);
 

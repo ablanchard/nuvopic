@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { api } from '../api/client';
 import type { Person } from '../api/client';
-import { selectedPerson, currentPage } from '../state/filters';
+import { selectedPerson, filterVersion } from '../state/filters';
 
 export function PersonList() {
   const [persons, setPersons] = useState<Person[]>([]);
@@ -31,7 +31,7 @@ export function PersonList() {
             class={`person-item ${selectedPerson.value === person.id ? 'active' : ''}`}
             onClick={() => {
               selectedPerson.value = selectedPerson.value === person.id ? null : person.id;
-              currentPage.value = 1;
+              filterVersion.value++;
             }}
           >
             <span class="person-name">{person.name}</span>
