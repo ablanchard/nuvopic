@@ -1,19 +1,6 @@
-import * as faceapi from "face-api.js";
-import { Canvas, Image, ImageData, createCanvas, loadImage } from "canvas";
 import * as path from "path";
 import * as fs from "fs";
 import { logger } from "../logger.js";
-
-// Monkey-patch face-api.js to use node-canvas
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const faceApiEnv = faceapi.env as any;
-faceApiEnv.monkeyPatch({
-  Canvas: Canvas,
-  Image: Image,
-  ImageData: ImageData,
-  createCanvasElement: () => createCanvas(1, 1),
-  createImageElement: () => new Image(),
-});
 
 export interface FaceDetection {
   boundingBox: {
@@ -27,15 +14,40 @@ export interface FaceDetection {
 }
 
 let modelsLoaded = false;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let faceapi: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let canvasLib: any = null;
+
+async function loadLibs(): Promise<void> {
+  if (!faceapi) {
+    // @ts-ignore — package only available in local fallback mode
+    faceapi = await import("face-api.js");
+    // @ts-ignore — package only available in local fallback mode
+    canvasLib = await import("canvas");
+
+    // Monkey-patch face-api.js to use node-canvas
+    const faceApiEnv = faceapi.env as any;
+    faceApiEnv.monkeyPatch({
+      Canvas: canvasLib.Canvas,
+      Image: canvasLib.Image,
+      ImageData: canvasLib.ImageData,
+      createCanvasElement: () => canvasLib.createCanvas(1, 1),
+      createImageElement: () => new canvasLib.Image(),
+    });
+  }
+}
 
 export async function loadFaceModels(modelsPath?: string): Promise<void> {
   if (modelsLoaded) return;
+
+  await loadLibs();
 
   const modelDir = modelsPath || path.join(process.cwd(), "models", "face-api");
 
   if (!fs.existsSync(modelDir)) {
     throw new Error(
-      `Face-api models not found at ${modelDir}. Run 'npm run download-models' first.`
+      `Face-api models not found at ${modelDir}. Local face detection requires face-api.js model weights.`
     );
   }
 
@@ -55,22 +67,24 @@ export async function detectFaces(
   imageBuffer: Buffer
 ): Promise<FaceDetection[]> {
   await loadFaceModels();
+  await loadLibs();
 
   // Load image using node-canvas
-  const img = await loadImage(imageBuffer);
+  const img = await canvasLib.loadImage(imageBuffer);
 
   // Create canvas and draw image
-  const canvas = createCanvas(img.width, img.height);
+  const canvas = canvasLib.createCanvas(img.width, img.height);
   const ctx = canvas.getContext("2d");
   ctx.drawImage(img, 0, 0);
 
   // Detect faces with landmarks and descriptors
   const detections = await faceapi
-    .detectAllFaces(canvas as unknown as HTMLCanvasElement)
+    .detectAllFaces(canvas)
     .withFaceLandmarks()
     .withFaceDescriptors();
 
-  return detections.map((detection) => ({
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return detections.map((detection: any) => ({
     boundingBox: {
       x: Math.round(detection.detection.box.x),
       y: Math.round(detection.detection.box.y),

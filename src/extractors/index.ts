@@ -9,3 +9,8 @@ export {
   loadFaceModels,
   type FaceDetection,
 } from "./faces.js";
+export {
+  analyzeWithModal,
+  isModalEnabled,
+  type ModalAnalysisResult,
+} from "./modal-client.js";

@@ -7,6 +7,10 @@ import {
   parseDateFromFilename,
 } from "./extractors/index.js";
 import {
+  analyzeWithModal,
+  isModalEnabled,
+} from "./extractors/modal-client.js";
+import {
   insertPhoto,
   insertFace,
   deleteFacesByPhotoId,
@@ -44,35 +48,75 @@ export async function processPhoto(
   const imageBuffer = await getObjectAsBuffer(s3Bucket, s3Key);
   logger.debug(`Downloaded ${imageBuffer.length} bytes`);
 
-  // Run extractors in parallel where possible
-  const [exifResult, thumbnailResult, captionResult, facesResult] =
-    await Promise.allSettled([
-      extractExif(imageBuffer),
-      generateThumbnail(imageBuffer),
-      generateCaption(imageBuffer),
-      detectFaces(imageBuffer),
-    ]);
+  let exif: { takenAt: Date | null; location: { lat: number; lng: number } | null };
+  let thumbnail: { buffer: Buffer; width: number; height: number; format: string } | null;
+  let caption: string | null;
+  let faces: Array<{ boundingBox: { x: number; y: number; width: number; height: number }; embedding: number[]; confidence: number }>;
 
-  // Extract results, collecting errors
-  const exif =
-    exifResult.status === "fulfilled"
-      ? exifResult.value
-      : (errors.push(`EXIF: ${exifResult.reason}`), logger.error("EXIF error:", exifResult.reason), { takenAt: null, location: null });
+  if (isModalEnabled()) {
+    // --- Modal mode: GPU-accelerated captioning + face detection ---
+    // EXIF + thumbnail stay local (fast, no GPU needed).
+    // Caption + faces go to Modal as a single HTTP call (non-blocking I/O).
+    const [exifResult, thumbnailResult, modalResult] =
+      await Promise.allSettled([
+        extractExif(imageBuffer),
+        generateThumbnail(imageBuffer),
+        analyzeWithModal(imageBuffer),
+      ]);
 
-  const thumbnail =
-    thumbnailResult.status === "fulfilled"
-      ? thumbnailResult.value
-      : (errors.push(`Thumbnail: ${thumbnailResult.reason}`), logger.error("Thumbnail error:", thumbnailResult.reason), null);
+    exif =
+      exifResult.status === "fulfilled"
+        ? exifResult.value
+        : (errors.push(`EXIF: ${exifResult.reason}`), logger.error("EXIF error:", exifResult.reason), { takenAt: null, location: null });
 
-  const caption =
-    captionResult.status === "fulfilled"
-      ? captionResult.value
-      : (errors.push(`Caption: ${captionResult.reason}`), logger.error("Caption error:", captionResult.reason), null);
+    thumbnail =
+      thumbnailResult.status === "fulfilled"
+        ? thumbnailResult.value
+        : (errors.push(`Thumbnail: ${thumbnailResult.reason}`), logger.error("Thumbnail error:", thumbnailResult.reason), null);
 
-  const faces =
-    facesResult.status === "fulfilled"
-      ? facesResult.value
-      : (errors.push(`Faces: ${facesResult.reason}`), logger.error("Faces error:", facesResult.reason), []);
+    if (modalResult.status === "fulfilled") {
+      caption = modalResult.value.caption;
+      faces = modalResult.value.faces.map((f) => ({
+        boundingBox: f.bbox,
+        embedding: f.embedding,
+        confidence: f.confidence,
+      }));
+    } else {
+      errors.push(`Modal analysis: ${modalResult.reason}`);
+      logger.error("Modal analysis error:", modalResult.reason);
+      caption = null;
+      faces = [];
+    }
+  } else {
+    // --- Local mode: CPU-based processing (fallback) ---
+    const [exifResult, thumbnailResult, captionResult, facesResult] =
+      await Promise.allSettled([
+        extractExif(imageBuffer),
+        generateThumbnail(imageBuffer),
+        generateCaption(imageBuffer),
+        detectFaces(imageBuffer),
+      ]);
+
+    exif =
+      exifResult.status === "fulfilled"
+        ? exifResult.value
+        : (errors.push(`EXIF: ${exifResult.reason}`), logger.error("EXIF error:", exifResult.reason), { takenAt: null, location: null });
+
+    thumbnail =
+      thumbnailResult.status === "fulfilled"
+        ? thumbnailResult.value
+        : (errors.push(`Thumbnail: ${thumbnailResult.reason}`), logger.error("Thumbnail error:", thumbnailResult.reason), null);
+
+    caption =
+      captionResult.status === "fulfilled"
+        ? captionResult.value
+        : (errors.push(`Caption: ${captionResult.reason}`), logger.error("Caption error:", captionResult.reason), null);
+
+    faces =
+      facesResult.status === "fulfilled"
+        ? facesResult.value
+        : (errors.push(`Faces: ${facesResult.reason}`), logger.error("Faces error:", facesResult.reason), []);
+  }
 
   // Use EXIF date, falling back to date parsed from filename
   const takenAt = exif.takenAt ?? parseDateFromFilename(s3Key);
@@ -118,6 +162,7 @@ export async function processPhoto(
 
   logger.info(`Processed ${s3Path}:`, {
     photoId,
+    mode: isModalEnabled() ? "modal" : "local",
     takenAt: takenAt?.toISOString(),
     hasLocation: !!exif.location,
     description: caption?.substring(0, 50),

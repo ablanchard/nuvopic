@@ -1,10 +1,5 @@
-import { pipeline, env, RawImage } from "@xenova/transformers";
 import sharp from "sharp";
 import { logger } from "../logger.js";
-
-// Configure transformers.js for Node.js environment
-env.allowLocalModels = true;
-env.useBrowserCache = false;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let captionPipeline: any = null;
@@ -14,6 +9,11 @@ const MODEL_NAME = "Xenova/vit-gpt2-image-captioning";
 export async function loadCaptionModel(): Promise<void> {
   if (!captionPipeline) {
     logger.info("Loading caption model...");
+    // Dynamic import — only resolves if @xenova/transformers is installed
+    // @ts-ignore — package only available in local fallback mode
+    const { pipeline, env } = await import("@xenova/transformers");
+    env.allowLocalModels = true;
+    env.useBrowserCache = false;
     captionPipeline = await pipeline("image-to-text", MODEL_NAME);
     logger.info("Caption model loaded");
   }
@@ -29,6 +29,9 @@ export async function generateCaption(imageBuffer: Buffer): Promise<string> {
   if (!captionPipeline) {
     throw new Error("Caption pipeline not initialized");
   }
+
+  // @ts-ignore — package only available in local fallback mode
+  const { RawImage } = await import("@xenova/transformers");
 
   // Use sharp to decode image and get raw pixel data
   const { data, info } = await sharp(imageBuffer)

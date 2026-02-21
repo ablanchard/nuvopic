@@ -7,13 +7,15 @@
  *   - MINOR: new extractors or significant extraction improvements
  *   - PATCH: bug fixes in existing extractors
  */
-export const PROCESS_VERSION = "1.1.0";
+export const PROCESS_VERSION = "2.0.0";
 
 /**
  * Changelog describing what changed in each version.
  * Used by the reprocess endpoint to inform the user what re-running will do.
  */
 export const PROCESS_CHANGELOG: Record<string, string> = {
+  "2.0.0":
+    "GPU-accelerated processing via Modal: BLIP captioning, InsightFace 512-dim embeddings (breaking: incompatible with 128-dim face-api.js embeddings)",
   "1.1.0": "Fallback to filename-based date parsing when EXIF data is missing",
   "1.0.0": "Initial processing: EXIF extraction, thumbnails, AI captions, face detection",
 };

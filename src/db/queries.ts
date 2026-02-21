@@ -138,3 +138,16 @@ export async function getPhotosToReprocess(
 
   return result.rows;
 }
+
+export async function getExistingS3Paths(
+  s3Paths: string[]
+): Promise<Set<string>> {
+  if (s3Paths.length === 0) return new Set();
+
+  const result = await query<{ s3_path: string }>(
+    `SELECT s3_path FROM photos WHERE s3_path = ANY($1)`,
+    [s3Paths]
+  );
+
+  return new Set(result.rows.map((r) => r.s3_path));
+}
