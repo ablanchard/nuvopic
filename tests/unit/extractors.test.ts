@@ -5,7 +5,7 @@ import { extractExif, parseDateFromFilename } from "../../src/extractors/exif.js
 import { compareSemver } from "../../src/version.js";
 
 describe("Thumbnail Extractor", () => {
-  it("should generate a 200x200 JPEG thumbnail", async () => {
+  it("should generate a 300x300 WebP thumbnail", async () => {
     // Create a test image
     const testImage = await sharp({
       create: {
@@ -20,16 +20,16 @@ describe("Thumbnail Extractor", () => {
 
     const result = await generateThumbnail(testImage);
 
-    expect(result.width).toBe(200);
-    expect(result.height).toBe(200);
-    expect(result.format).toBe("jpeg");
+    expect(result.width).toBe(300);
+    expect(result.height).toBe(300);
+    expect(result.format).toBe("webp");
     expect(result.buffer.length).toBeGreaterThan(0);
 
-    // Verify the output is valid JPEG
+    // Verify the output is valid WebP
     const metadata = await sharp(result.buffer).metadata();
-    expect(metadata.format).toBe("jpeg");
-    expect(metadata.width).toBe(200);
-    expect(metadata.height).toBe(200);
+    expect(metadata.format).toBe("webp");
+    expect(metadata.width).toBe(300);
+    expect(metadata.height).toBe(300);
   });
 
   it("should handle portrait images", async () => {
@@ -46,8 +46,8 @@ describe("Thumbnail Extractor", () => {
 
     const result = await generateThumbnail(portraitImage);
 
-    expect(result.width).toBe(200);
-    expect(result.height).toBe(200);
+    expect(result.width).toBe(300);
+    expect(result.height).toBe(300);
   });
 
   it("should accept custom size", async () => {

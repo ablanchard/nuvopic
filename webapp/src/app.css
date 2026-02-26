@@ -308,6 +308,32 @@ body {
   max-height: 60vh;
   object-fit: contain;
   background: #000;
+  transition: filter 0.3s ease;
+}
+
+.modal-image--thumbnail {
+  filter: blur(2px);
+}
+
+.modal-image--full {
+  filter: none;
+}
+
+.modal-image-container {
+  position: relative;
+}
+
+.modal-image-loading {
+  position: absolute;
+  bottom: 0.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  padding: 0.25rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  pointer-events: none;
 }
 
 .modal-info {

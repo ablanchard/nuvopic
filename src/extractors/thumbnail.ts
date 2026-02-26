@@ -9,7 +9,7 @@ export interface ThumbnailResult {
 
 export async function generateThumbnail(
   imageBuffer: Buffer,
-  size: number = 200
+  size: number = 300
 ): Promise<ThumbnailResult> {
   const result = await sharp(imageBuffer)
     .rotate() // Auto-rotate based on EXIF orientation
@@ -17,9 +17,8 @@ export async function generateThumbnail(
       fit: "cover",
       position: "centre",
     })
-    .jpeg({
-      quality: 80,
-      progressive: true,
+    .webp({
+      quality: 50,
     })
     .toBuffer({ resolveWithObject: true });
 

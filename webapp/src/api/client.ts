@@ -3,6 +3,7 @@ const API_BASE = '/api/v1';
 export interface Photo {
   id: string;
   thumbnailUrl: string;
+  fullImageUrl: string;
   takenAt: string | null;
   description: string | null;
   faceCount: number;
@@ -93,6 +94,11 @@ export const api = {
 
     getFaces: (id: string): Promise<{ faces: Face[] }> => {
       return fetchJson<{ faces: Face[] }>(`${API_BASE}/photos/${id}/faces`);
+    },
+
+    getFullImageUrl: async (id: string): Promise<string> => {
+      const result = await fetchJson<{ url: string }>(`${API_BASE}/photos/${id}/image`);
+      return result.url;
     },
   },
 

@@ -4,6 +4,7 @@ import {
   ListObjectsV2Command,
   type GetObjectCommandOutput,
 } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 let s3Client: S3Client | null = null;
 
@@ -135,4 +136,18 @@ export async function listAllObjects(
   } while (continuationToken);
 
   return keys;
+}
+
+/**
+ * Generate a presigned URL for an S3 object.
+ * The URL is valid for the specified duration (default: 15 minutes).
+ */
+export async function getPresignedImageUrl(
+  bucket: string,
+  key: string,
+  expiresInSeconds: number = 900
+): Promise<string> {
+  const client = getS3Client();
+  const command = new GetObjectCommand({ Bucket: bucket, Key: key });
+  return getSignedUrl(client, command, { expiresIn: expiresInSeconds });
 }

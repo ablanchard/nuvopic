@@ -6,7 +6,7 @@ import { getFacesByPhotoId } from "../../db/queries.js";
 import { processPhoto } from "../../processor.js";
 import { isModalEnabled } from "../../extractors/modal-client.js";
 import { PROCESS_VERSION, PROCESS_CHANGELOG } from "../../version.js";
-import { listAllObjects, getS3Path } from "../../s3/client.js";
+import { listAllObjects, getS3Path, getPresignedImageUrl } from "../../s3/client.js";
 import { logger } from "../../logger.js";
 
 const photos = new Hono();
@@ -37,6 +37,7 @@ photos.get("/", async (c) => {
     photos: photoList.map((p) => ({
       id: p.id,
       thumbnailUrl: `/api/v1/photos/${p.id}/thumbnail`,
+      fullImageUrl: `/api/v1/photos/${p.id}/image`,
       takenAt: p.taken_at,
       description: p.description,
       faceCount: p.face_count,
@@ -146,9 +147,8 @@ function isSupportedImage(key: string): boolean {
 // Memory per concurrent photo processing (estimated ~200MB for buffers + inference)
 const MEMORY_PER_WORKER_MB = 200;
 
-// Modal mode: processing is I/O-bound (HTTP calls) but each photo buffer + base64
-// copy lives in memory simultaneously, so cap concurrency to avoid OOM.
-const MODAL_CONCURRENCY = 5;
+// Modal mode: single container, queue requests sequentially
+const MODAL_CONCURRENCY = 1;
 
 /**
  * Auto-detect optimal concurrency based on available CPU cores and total memory.
@@ -356,6 +356,7 @@ photos.get("/:id", async (c) => {
     id: photo.id,
     s3Path: photo.s3_path,
     thumbnailUrl: `/api/v1/photos/${photo.id}/thumbnail`,
+    fullImageUrl: `/api/v1/photos/${photo.id}/image`,
     takenAt: photo.taken_at,
     description: photo.description,
     faceCount: photo.face_count,
@@ -375,13 +376,41 @@ photos.get("/:id/thumbnail", async (c) => {
     return c.json({ error: "Thumbnail not found" }, 404);
   }
 
+  // Detect format from magic bytes: WebP starts with "RIFF....WEBP", JPEG with 0xFF 0xD8
+  const bytes = photo.thumbnail;
+  const isWebP =
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
+  const contentType = isWebP ? "image/webp" : "image/jpeg";
+
   return new Response(photo.thumbnail, {
     headers: {
-      "Content-Type": "image/jpeg",
+      "Content-Type": contentType,
       "Cache-Control": "public, max-age=31536000, immutable",
       "ETag": `"${id}"`,
     },
   });
+});
+
+// Get full-resolution image (presigned S3 URL)
+photos.get("/:id/image", async (c) => {
+  const id = c.req.param("id");
+  const photo = await getPhotoById(id);
+
+  if (!photo) {
+    return c.json({ error: "Photo not found" }, 404);
+  }
+
+  const match = photo.s3_path.match(/^s3:\/\/([^/]+)\/(.+)$/);
+  if (!match) {
+    return c.json({ error: "Invalid s3_path format" }, 500);
+  }
+
+  const [, bucket, key] = match;
+  const url = await getPresignedImageUrl(bucket, key);
+
+  return c.json({ url });
 });
 
 // Get faces for a photo
