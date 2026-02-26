@@ -35,10 +35,12 @@ photos.get("/", async (c) => {
   return c.json({
     photos: photoList.map((p) => ({
       id: p.id,
-      thumbnailUrl: `/api/v1/photos/${p.id}/thumbnail`,
+      thumbnailUrl: `/api/v1/photos/${p.id}/thumbnail?v=${PROCESS_VERSION}`,
       fullImageUrl: `/api/v1/photos/${p.id}/image`,
       takenAt: p.taken_at,
       description: p.description,
+      width: p.width,
+      height: p.height,
       faceCount: p.face_count,
       tags: p.tags,
       location: p.location_lat && p.location_lng
@@ -76,10 +78,11 @@ photos.get("/reprocess", async (c) => {
   });
 });
 
-// Trigger reprocessing of outdated photos (pass { "force": true } to reprocess all)
+// Trigger reprocessing of outdated photos (pass { "force": true } to reprocess all, { "skipModal": true } to skip GPU work)
 photos.post("/reprocess", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const force: boolean = body.force === true;
+  const skipModal: boolean = body.skipModal === true;
 
   const photosToProcess = force
     ? await getAllPhotosForReprocess()
@@ -93,7 +96,7 @@ photos.post("/reprocess", async (c) => {
     });
   }
 
-  logger.info(`Reprocessing ${photosToProcess.length} photos (force=${force})`);
+  logger.info(`Reprocessing ${photosToProcess.length} photos (force=${force}, skipModal=${skipModal})`);
   const startTime = Date.now();
 
   // Build batch inputs, skipping any with invalid s3_path
@@ -110,7 +113,7 @@ photos.post("/reprocess", async (c) => {
   }
 
   const batchResults = await processPhotoBatch(
-    batchInputs.map((p) => ({ s3Bucket: p.s3Bucket, s3Key: p.s3Key })),
+    batchInputs.map((p) => ({ s3Bucket: p.s3Bucket, s3Key: p.s3Key, skipModal })),
     (completed, total) => {
       if (completed % 10 === 0 || completed === total) {
         logger.info(`Reprocess progress: ${completed}/${total}`);
@@ -278,10 +281,12 @@ photos.get("/:id", async (c) => {
   return c.json({
     id: photo.id,
     s3Path: photo.s3_path,
-    thumbnailUrl: `/api/v1/photos/${photo.id}/thumbnail`,
+    thumbnailUrl: `/api/v1/photos/${photo.id}/thumbnail?v=${PROCESS_VERSION}`,
     fullImageUrl: `/api/v1/photos/${photo.id}/image`,
     takenAt: photo.taken_at,
     description: photo.description,
+    width: photo.width,
+    height: photo.height,
     faceCount: photo.face_count,
     tags: photo.tags,
     location: photo.location_lat && photo.location_lng

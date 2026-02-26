@@ -93,6 +93,23 @@ BEGIN
     END IF;
 END $$;
 
+-- Migration: add width/height columns for original image dimensions
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'photos' AND column_name = 'width'
+    ) THEN
+        ALTER TABLE photos ADD COLUMN width INTEGER;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'photos' AND column_name = 'height'
+    ) THEN
+        ALTER TABLE photos ADD COLUMN height INTEGER;
+    END IF;
+END $$;
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_photos_taken_at ON photos(taken_at);
 CREATE INDEX IF NOT EXISTS idx_photos_s3_path ON photos(s3_path);

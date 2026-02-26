@@ -19,10 +19,13 @@ import {
 } from "./db/queries.js";
 import { logger } from "./logger.js";
 import { PROCESS_VERSION } from "./version.js";
+import sharp from "sharp";
 
 export interface ProcessPhotoInput {
   s3Bucket: string;
   s3Key: string;
+  /** Skip Modal GPU work (captioning + face detection). Only run local extraction (EXIF, thumbnail, dimensions). */
+  skipModal?: boolean;
 }
 
 export interface ProcessPhotoOutput {
@@ -42,15 +45,19 @@ export interface ProcessPhotoOutput {
 interface ExtractedData {
   s3Path: string;
   s3Key: string;
+  width: number | null;
+  height: number | null;
   exif: { takenAt: Date | null; location: { lat: number; lng: number } | null };
   thumbnail: { buffer: Buffer; width: number; height: number; format: string } | null;
   caption: string | null;
   faces: Array<{ boundingBox: { x: number; y: number; width: number; height: number }; embedding: number[]; confidence: number }>;
   errors: string[];
+  /** When true, skip face delete+reinsert (faces array is empty by design). */
+  skipFaces?: boolean;
 }
 
 async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
-  const { s3Path, s3Key, exif, thumbnail, caption, faces, errors } = data;
+  const { s3Path, s3Key, width, height, exif, thumbnail, caption, faces, errors } = data;
 
   const takenAt = exif.takenAt ?? parseDateFromFilename(s3Key);
   const existingPhoto = await getPhotoByS3Path(s3Path);
@@ -62,19 +69,23 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
     locationLng: exif.location?.lng,
     description: caption,
     thumbnail: thumbnail?.buffer,
+    width,
+    height,
     processVersion: PROCESS_VERSION,
   });
 
-  if (existingPhoto) {
-    await deleteFacesByPhotoId(photoId);
-  }
+  if (!data.skipFaces) {
+    if (existingPhoto) {
+      await deleteFacesByPhotoId(photoId);
+    }
 
-  for (const face of faces) {
-    await insertFace({
-      photoId,
-      boundingBox: face.boundingBox,
-      embedding: face.embedding,
-    });
+    for (const face of faces) {
+      await insertFace({
+        photoId,
+        boundingBox: face.boundingBox,
+        embedding: face.embedding,
+      });
+    }
   }
 
   const output: ProcessPhotoOutput = {
@@ -157,17 +168,42 @@ export async function processPhoto(
   const s3Path = getS3Path(s3Bucket, s3Key);
   const errors: string[] = [];
 
-  logger.info(`Processing photo: ${s3Path}`);
+  logger.info(`Processing photo: ${s3Path}${input.skipModal ? " (skipModal)" : ""}`);
 
   const imageBuffer = await getObjectAsBuffer(s3Bucket, s3Key);
   logger.debug(`Downloaded ${imageBuffer.length} bytes`);
+
+  // Extract original image dimensions
+  let width: number | null = null;
+  let height: number | null = null;
+  try {
+    const meta = await sharp(imageBuffer).metadata();
+    width = meta.width ?? null;
+    height = meta.height ?? null;
+  } catch (err) {
+    errors.push(`Dimensions: ${err}`);
+    logger.error("Dimensions error:", err);
+  }
 
   let exif: ExtractedData["exif"];
   let thumbnail: ExtractedData["thumbnail"];
   let caption: string | null;
   let faces: ExtractedData["faces"];
+  let skipFaces = false;
 
-  if (isModalEnabled()) {
+  if (input.skipModal) {
+    // skipModal: only run local extraction (EXIF + thumbnail + dimensions)
+    const [exifResult, thumbnailResult] = await Promise.allSettled([
+      extractExif(imageBuffer),
+      generateThumbnail(imageBuffer),
+    ]);
+
+    exif = parseExifResult(exifResult, errors);
+    thumbnail = parseThumbnailResult(thumbnailResult, errors);
+    caption = null;   // null → COALESCE preserves existing DB value
+    faces = [];
+    skipFaces = true; // don't delete+reinsert faces
+  } else if (isModalEnabled()) {
     const [exifResult, thumbnailResult, modalResult] =
       await Promise.allSettled([
         extractExif(imageBuffer),
@@ -201,7 +237,7 @@ export async function processPhoto(
         : (errors.push(`Faces: ${facesResult.reason}`), logger.error("Faces error:", facesResult.reason), []);
   }
 
-  return saveToDb({ s3Path, s3Key, exif, thumbnail, caption, faces, errors });
+  return saveToDb({ s3Path, s3Key, width, height, exif, thumbnail, caption, faces, errors, skipFaces });
 }
 
 // ---------------------------------------------------------------------------
@@ -230,7 +266,18 @@ export async function processPhotoBatch(
   );
 
   if (!useModal) {
-    // Local mode: just run processPhoto with local concurrency
+    // Local mode (or skipModal): just run processPhoto with local concurrency
+    return runLocalConcurrency(inputs, LOCAL_CONCURRENCY, async (input) => {
+      const result = await processPhoto(input);
+      completed++;
+      onProgress?.(completed, total);
+      return result;
+    });
+  }
+
+  // If all inputs have skipModal, use the local path (processPhoto handles it)
+  const allSkipModal = inputs.every((i) => i.skipModal);
+  if (allSkipModal) {
     return runLocalConcurrency(inputs, LOCAL_CONCURRENCY, async (input) => {
       const result = await processPhoto(input);
       completed++;
@@ -278,6 +325,7 @@ async function processChunk(
   interface PendingPhoto {
     input: ProcessPhotoInput;
     s3Path: string;
+    imageBuffer: Buffer;
     modalPromise: Promise<ModalAnalysisResult>;
     localPromise: Promise<{
       exif: PromiseSettledResult<ExtractedData["exif"]>;
@@ -305,7 +353,7 @@ async function processChunk(
       generateThumbnail(imageBuffer),
     ]).then(([exif, thumbnail]) => ({ exif, thumbnail }));
 
-    pending.push({ input, s3Path, modalPromise, localPromise });
+    pending.push({ input, s3Path, imageBuffer, modalPromise, localPromise });
   });
 
   logger.info(`Chunk: ${pending.length} Modal calls dispatched, awaiting results...`);
@@ -319,6 +367,18 @@ async function processChunk(
     const s3Key = item.input.s3Key;
 
     try {
+      // Extract original image dimensions
+      let width: number | null = null;
+      let height: number | null = null;
+      try {
+        const meta = await sharp(item.imageBuffer).metadata();
+        width = meta.width ?? null;
+        height = meta.height ?? null;
+      } catch (err) {
+        errors.push(`Dimensions: ${err}`);
+        logger.error("Dimensions error:", err);
+      }
+
       const [modalSettled, local] = await Promise.all([
         Promise.allSettled([item.modalPromise]),
         item.localPromise,
@@ -328,7 +388,7 @@ async function processChunk(
       const thumbnail = parseThumbnailResult(local.thumbnail, errors);
       const { caption, faces } = parseModalResult(modalSettled[0], errors);
 
-      const output = await saveToDb({ s3Path, s3Key, exif, thumbnail, caption, faces, errors });
+      const output = await saveToDb({ s3Path, s3Key, width, height, exif, thumbnail, caption, faces, errors });
       results.push(output);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

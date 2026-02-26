@@ -18,6 +18,8 @@ export interface PhotoWithStats {
   location_lat: number | null;
   location_lng: number | null;
   location_name: string | null;
+  width: number | null;
+  height: number | null;
   face_count: number;
   tags: string[];
 }
@@ -88,6 +90,8 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
       p.location_lat,
       p.location_lng,
       p.location_name,
+      p.width,
+      p.height,
       (SELECT COUNT(*)::int FROM faces f WHERE f.photo_id = p.id) as face_count,
       COALESCE(
         (SELECT array_agg(t.name ORDER BY t.name)
@@ -119,6 +123,8 @@ export async function getPhotoWithDetails(id: string): Promise<PhotoWithStats | 
       p.location_lat,
       p.location_lng,
       p.location_name,
+      p.width,
+      p.height,
       (SELECT COUNT(*)::int FROM faces f WHERE f.photo_id = p.id) as face_count,
       COALESCE(
         (SELECT array_agg(t.name ORDER BY t.name)

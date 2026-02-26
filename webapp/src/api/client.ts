@@ -6,6 +6,8 @@ export interface Photo {
   fullImageUrl: string;
   takenAt: string | null;
   description: string | null;
+  width: number | null;
+  height: number | null;
   faceCount: number;
   tags: string[];
   location: {

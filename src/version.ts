@@ -7,13 +7,15 @@
  *   - MINOR: new extractors or significant extraction improvements
  *   - PATCH: bug fixes in existing extractors
  */
-export const PROCESS_VERSION = "2.1.0";
+export const PROCESS_VERSION = "2.2.0";
 
 /**
  * Changelog describing what changed in each version.
  * Used by the reprocess endpoint to inform the user what re-running will do.
  */
 export const PROCESS_CHANGELOG: Record<string, string> = {
+  "2.2.0":
+    "Store original image dimensions (width/height) in DB for aspect-ratio-aware modal display; skipModal reprocess support",
   "2.1.0":
     "Upgraded thumbnails from 200x200 JPEG to 300x300 WebP for sharper previews on high-density screens with reduced storage",
   "2.0.0":

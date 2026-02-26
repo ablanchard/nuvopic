@@ -96,18 +96,17 @@ export function App() {
       {selectedPhoto && (
         <div class="modal-overlay" onClick={() => setSelectedPhoto(null)}>
           <div class="modal" onClick={(e) => e.stopPropagation()}>
-            <button class="modal-close" onClick={() => setSelectedPhoto(null)}>
-              &times;
-            </button>
-            <div class="modal-image-container">
+            <div
+              class="modal-image-container"
+              style={selectedPhoto.width && selectedPhoto.height
+                ? `aspect-ratio: ${selectedPhoto.width} / ${selectedPhoto.height}`
+                : undefined}
+            >
               <img
                 src={fullImageLoaded && fullImageSrc ? fullImageSrc : selectedPhoto.thumbnailUrl}
                 alt={selectedPhoto.description || 'Photo'}
                 class={`modal-image ${fullImageLoaded ? 'modal-image--full' : 'modal-image--thumbnail'}`}
               />
-              {!fullImageLoaded && (
-                <div class="modal-image-loading">Loading full resolution...</div>
-              )}
             </div>
             <div class="modal-info">
               {selectedPhoto.description && (
