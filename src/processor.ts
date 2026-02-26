@@ -9,6 +9,7 @@ import {
 import {
   analyzeWithModal,
   isModalEnabled,
+  type ModalAnalysisResult,
 } from "./extractors/modal-client.js";
 import {
   insertPhoto,
@@ -35,96 +36,25 @@ export interface ProcessPhotoOutput {
   errors: string[];
 }
 
-export async function processPhoto(
-  input: ProcessPhotoInput
-): Promise<ProcessPhotoOutput> {
-  const { s3Bucket, s3Key } = input;
-  const s3Path = getS3Path(s3Bucket, s3Key);
-  const errors: string[] = [];
+// ---------------------------------------------------------------------------
+// Internal: save extracted data to DB (shared by single + batch paths)
+// ---------------------------------------------------------------------------
+interface ExtractedData {
+  s3Path: string;
+  s3Key: string;
+  exif: { takenAt: Date | null; location: { lat: number; lng: number } | null };
+  thumbnail: { buffer: Buffer; width: number; height: number; format: string } | null;
+  caption: string | null;
+  faces: Array<{ boundingBox: { x: number; y: number; width: number; height: number }; embedding: number[]; confidence: number }>;
+  errors: string[];
+}
 
-  logger.info(`Processing photo: ${s3Path}`);
+async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
+  const { s3Path, s3Key, exif, thumbnail, caption, faces, errors } = data;
 
-  // Download image from S3
-  const imageBuffer = await getObjectAsBuffer(s3Bucket, s3Key);
-  logger.debug(`Downloaded ${imageBuffer.length} bytes`);
-
-  let exif: { takenAt: Date | null; location: { lat: number; lng: number } | null };
-  let thumbnail: { buffer: Buffer; width: number; height: number; format: string } | null;
-  let caption: string | null;
-  let faces: Array<{ boundingBox: { x: number; y: number; width: number; height: number }; embedding: number[]; confidence: number }>;
-
-  if (isModalEnabled()) {
-    // --- Modal mode: GPU-accelerated captioning + face detection ---
-    // EXIF + thumbnail stay local (fast, no GPU needed).
-    // Caption + faces go to Modal as a single HTTP call (non-blocking I/O).
-    const [exifResult, thumbnailResult, modalResult] =
-      await Promise.allSettled([
-        extractExif(imageBuffer),
-        generateThumbnail(imageBuffer),
-        analyzeWithModal(imageBuffer),
-      ]);
-
-    exif =
-      exifResult.status === "fulfilled"
-        ? exifResult.value
-        : (errors.push(`EXIF: ${exifResult.reason}`), logger.error("EXIF error:", exifResult.reason), { takenAt: null, location: null });
-
-    thumbnail =
-      thumbnailResult.status === "fulfilled"
-        ? thumbnailResult.value
-        : (errors.push(`Thumbnail: ${thumbnailResult.reason}`), logger.error("Thumbnail error:", thumbnailResult.reason), null);
-
-    if (modalResult.status === "fulfilled") {
-      caption = modalResult.value.caption;
-      faces = modalResult.value.faces.map((f) => ({
-        boundingBox: f.bbox,
-        embedding: f.embedding,
-        confidence: f.confidence,
-      }));
-    } else {
-      errors.push(`Modal analysis: ${modalResult.reason}`);
-      logger.error("Modal analysis error:", modalResult.reason);
-      caption = null;
-      faces = [];
-    }
-  } else {
-    // --- Local mode: CPU-based processing (fallback) ---
-    const [exifResult, thumbnailResult, captionResult, facesResult] =
-      await Promise.allSettled([
-        extractExif(imageBuffer),
-        generateThumbnail(imageBuffer),
-        generateCaption(imageBuffer),
-        detectFaces(imageBuffer),
-      ]);
-
-    exif =
-      exifResult.status === "fulfilled"
-        ? exifResult.value
-        : (errors.push(`EXIF: ${exifResult.reason}`), logger.error("EXIF error:", exifResult.reason), { takenAt: null, location: null });
-
-    thumbnail =
-      thumbnailResult.status === "fulfilled"
-        ? thumbnailResult.value
-        : (errors.push(`Thumbnail: ${thumbnailResult.reason}`), logger.error("Thumbnail error:", thumbnailResult.reason), null);
-
-    caption =
-      captionResult.status === "fulfilled"
-        ? captionResult.value
-        : (errors.push(`Caption: ${captionResult.reason}`), logger.error("Caption error:", captionResult.reason), null);
-
-    faces =
-      facesResult.status === "fulfilled"
-        ? facesResult.value
-        : (errors.push(`Faces: ${facesResult.reason}`), logger.error("Faces error:", facesResult.reason), []);
-  }
-
-  // Use EXIF date, falling back to date parsed from filename
   const takenAt = exif.takenAt ?? parseDateFromFilename(s3Key);
-
-  // Check if photo already exists
   const existingPhoto = await getPhotoByS3Path(s3Path);
 
-  // Insert or update photo record
   const photoId = await insertPhoto({
     s3Path,
     takenAt,
@@ -135,12 +65,10 @@ export async function processPhoto(
     processVersion: PROCESS_VERSION,
   });
 
-  // Delete existing faces if updating
   if (existingPhoto) {
     await deleteFacesByPhotoId(photoId);
   }
 
-  // Insert face records
   for (const face of faces) {
     await insertFace({
       photoId,
@@ -172,4 +100,275 @@ export async function processPhoto(
   });
 
   return output;
+}
+
+// ---------------------------------------------------------------------------
+// Parse Modal analysis result into our internal face format
+// ---------------------------------------------------------------------------
+function parseModalResult(
+  modalResult: PromiseSettledResult<ModalAnalysisResult>,
+  errors: string[]
+): { caption: string | null; faces: ExtractedData["faces"] } {
+  if (modalResult.status === "fulfilled") {
+    return {
+      caption: modalResult.value.caption,
+      faces: modalResult.value.faces.map((f) => ({
+        boundingBox: f.bbox,
+        embedding: f.embedding,
+        confidence: f.confidence,
+      })),
+    };
+  }
+  errors.push(`Modal analysis: ${modalResult.reason}`);
+  logger.error("Modal analysis error:", modalResult.reason);
+  return { caption: null, faces: [] };
+}
+
+// ---------------------------------------------------------------------------
+// Parse local extraction results (EXIF, thumbnail) with error handling
+// ---------------------------------------------------------------------------
+function parseExifResult(
+  result: PromiseSettledResult<{ takenAt: Date | null; location: { lat: number; lng: number } | null }>,
+  errors: string[]
+): ExtractedData["exif"] {
+  if (result.status === "fulfilled") return result.value;
+  errors.push(`EXIF: ${result.reason}`);
+  logger.error("EXIF error:", result.reason);
+  return { takenAt: null, location: null };
+}
+
+function parseThumbnailResult(
+  result: PromiseSettledResult<{ buffer: Buffer; width: number; height: number; format: string }>,
+  errors: string[]
+): ExtractedData["thumbnail"] {
+  if (result.status === "fulfilled") return result.value;
+  errors.push(`Thumbnail: ${result.reason}`);
+  logger.error("Thumbnail error:", result.reason);
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Single-photo processing (original API, used by import + local mode)
+// ---------------------------------------------------------------------------
+export async function processPhoto(
+  input: ProcessPhotoInput
+): Promise<ProcessPhotoOutput> {
+  const { s3Bucket, s3Key } = input;
+  const s3Path = getS3Path(s3Bucket, s3Key);
+  const errors: string[] = [];
+
+  logger.info(`Processing photo: ${s3Path}`);
+
+  const imageBuffer = await getObjectAsBuffer(s3Bucket, s3Key);
+  logger.debug(`Downloaded ${imageBuffer.length} bytes`);
+
+  let exif: ExtractedData["exif"];
+  let thumbnail: ExtractedData["thumbnail"];
+  let caption: string | null;
+  let faces: ExtractedData["faces"];
+
+  if (isModalEnabled()) {
+    const [exifResult, thumbnailResult, modalResult] =
+      await Promise.allSettled([
+        extractExif(imageBuffer),
+        generateThumbnail(imageBuffer),
+        analyzeWithModal(imageBuffer),
+      ]);
+
+    exif = parseExifResult(exifResult, errors);
+    thumbnail = parseThumbnailResult(thumbnailResult, errors);
+    ({ caption, faces } = parseModalResult(modalResult, errors));
+  } else {
+    const [exifResult, thumbnailResult, captionResult, facesResult] =
+      await Promise.allSettled([
+        extractExif(imageBuffer),
+        generateThumbnail(imageBuffer),
+        generateCaption(imageBuffer),
+        detectFaces(imageBuffer),
+      ]);
+
+    exif = parseExifResult(exifResult, errors);
+    thumbnail = parseThumbnailResult(thumbnailResult, errors);
+
+    caption =
+      captionResult.status === "fulfilled"
+        ? captionResult.value
+        : (errors.push(`Caption: ${captionResult.reason}`), logger.error("Caption error:", captionResult.reason), null);
+
+    faces =
+      facesResult.status === "fulfilled"
+        ? facesResult.value
+        : (errors.push(`Faces: ${facesResult.reason}`), logger.error("Faces error:", facesResult.reason), []);
+  }
+
+  return saveToDb({ s3Path, s3Key, exif, thumbnail, caption, faces, errors });
+}
+
+// ---------------------------------------------------------------------------
+// Batch processing: fire all Modal calls upfront so the GPU stays saturated
+// while local work (S3 download, EXIF, thumbnail) runs in parallel.
+// ---------------------------------------------------------------------------
+
+/** Max concurrent S3 downloads + local processing to bound memory usage. */
+const LOCAL_CONCURRENCY = 5;
+
+/** Max photos per chunk — bounds peak memory (image buffers + Modal promises). */
+const CHUNK_SIZE = 20;
+
+export async function processPhotoBatch(
+  inputs: ProcessPhotoInput[],
+  onProgress?: (completed: number, total: number) => void
+): Promise<ProcessPhotoOutput[]> {
+  if (inputs.length === 0) return [];
+
+  const useModal = isModalEnabled();
+  const total = inputs.length;
+  let completed = 0;
+
+  logger.info(
+    `Batch processing ${total} photos (mode=${useModal ? "modal" : "local"}, localConcurrency=${LOCAL_CONCURRENCY}, chunkSize=${CHUNK_SIZE})`
+  );
+
+  if (!useModal) {
+    // Local mode: just run processPhoto with local concurrency
+    return runLocalConcurrency(inputs, LOCAL_CONCURRENCY, async (input) => {
+      const result = await processPhoto(input);
+      completed++;
+      onProgress?.(completed, total);
+      return result;
+    });
+  }
+
+  // --- Modal mode: chunked pipeline approach ---
+  // Process photos in chunks of CHUNK_SIZE. Each chunk runs the full pipeline:
+  //   Phase 1: Download images from S3 (bounded by LOCAL_CONCURRENCY), fire Modal
+  //            calls eagerly, start local EXIF+thumbnail in parallel.
+  //   Phase 2: Await Modal + local results for each photo, save to DB.
+  // This bounds peak memory to ~CHUNK_SIZE image buffers at a time.
+
+  const allResults: ProcessPhotoOutput[] = [];
+  const numChunks = Math.ceil(inputs.length / CHUNK_SIZE);
+
+  for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
+    const chunkStart = chunkIdx * CHUNK_SIZE;
+    const chunkInputs = inputs.slice(chunkStart, chunkStart + CHUNK_SIZE);
+
+    logger.info(`Processing chunk ${chunkIdx + 1}/${numChunks} (${chunkInputs.length} photos)`);
+
+    const chunkResults = await processChunk(chunkInputs);
+
+    for (const result of chunkResults) {
+      allResults.push(result);
+      completed++;
+      onProgress?.(completed, total);
+    }
+  }
+
+  return allResults;
+}
+
+/**
+ * Process a single chunk of photos through the Modal pipeline.
+ * Phase 1: Download + dispatch Modal calls eagerly.
+ * Phase 2: Await results + save to DB.
+ */
+async function processChunk(
+  inputs: ProcessPhotoInput[]
+): Promise<ProcessPhotoOutput[]> {
+  interface PendingPhoto {
+    input: ProcessPhotoInput;
+    s3Path: string;
+    modalPromise: Promise<ModalAnalysisResult>;
+    localPromise: Promise<{
+      exif: PromiseSettledResult<ExtractedData["exif"]>;
+      thumbnail: PromiseSettledResult<{ buffer: Buffer; width: number; height: number; format: string }>;
+    }>;
+  }
+
+  const pending: PendingPhoto[] = [];
+
+  // Phase 1: Download + dispatch (bounded concurrency for downloads)
+  await runLocalConcurrency(inputs, LOCAL_CONCURRENCY, async (input) => {
+    const { s3Bucket, s3Key } = input;
+    const s3Path = getS3Path(s3Bucket, s3Key);
+
+    logger.info(`Downloading: ${s3Path}`);
+    const imageBuffer = await getObjectAsBuffer(s3Bucket, s3Key);
+    logger.debug(`Downloaded ${imageBuffer.length} bytes`);
+
+    // Fire Modal call immediately (don't await — let it queue on Modal's side)
+    const modalPromise = analyzeWithModal(imageBuffer);
+
+    // Start local work (EXIF + thumbnail) in parallel
+    const localPromise = Promise.allSettled([
+      extractExif(imageBuffer),
+      generateThumbnail(imageBuffer),
+    ]).then(([exif, thumbnail]) => ({ exif, thumbnail }));
+
+    pending.push({ input, s3Path, modalPromise, localPromise });
+  });
+
+  logger.info(`Chunk: ${pending.length} Modal calls dispatched, awaiting results...`);
+
+  // Phase 2: Collect results and save to DB
+  const results: ProcessPhotoOutput[] = [];
+
+  for (const item of pending) {
+    const errors: string[] = [];
+    const { s3Path } = item;
+    const s3Key = item.input.s3Key;
+
+    try {
+      const [modalSettled, local] = await Promise.all([
+        Promise.allSettled([item.modalPromise]),
+        item.localPromise,
+      ]);
+
+      const exif = parseExifResult(local.exif, errors);
+      const thumbnail = parseThumbnailResult(local.thumbnail, errors);
+      const { caption, faces } = parseModalResult(modalSettled[0], errors);
+
+      const output = await saveToDb({ s3Path, s3Key, exif, thumbnail, caption, faces, errors });
+      results.push(output);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error(`Batch item failed for ${s3Path}:`, err);
+      results.push({
+        photoId: "",
+        s3Path,
+        takenAt: null,
+        location: null,
+        description: null,
+        facesDetected: 0,
+        thumbnailSize: 0,
+        errors: [message],
+      });
+    }
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Simple local concurrency helper (worker-pool pattern)
+// ---------------------------------------------------------------------------
+async function runLocalConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await fn(items[index]);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
+  );
+  return results;
 }

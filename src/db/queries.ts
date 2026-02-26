@@ -139,6 +139,18 @@ export async function getPhotosToReprocess(
   return result.rows;
 }
 
+export async function getAllPhotosForReprocess(): Promise<
+  Pick<PhotoRecord, "id" | "s3_path" | "process_version">[]
+> {
+  const result = await query<
+    Pick<PhotoRecord, "id" | "s3_path" | "process_version">
+  >(
+    `SELECT id, s3_path, process_version FROM photos ORDER BY created_at ASC`
+  );
+
+  return result.rows;
+}
+
 export async function getExistingS3Paths(
   s3Paths: string[]
 ): Promise<Set<string>> {
