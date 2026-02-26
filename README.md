@@ -159,6 +159,16 @@ curl -X POST http://localhost:8080/api/v1/photos/reprocess
 - $30/mo free credits covers ~360,000 photos/month
 - Scale-to-zero: zero cost when not processing
 
+### Benchmarks
+
+| Metric | Value |
+|---|---|
+| Photos processed | 90 |
+| GPU | 1x NVIDIA T4 (Modal) |
+| Total time | 3.5 minutes |
+| Per photo | ~2.3s |
+| Modal cost | $0.04 |
+
 ## Self-Hosting
 
 The application is designed to be deployed on **any cloud provider** that supports Docker containers.
