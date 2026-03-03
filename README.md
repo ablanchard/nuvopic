@@ -252,29 +252,30 @@ The server will automatically:
 
 ### Vast.ai Benchmarks
 
-| Metric | Value |
-|---|---|
-| Photos processed | 90 |
-| GPU | 1x NVIDIA RTX 4090 (Vast.ai datacenter) |
-| Instance cost | $0.349/hr |
-| Provisioning time | ~5.5 min (Docker image pull) |
-| Inference time (90 photos) | ~3-4 min |
-| Per photo (avg) | ~2-2.5s |
-| Total wall time | ~9-10 min |
-| Batch cost | ~$0.06 |
+Tested with 90 photos on two GPU types:
+
+| Metric | RTX 4090 (24GB) | RTX 3060 (12GB) |
+|---|---|---|
+| Instance cost | $0.349/hr | $0.087/hr |
+| Provisioning time | ~5.5 min (first run) | ~1.2 min (image cached) |
+| Inference time (90 photos) | ~3-4 min | ~14.7 min |
+| Per photo (avg) | ~2-2.5s | ~9.8s |
+| Total wall time | ~9-10 min | ~16 min |
+| Batch cost | ~$0.06 | ~$0.023 |
+
+**Recommendation:** The RTX 4090 is the best value for batch processing. While the RTX 3060 is 4x cheaper per hour, it is ~4x slower per photo, so the cost per photo is roughly the same. The RTX 4090 finishes in half the wall time and handles concurrent requests much better (24GB VRAM vs 12GB). The RTX 3060 experiences request timeouts under concurrency due to limited VRAM, requiring retries that inflate total time.
 
 ### GPU Provider Comparison
 
-| | Local (CPU) | Modal (T4 GPU) | Vast.ai (RTX 4090) |
-|---|---|---|---|
-| Best for | Development | Real-time (webhooks) | Batch (import/reprocess) |
-| Per photo | ~11s (blocking) | ~2-3s | ~2-2.5s |
-| 90 photos | ~17 min | ~3.5 min | ~3-4 min (+ ~6 min provision) |
-| Hourly cost | Free | $0.59/hr (T4) | ~$0.35/hr (RTX 4090) |
-| Batch cost (90 photos) | $0 | ~$0.04 | ~$0.06 |
-| Idle cost | $0 | $0 (scale-to-zero) | $0 (destroyed after batch) |
-| Setup | None | Modal account + deploy | Vast.ai account + Docker image |
-| Provisioning | Instant | ~1-2s cold start | ~5-6 min first run |
+| | Local (CPU) | Modal (T4 GPU) | Vast.ai (RTX 4090) | Vast.ai (RTX 3060) |
+|---|---|---|---|---|
+| Best for | Development | Real-time (webhooks) | Batch (recommended) | Batch (budget) |
+| Per photo | ~11s (blocking) | ~2-3s | ~2-2.5s | ~9.8s |
+| 90 photos | ~17 min | ~3.5 min | ~3-4 min (+ ~6 min provision) | ~15 min (+ ~1 min cached) |
+| Hourly cost | Free | $0.59/hr (T4) | ~$0.35/hr | ~$0.09/hr |
+| Batch cost (90 photos) | $0 | ~$0.04 | ~$0.06 | ~$0.023 |
+| Idle cost | $0 | $0 (scale-to-zero) | $0 (destroyed) | $0 (destroyed) |
+| Provisioning | Instant | ~1-2s cold start | ~5-6 min first run | ~5-6 min first run |
 
 ## Self-Hosting
 

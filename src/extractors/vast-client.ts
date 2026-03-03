@@ -339,8 +339,8 @@ async function waitForHealthy(endpointUrl: string): Promise<void> {
 // VastGpuClient
 // ---------------------------------------------------------------------------
 
-const INFERENCE_TIMEOUT_MS = 60_000; // 60s — no cold start, but large images may take time
-const MAX_RETRIES = 1;
+const INFERENCE_TIMEOUT_MS = 120_000; // 120s — requests queue server-side on single GPU, allow time for large batches
+const MAX_RETRIES = 2;
 
 export class VastGpuClient implements GpuClient {
   readonly provider = "vastai" as const;
