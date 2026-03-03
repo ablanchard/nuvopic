@@ -19,8 +19,9 @@ FROM vastai/pytorch:cuda-13.0.2-auto
 
 WORKDIR /app
 
-# Install Python dependencies (matching modal/inference.py container spec)
-RUN pip install --no-cache-dir \
+# Install uv for fast dependency resolution, then install Python dependencies
+RUN pip install --no-cache-dir uv && \
+    uv pip install --system --no-cache \
     "fastapi[standard]" \
     "torch==2.5.1" \
     "torchvision==0.20.1" \
