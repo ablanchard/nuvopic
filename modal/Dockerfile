@@ -19,9 +19,10 @@ FROM vastai/pytorch:cuda-13.0.2-auto
 
 WORKDIR /app
 
-# Install uv for fast dependency resolution, then install Python dependencies
-RUN pip install --no-cache-dir uv && \
-    uv pip install --system --no-cache \
+# Install uv (standalone installer, no pip needed) then install Python dependencies
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    . $HOME/.local/bin/env && \
+    uv pip install --system --break-system-packages --no-cache \
     "fastapi[standard]" \
     "torch==2.5.1" \
     "torchvision==0.20.1" \
