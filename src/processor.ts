@@ -92,6 +92,7 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
   }
 
   const realtimeProvider = getRealtimeGpuProvider();
+  const batchProvider = getBatchGpuProvider();
   const output: ProcessPhotoOutput = {
     photoId,
     s3Path,
@@ -105,7 +106,7 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
 
   logger.info(`Processed ${s3Path}:`, {
     photoId,
-    mode: realtimeProvider,
+    mode: batchProvider !== "local" ? batchProvider : realtimeProvider,
     takenAt: takenAt?.toISOString(),
     hasLocation: !!exif.location,
     description: caption?.substring(0, 50),
@@ -299,21 +300,33 @@ export async function processPhotoBatch(
 
   // --- GPU mode: create client, manage lifecycle, run chunked pipeline ---
   const gpuClient = await createGpuClient(batchProvider);
+  const batchStartTime = Date.now();
 
   try {
     // Start the GPU backend (no-op for Modal, provisions instance for Vast.ai)
+    const provisionStart = Date.now();
     await gpuClient.start();
+    const provisionMs = Date.now() - provisionStart;
+    logger.info(`GPU provisioning took ${(provisionMs / 1000).toFixed(1)}s`);
 
     const allResults: ProcessPhotoOutput[] = [];
     const numChunks = Math.ceil(inputs.length / CHUNK_SIZE);
+    const inferenceStart = Date.now();
 
     for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
       const chunkStart = chunkIdx * CHUNK_SIZE;
       const chunkInputs = inputs.slice(chunkStart, chunkStart + CHUNK_SIZE);
 
+      const chunkStartTime = Date.now();
       logger.info(`Processing chunk ${chunkIdx + 1}/${numChunks} (${chunkInputs.length} photos)`);
 
       const chunkResults = await processChunk(chunkInputs, gpuClient);
+
+      const chunkMs = Date.now() - chunkStartTime;
+      logger.info(
+        `Chunk ${chunkIdx + 1}/${numChunks} done in ${(chunkMs / 1000).toFixed(1)}s ` +
+          `(${(chunkMs / chunkInputs.length / 1000).toFixed(2)}s/photo)`
+      );
 
       for (const result of chunkResults) {
         allResults.push(result);
@@ -322,14 +335,28 @@ export async function processPhotoBatch(
       }
     }
 
+    const inferenceMs = Date.now() - inferenceStart;
+    const totalMs = Date.now() - batchStartTime;
+
+    logger.info(
+      `Batch complete: ${total} photos in ${(totalMs / 1000).toFixed(1)}s total ` +
+        `(provisioning=${(provisionMs / 1000).toFixed(1)}s, ` +
+        `inference=${(inferenceMs / 1000).toFixed(1)}s, ` +
+        `avg=${(inferenceMs / total / 1000).toFixed(2)}s/photo)`
+    );
+
     return allResults;
   } finally {
     // Always tear down the GPU backend (destroys Vast.ai instance, no-op for Modal)
+    const teardownStart = Date.now();
     try {
       await gpuClient.stop();
+      logger.info(`GPU teardown took ${((Date.now() - teardownStart) / 1000).toFixed(1)}s`);
     } catch (err) {
       logger.error("Failed to stop GPU client:", err);
     }
+    const totalMs = Date.now() - batchStartTime;
+    logger.info(`Batch wall time: ${(totalMs / 1000).toFixed(1)}s`);
   }
 }
 

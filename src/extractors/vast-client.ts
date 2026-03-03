@@ -38,7 +38,7 @@ function getConfig() {
     apiKey,
     dockerImage,
     inferenceApiKey,
-    gpuType: process.env.VAST_GPU_TYPE ?? "RTX_4090",
+    gpuType: (process.env.VAST_GPU_TYPE ?? "RTX 4090").replace(/_/g, " "),
     maxPricePerHour: parseFloat(
       process.env.VAST_MAX_PRICE_PER_HOUR ?? "0.50"
     ),
@@ -97,30 +97,49 @@ async function searchOffers(
   gpuType: string,
   maxPrice: number
 ): Promise<VastOffer[]> {
+  const searchBody = {
+    gpu_name: { in: [gpuType] },
+    num_gpus: { gte: 1 },
+    reliability: { gte: 0.95 },
+    dph_total: { lte: maxPrice },
+    verified: { eq: true },
+    rentable: { eq: true },
+    rented: { eq: false },
+    datacenter: { eq: true },
+    type: "ondemand",
+    limit: 10,
+  };
+
+  logger.debug(
+    `Vast.ai search: POST /api/v0/bundles/ with body: ${JSON.stringify(searchBody)}`
+  );
+
   const response = await vastFetch("/api/v0/bundles/", apiKey, {
     method: "POST",
-    body: JSON.stringify({
-      gpu_name: { in: [gpuType] },
-      num_gpus: { gte: 1 },
-      reliability: { gte: 0.95 },
-      dph_total: { lte: maxPrice },
-      verified: { eq: true },
-      rentable: { eq: true },
-      rented: { eq: false },
-      type: "ondemand",
-      limit: 10,
-    }),
+    body: JSON.stringify(searchBody),
   });
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
+    logger.error(
+      `Vast.ai search offers failed (${response.status}): ${text.substring(0, 500)}`
+    );
     throw new Error(
       `Vast.ai search offers failed (${response.status}): ${text.substring(0, 200)}`
     );
   }
 
   const data = (await response.json()) as { offers?: VastOffer[] };
-  return data.offers ?? [];
+  const offers = data.offers ?? [];
+
+  logger.info(
+    `Vast.ai search: got ${offers.length} offers` +
+      (offers.length > 0
+        ? `. Cheapest: $${offers[0]?.dph_total?.toFixed(3)}/hr ${offers[0]?.gpu_name} (id=${offers[0]?.id})`
+        : `. Raw response keys: ${JSON.stringify(Object.keys(data))}`)
+  );
+
+  return offers;
 }
 
 async function createInstance(
@@ -135,9 +154,13 @@ async function createInstance(
     body: JSON.stringify({
       image: dockerImage,
       disk: diskGb,
-      runtype: "args",
-      args_str: "uvicorn server:app --host 0.0.0.0 --port 8000",
-      env: `-e INFERENCE_API_KEY=${inferenceApiKey} -p 8000:8000`,
+      runtype: "ssh_direct",
+      env: {
+        INFERENCE_API_KEY: inferenceApiKey,
+        "-p 8000:8000": "1",
+      },
+      onstart:
+        "cd /app && uvicorn server:app --host 0.0.0.0 --port 8000 &",
       label: "nuvopic-inference",
     }),
   });
@@ -208,7 +231,7 @@ async function destroyInstance(
 // ---------------------------------------------------------------------------
 
 const POLL_INTERVAL_MS = 10_000; // 10s between status checks
-const MAX_PROVISION_TIME_MS = 5 * 60 * 1000; // 5 minutes max for provisioning
+const MAX_PROVISION_TIME_MS = 10 * 60 * 1000; // 10 minutes max for provisioning (image is ~15GB)
 const HEALTH_CHECK_INTERVAL_MS = 5_000; // 5s between health checks
 const MAX_HEALTH_WAIT_MS = 3 * 60 * 1000; // 3 minutes max for models to load
 

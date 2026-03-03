@@ -5,8 +5,8 @@ A self-hosted app to visualize and organize your photos stored on cloud storage,
 ## Features
 
 - **EXIF extraction**: Date taken, GPS coordinates
-- **AI-generated descriptions**: GPU-accelerated via Modal (BLIP model), with local fallback
-- **Face detection & recognition**: InsightFace with 512-dim embeddings via Modal GPU
+- **AI-generated descriptions**: GPU-accelerated via Modal or Vast.ai (BLIP model), with local fallback
+- **Face detection & recognition**: InsightFace with 512-dim embeddings via Modal or Vast.ai GPU
 - **Thumbnails**: 200x200 JPEG for fast UI loading
 - **Tags**: User-defined tags for organizing photos
 - **Web UI**: Responsive photo gallery with search, filters, and face management
@@ -16,31 +16,39 @@ A self-hosted app to visualize and organize your photos stored on cloud storage,
 ## Architecture
 
 ```
-┌──────────────────────────────────┐
-│  NuvoPic Web Server (Node.js)    │
-│  - Hono HTTP server + webapp     │
-│  - S3 download                   │
-│  - EXIF extraction (local)       │    POST /analyze
-│  - Thumbnail generation (local)  │  ────────────────>  ┌─────────────────────────┐
-│  - Filename date parsing (local) │                     │  Modal (Python + T4 GPU) │
-│  - DB insert (local)             │  <────────────────  │  - Image captioning      │
-│  - Calls Modal for GPU work      │    JSON response    │  - Face detection        │
-│                                  │    {caption, faces}  │  - Face embeddings       │
-└──────────────────────────────────┘                     └─────────────────────────┘
-        │
-        ├────────────────────────────────────┐
-        │                                    │
-┌───────▼────────────────┐    ┌──────────────▼─────────────┐
-│ PostgreSQL + pgvector   │    │ S3-compatible Storage      │
-│ (any provider)          │    │ (any provider)             │
-└─────────────────────────┘    └────────────────────────────┘
+                                         ┌─────────────────────────────┐
+                                         │  Modal (Python + T4 GPU)    │
+                              realtime   │  - Serverless, scale-to-zero│
+                           ┌────────────>│  - S3 webhook triggers      │
+                           │  POST       │  - Image captioning (BLIP)  │
+┌──────────────────────────┤  /analyze   │  - Face detection/embedding │
+│  NuvoPic Server (Node.js)│             └─────────────────────────────┘
+│  - Hono HTTP + webapp    │
+│  - S3 download           │             ┌─────────────────────────────┐
+│  - EXIF extraction       │             │  Vast.ai (RTX 4090 GPU)    │
+│  - Thumbnails (sharp)    │   batch     │  - On-demand instances      │
+│  - Filename date parsing │ ┌──────────>│  - Auto-provision & destroy │
+│  - DB insert             │ │  POST     │  - Image captioning (BLIP)  │
+│  - GPU client abstraction├─┘  /analyze │  - Face detection/embedding │
+└──────────┬───────────────┘             └─────────────────────────────┘
+           │
+           ├──────────────────────────────┐
+           │                              │
+   ┌───────▼────────────────┐    ┌────────▼───────────────────┐
+   │ PostgreSQL + pgvector   │    │ S3-compatible Storage      │
+   │ (any provider)          │    │ (any provider)             │
+   └─────────────────────────┘    └────────────────────────────┘
 ```
 
 Node.js handles: S3 download, EXIF, thumbnails, filename date parsing, DB writes. These are fast and don't need GPU.
 
-Modal handles: image captioning (BLIP) + face detection/recognition (InsightFace). These benefit from GPU acceleration.
+**GPU providers** (same inference code, different hosting):
+- **Modal** — serverless, scale-to-zero. Best for real-time processing (S3 webhook triggers). Low latency, pay-per-second.
+- **Vast.ai** — on-demand GPU instances. Best for batch processing (import/reprocess). Cheaper per-hour rates, auto-provisioned and destroyed per batch.
 
-A **local fallback mode** (`PROCESSING_MODE=local`) uses the legacy CPU-based extractors for development without Modal.
+Both providers run the same Python inference server (BLIP captioning + InsightFace face detection) and expose the same `POST /analyze` HTTP API. The Node.js server uses a generic `GpuClient` interface so it is provider-agnostic.
+
+A **local fallback mode** (`PROCESSING_MODE=local`) uses CPU-based extractors for development without any GPU provider.
 
 ## Tech Stack
 
@@ -52,7 +60,7 @@ A **local fallback mode** (`PROCESSING_MODE=local`) uses the legacy CPU-based ex
 - **Frontend**: Preact + Vite
 - **Database**: PostgreSQL with pgvector (any provider)
 - **Storage**: Any S3-compatible storage (AWS S3, Scaleway, Cloudflare R2, MinIO)
-- **GPU inference**: [Modal](https://modal.com) (T4 GPU, scale-to-zero)
+- **GPU inference**: [Modal](https://modal.com) (T4 GPU, scale-to-zero) or [Vast.ai](https://vast.ai) (RTX 4090, on-demand batch)
 
 ## Quick Start (Local Development)
 
@@ -93,11 +101,11 @@ npm run dev
 npm run webapp:dev
 ```
 
-By default, without `MODAL_ENDPOINT_URL` set, processing falls back to local mode (CPU-based). See [Modal Setup](#modal-setup-gpu-processing) for GPU-accelerated processing.
+By default, without `MODAL_ENDPOINT_URL` set, processing falls back to local mode (CPU-based). See [Modal Setup](#modal-setup-real-time-gpu-processing) for real-time GPU processing or [Vast.ai Setup](#vastai-setup-batch-gpu-processing) for cheaper batch processing.
 
-## Modal Setup (GPU Processing)
+## Modal Setup (Real-time GPU Processing)
 
-Modal provides serverless GPU inference with scale-to-zero (no cost when idle).
+Modal provides serverless GPU inference with scale-to-zero — ideal for real-time processing triggered by S3 webhooks.
 
 ### 1. Install Modal CLI
 
@@ -169,6 +177,105 @@ curl -X POST http://localhost:8080/api/v1/photos/reprocess
 | Per photo | ~2.3s |
 | Modal cost | $0.04 |
 
+## Vast.ai Setup (Batch GPU Processing)
+
+Vast.ai provides on-demand GPU instances at lower hourly rates than serverless providers. NuvoPic auto-provisions an instance at the start of a batch (import/reprocess), processes all photos, then destroys the instance. No manual server management required.
+
+**When to use Vast.ai vs Modal:**
+- **Modal** — best for real-time (S3 triggers). Scale-to-zero, pay-per-second, low latency.
+- **Vast.ai** — best for batch (import/reprocess). RTX 4090 at ~$0.35/hr vs T4 at $0.59/hr, and faster inference per photo.
+
+> **Note:** `PROCESSING_MODE=vastai` is NOT supported for real-time processing (each photo would spin up a new instance). Use `BATCH_GPU_PROVIDER=vastai` to use Vast.ai for batch operations while keeping Modal for real-time.
+
+### 1. Get a Vast.ai API key
+
+Sign up at [vast.ai](https://vast.ai) and generate an API key from your account settings.
+
+### 2. Build and push the inference Docker image
+
+The inference image packages BLIP + InsightFace models and a FastAPI server. It is ~15GB due to baked-in model weights.
+
+```bash
+# Build (requires amd64 — use GitHub Actions for ARM Macs)
+docker build -f modal/Dockerfile -t bobmoriss/nuvopic-inference:latest .
+
+# Push to Docker Hub
+docker push bobmoriss/nuvopic-inference:latest
+```
+
+A GitHub Actions workflow (`.github/workflows/inference-docker.yml`) automates this build on push to the `modal/` directory.
+
+### 3. Configure environment
+
+Add these to your `.env`:
+
+```bash
+# Use Vast.ai for batch processing (import/reprocess)
+BATCH_GPU_PROVIDER=vastai
+
+# Vast.ai credentials
+VAST_API_KEY=your-vast-api-key
+VAST_DOCKER_IMAGE=bobmoriss/nuvopic-inference:latest
+VAST_INFERENCE_API_KEY=your-secret-bearer-token
+
+# Instance configuration (optional — sensible defaults)
+VAST_GPU_TYPE=RTX 4090
+VAST_MAX_PRICE_PER_HOUR=0.50
+VAST_DISK_GB=20
+```
+
+### 4. Run batch processing
+
+```bash
+# Import new photos from S3
+curl -X POST http://localhost:8080/api/v1/photos/import
+
+# Reprocess all existing photos (force re-analyze)
+curl -X POST http://localhost:8080/api/v1/photos/reprocess \
+  -H "Content-Type: application/json" \
+  -d '{"force": true}'
+```
+
+The server will automatically:
+1. Search for available RTX 4090 datacenter offers on Vast.ai
+2. Provision the cheapest instance matching your criteria
+3. Wait for the Docker image to pull and the inference server to become healthy (~5-6 min on first run)
+4. Process all photos in parallel chunks
+5. Destroy the instance when done (or on error)
+
+### Vast.ai Cost
+
+- RTX 4090 datacenter instances: ~$0.29-$0.40/hr
+- 90 photos: ~$0.06 (10 min total including provisioning)
+- Instance is destroyed after each batch — no idle cost
+- First run is slower due to 15GB Docker image pull (~5.5 min); subsequent runs on the same machine are faster
+
+### Vast.ai Benchmarks
+
+| Metric | Value |
+|---|---|
+| Photos processed | 90 |
+| GPU | 1x NVIDIA RTX 4090 (Vast.ai datacenter) |
+| Instance cost | $0.349/hr |
+| Provisioning time | ~5.5 min (Docker image pull) |
+| Inference time (90 photos) | ~3-4 min |
+| Per photo (avg) | ~2-2.5s |
+| Total wall time | ~9-10 min |
+| Batch cost | ~$0.06 |
+
+### GPU Provider Comparison
+
+| | Local (CPU) | Modal (T4 GPU) | Vast.ai (RTX 4090) |
+|---|---|---|---|
+| Best for | Development | Real-time (webhooks) | Batch (import/reprocess) |
+| Per photo | ~11s (blocking) | ~2-3s | ~2-2.5s |
+| 90 photos | ~17 min | ~3.5 min | ~3-4 min (+ ~6 min provision) |
+| Hourly cost | Free | $0.59/hr (T4) | ~$0.35/hr (RTX 4090) |
+| Batch cost (90 photos) | $0 | ~$0.04 | ~$0.06 |
+| Idle cost | $0 | $0 (scale-to-zero) | $0 (destroyed after batch) |
+| Setup | None | Modal account + deploy | Vast.ai account + Docker image |
+| Provisioning | Instant | ~1-2s cold start | ~5-6 min first run |
+
 ## Self-Hosting
 
 The application is designed to be deployed on **any cloud provider** that supports Docker containers.
@@ -178,7 +285,8 @@ The application is designed to be deployed on **any cloud provider** that suppor
 - **Docker** (or Node.js 20+)
 - **PostgreSQL** with the [pgvector](https://github.com/pgvector/pgvector) extension
 - **S3-compatible object storage** for photo files
-- **Modal account** (optional, for GPU processing)
+- **Modal account** (optional, for real-time GPU processing)
+- **Vast.ai account** (optional, for batch GPU processing)
 
 ### Generic Docker Deployment
 
@@ -241,18 +349,27 @@ Any S3-compatible object storage works:
 | `S3_REGION` | Yes | S3 region | |
 | `S3_ENDPOINT` | No | Custom S3 endpoint (non-AWS providers) | AWS default |
 | `S3_FORCE_PATH_STYLE` | No | Use path-style S3 URLs (MinIO) | `false` |
-| `PROCESSING_MODE` | No | `"modal"` or `"local"` | Auto-detect |
+| `PROCESSING_MODE` | No | `"modal"`, `"vastai"`, or `"local"` | Auto-detect |
+| `BATCH_GPU_PROVIDER` | No | GPU provider for batch ops: `"modal"`, `"vastai"`, or `"local"` | Same as PROCESSING_MODE |
 | `MODAL_ENDPOINT_URL` | No* | Modal inference endpoint URL | |
 | `MODAL_PROXY_KEY` | No* | Modal proxy auth key | |
 | `MODAL_PROXY_SECRET` | No* | Modal proxy auth secret | |
+| `VAST_API_KEY` | No** | Vast.ai API key | |
+| `VAST_DOCKER_IMAGE` | No** | Docker image for Vast.ai inference | `bobmoriss/nuvopic-inference:latest` |
+| `VAST_INFERENCE_API_KEY` | No** | Bearer token for inference server auth | |
+| `VAST_GPU_TYPE` | No | GPU type to request on Vast.ai | `RTX 4090` |
+| `VAST_MAX_PRICE_PER_HOUR` | No | Max $/hr for Vast.ai offers | `0.50` |
+| `VAST_DISK_GB` | No | Disk space (GB) for Vast.ai instance | `20` |
 | `AUTH_PASSWORD` | No | Password for app access | Disabled |
-| `JWT_SECRET` | No** | Secret for session tokens | Required if AUTH_PASSWORD is set |
+| `JWT_SECRET` | No*** | Secret for session tokens | Required if AUTH_PASSWORD is set |
 | `PORT` | No | HTTP server port | `8080` |
 | `LOG_LEVEL` | No | Logging level | `info` |
 
 \* Required when `PROCESSING_MODE=modal` or when GPU processing is desired.
 
-\** Required when `AUTH_PASSWORD` is set. Generate with: `openssl rand -hex 32`
+\** Required when `BATCH_GPU_PROVIDER=vastai`.
+
+\*** Required when `AUTH_PASSWORD` is set. Generate with: `openssl rand -hex 32`
 
 ## Usage
 

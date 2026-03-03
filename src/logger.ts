@@ -9,17 +9,25 @@ const levels: Record<LogLevel, number> = {
 
 const currentLevel = (process.env.LOG_LEVEL as LogLevel) || "info";
 
+function timestamp(): string {
+  return new Date().toISOString();
+}
+
 export const logger = {
   debug: (...args: unknown[]) => {
-    if (levels[currentLevel] <= levels.debug) console.log(...args);
+    if (levels[currentLevel] <= levels.debug)
+      console.log(`[${timestamp()}] DEBUG`, ...args);
   },
   info: (...args: unknown[]) => {
-    if (levels[currentLevel] <= levels.info) console.log(...args);
+    if (levels[currentLevel] <= levels.info)
+      console.log(`[${timestamp()}] INFO `, ...args);
   },
   warn: (...args: unknown[]) => {
-    if (levels[currentLevel] <= levels.warn) console.warn(...args);
+    if (levels[currentLevel] <= levels.warn)
+      console.warn(`[${timestamp()}] WARN `, ...args);
   },
   error: (...args: unknown[]) => {
-    if (levels[currentLevel] <= levels.error) console.error(...args);
+    if (levels[currentLevel] <= levels.error)
+      console.error(`[${timestamp()}] ERROR`, ...args);
   },
 };
