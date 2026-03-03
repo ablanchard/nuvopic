@@ -7,10 +7,13 @@ import {
   parseDateFromFilename,
 } from "./extractors/index.js";
 import {
-  analyzeWithModal,
-  isModalEnabled,
-  type ModalAnalysisResult,
-} from "./extractors/modal-client.js";
+  type GpuClient,
+  type GpuAnalysisResult,
+  isGpuEnabled,
+  getRealtimeGpuProvider,
+  getBatchGpuProvider,
+  createGpuClient,
+} from "./extractors/gpu-client.js";
 import {
   insertPhoto,
   insertFace,
@@ -24,7 +27,7 @@ import sharp from "sharp";
 export interface ProcessPhotoInput {
   s3Bucket: string;
   s3Key: string;
-  /** Skip Modal GPU work (captioning + face detection). Only run local extraction (EXIF, thumbnail, dimensions). */
+  /** Skip GPU work (captioning + face detection). Only run local extraction (EXIF, thumbnail, dimensions). */
   skipModal?: boolean;
 }
 
@@ -88,6 +91,7 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
     }
   }
 
+  const realtimeProvider = getRealtimeGpuProvider();
   const output: ProcessPhotoOutput = {
     photoId,
     s3Path,
@@ -101,7 +105,7 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
 
   logger.info(`Processed ${s3Path}:`, {
     photoId,
-    mode: isModalEnabled() ? "modal" : "local",
+    mode: realtimeProvider,
     takenAt: takenAt?.toISOString(),
     hasLocation: !!exif.location,
     description: caption?.substring(0, 50),
@@ -114,24 +118,24 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
 }
 
 // ---------------------------------------------------------------------------
-// Parse Modal analysis result into our internal face format
+// Parse GPU analysis result into our internal face format
 // ---------------------------------------------------------------------------
-function parseModalResult(
-  modalResult: PromiseSettledResult<ModalAnalysisResult>,
+function parseGpuResult(
+  gpuResult: PromiseSettledResult<GpuAnalysisResult>,
   errors: string[]
 ): { caption: string | null; faces: ExtractedData["faces"] } {
-  if (modalResult.status === "fulfilled") {
+  if (gpuResult.status === "fulfilled") {
     return {
-      caption: modalResult.value.caption,
-      faces: modalResult.value.faces.map((f) => ({
+      caption: gpuResult.value.caption,
+      faces: gpuResult.value.faces.map((f) => ({
         boundingBox: f.bbox,
         embedding: f.embedding,
         confidence: f.confidence,
       })),
     };
   }
-  errors.push(`Modal analysis: ${modalResult.reason}`);
-  logger.error("Modal analysis error:", modalResult.reason);
+  errors.push(`GPU analysis: ${gpuResult.reason}`);
+  logger.error("GPU analysis error:", gpuResult.reason);
   return { caption: null, faces: [] };
 }
 
@@ -159,16 +163,19 @@ function parseThumbnailResult(
 }
 
 // ---------------------------------------------------------------------------
-// Single-photo processing (original API, used by import + local mode)
+// Single-photo processing (realtime — used by S3 webhook, single import)
 // ---------------------------------------------------------------------------
 export async function processPhoto(
-  input: ProcessPhotoInput
+  input: ProcessPhotoInput,
+  /** Optional pre-created GPU client (used by batch processor to share a client). */
+  gpuClient?: GpuClient
 ): Promise<ProcessPhotoOutput> {
   const { s3Bucket, s3Key } = input;
   const s3Path = getS3Path(s3Bucket, s3Key);
   const errors: string[] = [];
+  const gpuEnabled = isGpuEnabled();
 
-  logger.info(`Processing photo: ${s3Path}${input.skipModal ? " (skipModal)" : ""}`);
+  logger.info(`Processing photo: ${s3Path}${input.skipModal ? " (skipGpu)" : ""}`);
 
   const imageBuffer = await getObjectAsBuffer(s3Bucket, s3Key);
   logger.debug(`Downloaded ${imageBuffer.length} bytes`);
@@ -203,17 +210,21 @@ export async function processPhoto(
     caption = null;   // null → COALESCE preserves existing DB value
     faces = [];
     skipFaces = true; // don't delete+reinsert faces
-  } else if (isModalEnabled()) {
-    const [exifResult, thumbnailResult, modalResult] =
+  } else if (gpuEnabled) {
+    // Get or create a GPU client
+    const client =
+      gpuClient ?? (await createGpuClient(getRealtimeGpuProvider()));
+
+    const [exifResult, thumbnailResult, gpuResult] =
       await Promise.allSettled([
         extractExif(imageBuffer),
         generateThumbnail(imageBuffer),
-        analyzeWithModal(imageBuffer),
+        client.analyze(imageBuffer),
       ]);
 
     exif = parseExifResult(exifResult, errors);
     thumbnail = parseThumbnailResult(thumbnailResult, errors);
-    ({ caption, faces } = parseModalResult(modalResult, errors));
+    ({ caption, faces } = parseGpuResult(gpuResult, errors));
   } else {
     const [exifResult, thumbnailResult, captionResult, facesResult] =
       await Promise.allSettled([
@@ -241,14 +252,13 @@ export async function processPhoto(
 }
 
 // ---------------------------------------------------------------------------
-// Batch processing: fire all Modal calls upfront so the GPU stays saturated
-// while local work (S3 download, EXIF, thumbnail) runs in parallel.
+// Batch processing: manage GPU lifecycle + fire all GPU calls upfront
 // ---------------------------------------------------------------------------
 
 /** Max concurrent S3 downloads + local processing to bound memory usage. */
 const LOCAL_CONCURRENCY = 5;
 
-/** Max photos per chunk — bounds peak memory (image buffers + Modal promises). */
+/** Max photos per chunk — bounds peak memory (image buffers + GPU promises). */
 const CHUNK_SIZE = 20;
 
 export async function processPhotoBatch(
@@ -257,15 +267,16 @@ export async function processPhotoBatch(
 ): Promise<ProcessPhotoOutput[]> {
   if (inputs.length === 0) return [];
 
-  const useModal = isModalEnabled();
+  const batchProvider = getBatchGpuProvider();
+  const useGpu = batchProvider !== "local";
   const total = inputs.length;
   let completed = 0;
 
   logger.info(
-    `Batch processing ${total} photos (mode=${useModal ? "modal" : "local"}, localConcurrency=${LOCAL_CONCURRENCY}, chunkSize=${CHUNK_SIZE})`
+    `Batch processing ${total} photos (provider=${batchProvider}, localConcurrency=${LOCAL_CONCURRENCY}, chunkSize=${CHUNK_SIZE})`
   );
 
-  if (!useModal) {
+  if (!useGpu) {
     // Local mode (or skipModal): just run processPhoto with local concurrency
     return runLocalConcurrency(inputs, LOCAL_CONCURRENCY, async (input) => {
       const result = await processPhoto(input);
@@ -286,47 +297,56 @@ export async function processPhotoBatch(
     });
   }
 
-  // --- Modal mode: chunked pipeline approach ---
-  // Process photos in chunks of CHUNK_SIZE. Each chunk runs the full pipeline:
-  //   Phase 1: Download images from S3 (bounded by LOCAL_CONCURRENCY), fire Modal
-  //            calls eagerly, start local EXIF+thumbnail in parallel.
-  //   Phase 2: Await Modal + local results for each photo, save to DB.
-  // This bounds peak memory to ~CHUNK_SIZE image buffers at a time.
+  // --- GPU mode: create client, manage lifecycle, run chunked pipeline ---
+  const gpuClient = await createGpuClient(batchProvider);
 
-  const allResults: ProcessPhotoOutput[] = [];
-  const numChunks = Math.ceil(inputs.length / CHUNK_SIZE);
+  try {
+    // Start the GPU backend (no-op for Modal, provisions instance for Vast.ai)
+    await gpuClient.start();
 
-  for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
-    const chunkStart = chunkIdx * CHUNK_SIZE;
-    const chunkInputs = inputs.slice(chunkStart, chunkStart + CHUNK_SIZE);
+    const allResults: ProcessPhotoOutput[] = [];
+    const numChunks = Math.ceil(inputs.length / CHUNK_SIZE);
 
-    logger.info(`Processing chunk ${chunkIdx + 1}/${numChunks} (${chunkInputs.length} photos)`);
+    for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
+      const chunkStart = chunkIdx * CHUNK_SIZE;
+      const chunkInputs = inputs.slice(chunkStart, chunkStart + CHUNK_SIZE);
 
-    const chunkResults = await processChunk(chunkInputs);
+      logger.info(`Processing chunk ${chunkIdx + 1}/${numChunks} (${chunkInputs.length} photos)`);
 
-    for (const result of chunkResults) {
-      allResults.push(result);
-      completed++;
-      onProgress?.(completed, total);
+      const chunkResults = await processChunk(chunkInputs, gpuClient);
+
+      for (const result of chunkResults) {
+        allResults.push(result);
+        completed++;
+        onProgress?.(completed, total);
+      }
+    }
+
+    return allResults;
+  } finally {
+    // Always tear down the GPU backend (destroys Vast.ai instance, no-op for Modal)
+    try {
+      await gpuClient.stop();
+    } catch (err) {
+      logger.error("Failed to stop GPU client:", err);
     }
   }
-
-  return allResults;
 }
 
 /**
- * Process a single chunk of photos through the Modal pipeline.
- * Phase 1: Download + dispatch Modal calls eagerly.
+ * Process a single chunk of photos through the GPU pipeline.
+ * Phase 1: Download + dispatch GPU calls eagerly.
  * Phase 2: Await results + save to DB.
  */
 async function processChunk(
-  inputs: ProcessPhotoInput[]
+  inputs: ProcessPhotoInput[],
+  gpuClient: GpuClient
 ): Promise<ProcessPhotoOutput[]> {
   interface PendingPhoto {
     input: ProcessPhotoInput;
     s3Path: string;
     imageBuffer: Buffer;
-    modalPromise: Promise<ModalAnalysisResult>;
+    gpuPromise: Promise<GpuAnalysisResult>;
     localPromise: Promise<{
       exif: PromiseSettledResult<ExtractedData["exif"]>;
       thumbnail: PromiseSettledResult<{ buffer: Buffer; width: number; height: number; format: string }>;
@@ -344,8 +364,8 @@ async function processChunk(
     const imageBuffer = await getObjectAsBuffer(s3Bucket, s3Key);
     logger.debug(`Downloaded ${imageBuffer.length} bytes`);
 
-    // Fire Modal call immediately (don't await — let it queue on Modal's side)
-    const modalPromise = analyzeWithModal(imageBuffer);
+    // Fire GPU call immediately (don't await — let it run while we download more)
+    const gpuPromise = gpuClient.analyze(imageBuffer);
 
     // Start local work (EXIF + thumbnail) in parallel
     const localPromise = Promise.allSettled([
@@ -353,10 +373,10 @@ async function processChunk(
       generateThumbnail(imageBuffer),
     ]).then(([exif, thumbnail]) => ({ exif, thumbnail }));
 
-    pending.push({ input, s3Path, imageBuffer, modalPromise, localPromise });
+    pending.push({ input, s3Path, imageBuffer, gpuPromise: gpuPromise, localPromise });
   });
 
-  logger.info(`Chunk: ${pending.length} Modal calls dispatched, awaiting results...`);
+  logger.info(`Chunk: ${pending.length} GPU calls dispatched, awaiting results...`);
 
   // Phase 2: Collect results and save to DB
   const results: ProcessPhotoOutput[] = [];
@@ -379,14 +399,14 @@ async function processChunk(
         logger.error("Dimensions error:", err);
       }
 
-      const [modalSettled, local] = await Promise.all([
-        Promise.allSettled([item.modalPromise]),
+      const [gpuSettled, local] = await Promise.all([
+        Promise.allSettled([item.gpuPromise]),
         item.localPromise,
       ]);
 
       const exif = parseExifResult(local.exif, errors);
       const thumbnail = parseThumbnailResult(local.thumbnail, errors);
-      const { caption, faces } = parseModalResult(modalSettled[0], errors);
+      const { caption, faces } = parseGpuResult(gpuSettled[0], errors);
 
       const output = await saveToDb({ s3Path, s3Key, width, height, exif, thumbnail, caption, faces, errors });
       results.push(output);

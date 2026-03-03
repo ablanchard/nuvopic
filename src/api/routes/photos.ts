@@ -3,7 +3,7 @@ import { searchPhotos, getPhotoWithDetails } from "../../db/search.js";
 import { getPhotoById, getPhotosToReprocess, getAllPhotosForReprocess, getExistingS3Paths } from "../../db/queries.js";
 import { getFacesByPhotoId } from "../../db/queries.js";
 import { processPhoto, processPhotoBatch } from "../../processor.js";
-import { isModalEnabled } from "../../extractors/modal-client.js";
+import { isGpuEnabled } from "../../extractors/gpu-client.js";
 import { PROCESS_VERSION, PROCESS_CHANGELOG } from "../../version.js";
 import { listAllObjects, getS3Path, getPresignedImageUrl } from "../../s3/client.js";
 import { logger } from "../../logger.js";
@@ -181,7 +181,7 @@ photos.get("/import", async (c) => {
   const limited = newKeys.slice(0, limit);
 
   // Rough time estimate: Modal ~3s/photo (GPU bound, sequential), local ~11s/photo
-  const secsPerPhoto = isModalEnabled() ? 3 : 11;
+  const secsPerPhoto = isGpuEnabled() ? 3 : 11;
   const estimatedSeconds = Math.ceil(limited.length * secsPerPhoto);
 
   return c.json({

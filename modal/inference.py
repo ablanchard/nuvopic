@@ -1,38 +1,18 @@
 """
 NuvoPic GPU inference endpoint on Modal.
 
-Runs BLIP image captioning and InsightFace face detection/recognition on a T4 GPU.
+Thin wrapper around core.PhotoAnalyzer with Modal decorators.
 Deploy: modal deploy modal/inference.py
 Test:   modal serve modal/inference.py  (local dev with hot reload)
 """
 
 import modal
+from core import PhotoAnalyzer as _PhotoAnalyzerCore, download_models
 
 
 # ---------------------------------------------------------------------------
 # Modal image: bake models into the container at build time
 # ---------------------------------------------------------------------------
-def download_models():
-    """Download models during image build so cold starts don't fetch from HuggingFace."""
-    from transformers import BlipProcessor, BlipForConditionalGeneration
-    from insightface.app import FaceAnalysis
-    import numpy as np
-
-    # BLIP captioning model
-    BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-    BlipForConditionalGeneration.from_pretrained(
-        "Salesforce/blip-image-captioning-base"
-    )
-
-    # InsightFace buffalo_l model (downloads to ~/.insightface/models/)
-    fa = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
-    fa.prepare(ctx_id=-1, det_size=(640, 640))
-
-    # Warm run to ensure all files are cached
-    dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-    fa.get(dummy)
-
-
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install(
@@ -72,12 +52,13 @@ image = (
         }
     )
     .run_function(download_models)
+    .add_local_file("modal/core.py", "/root/core.py")
 )
 
 app = modal.App("nuvopic-inference", image=image)
 
 # ---------------------------------------------------------------------------
-# PhotoAnalyzer: GPU-accelerated captioning + face detection
+# PhotoAnalyzer: Modal wrapper around core.PhotoAnalyzer
 # ---------------------------------------------------------------------------
 
 
@@ -91,46 +72,8 @@ class PhotoAnalyzer:
 
     @modal.enter()
     def load_models(self):
-        import torch
-        from transformers import BlipProcessor, BlipForConditionalGeneration
-        from insightface.app import FaceAnalysis
-
-        # BLIP captioning
-        self.blip_processor = BlipProcessor.from_pretrained(
-            "Salesforce/blip-image-captioning-base"
-        )
-        self.blip_model = BlipForConditionalGeneration.from_pretrained(
-            "Salesforce/blip-image-captioning-base"
-        ).to("cuda")
-        self.blip_model.eval()
-
-        # InsightFace (uses ONNX Runtime with GPU)
-        self.face_app = FaceAnalysis(
-            name="buffalo_l",
-            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-        )
-        self.face_app.prepare(ctx_id=0, det_size=(640, 640))
-
-        self.device = torch.device("cuda")
-
-        # Verify GPU is actually being used
-        import onnxruntime as ort
-
-        print(f"ONNX Runtime version: {ort.__version__}")
-        print(f"ONNX Runtime available providers: {ort.get_available_providers()}")
-        print(f"PyTorch CUDA available: {torch.cuda.is_available()}")
-        print(f"PyTorch CUDA version: {torch.version.cuda}")
-        print(f"GPU device: {torch.cuda.get_device_name(0)}")
-
-        # Check which provider InsightFace models are actually using
-        for model in self.face_app.models:
-            if hasattr(model, "session") and model.session:
-                active_providers = model.session.get_providers()
-                print(
-                    f"InsightFace model '{model.taskname}' providers: {active_providers}"
-                )
-
-        print("Models loaded on GPU")
+        self._core = _PhotoAnalyzerCore()
+        self._core.load_models()
 
     @modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
     def analyze(self, data: dict):
@@ -148,73 +91,11 @@ class PhotoAnalyzer:
             ]
         }
         """
-        import base64
-        import io
-        import traceback
-
-        import numpy as np
-        import torch
         from fastapi.responses import JSONResponse
-        from PIL import Image
-
-        # Validate input
-        if not data or "image" not in data:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Missing 'image' field in request body"},
-            )
 
         try:
-            image_bytes = base64.b64decode(data["image"])
-        except Exception:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Invalid base64-encoded image data"},
-            )
-
-        try:
-            pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        except Exception:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Could not decode image from provided bytes"},
-            )
-
-        try:
-            # --- Captioning ---
-            inputs = self.blip_processor(pil_image, return_tensors="pt").to(self.device)
-            with torch.no_grad():
-                output_ids = self.blip_model.generate(**inputs, max_new_tokens=50)
-            caption = self.blip_processor.decode(
-                output_ids[0], skip_special_tokens=True
-            )
-
-            # --- Face detection + embedding ---
-            # InsightFace expects BGR numpy array
-            img_array = np.array(pil_image)[:, :, ::-1]  # RGB -> BGR
-            detected_faces = self.face_app.get(img_array)
-
-            faces = []
-            for face in detected_faces:
-                bbox = face.bbox.astype(int)  # [x1, y1, x2, y2]
-                faces.append(
-                    {
-                        "bbox": {
-                            "x": int(bbox[0]),
-                            "y": int(bbox[1]),
-                            "width": int(bbox[2] - bbox[0]),
-                            "height": int(bbox[3] - bbox[1]),
-                        },
-                        "embedding": face.embedding.tolist(),  # 512-dim float list
-                        "confidence": float(face.det_score),
-                    }
-                )
-
-            return {"caption": caption, "faces": faces}
-
-        except Exception as e:
-            traceback.print_exc()
-            return JSONResponse(
-                status_code=500,
-                content={"error": f"Inference failed: {str(e)}"},
-            )
+            return self._core.analyze(data)
+        except ValueError as e:
+            return JSONResponse(status_code=400, content={"error": str(e)})
+        except RuntimeError as e:
+            return JSONResponse(status_code=500, content={"error": str(e)})
