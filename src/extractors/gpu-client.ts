@@ -28,6 +28,9 @@ export interface GpuClient {
   /** Human-readable provider name (for logging). */
   readonly provider: string;
 
+  /** Whether this client uses interruptible/bid instances that may be evicted. */
+  readonly isInterruptible: boolean;
+
   /**
    * Analyze an image: generate a caption + detect faces.
    * The image is sent as a raw Buffer (the client handles encoding).
@@ -46,6 +49,13 @@ export interface GpuClient {
    * MUST be safe to call multiple times or after a failed start().
    */
   stop(): Promise<void>;
+
+  /**
+   * Re-provision the GPU backend after an eviction or failure.
+   * Destroys the current instance (if any) and provisions a new one.
+   * No-op for always-on providers like Modal.
+   */
+  reprovision(): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

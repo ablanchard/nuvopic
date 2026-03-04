@@ -25,11 +25,11 @@ A self-hosted app to visualize and organize your photos stored on cloud storage,
 │  NuvoPic Server (Node.js)│             └─────────────────────────────┘
 │  - Hono HTTP + webapp    │
 │  - S3 download           │             ┌─────────────────────────────┐
-│  - EXIF extraction       │             │  Vast.ai (RTX 4090 GPU)    │
-│  - Thumbnails (sharp)    │   batch     │  - On-demand instances      │
-│  - Filename date parsing │ ┌──────────>│  - Auto-provision & destroy │
-│  - DB insert             │ │  POST     │  - Image captioning (BLIP)  │
-│  - GPU client abstraction├─┘  /analyze │  - Face detection/embedding │
+│  - EXIF extraction       │             │  Vast.ai (RTX 3090 GPU)    │
+│  - Thumbnails (sharp)    │   batch     │  - Interruptible (spot) or  │
+│  - Filename date parsing │ ┌──────────>│    on-demand instances      │
+│  - DB insert             │ │  POST     │  - Auto-provision & destroy │
+│  - GPU client abstraction├─┘  /analyze │  - Eviction recovery        │
 └──────────┬───────────────┘             └─────────────────────────────┘
            │
            ├──────────────────────────────┐
@@ -44,7 +44,7 @@ Node.js handles: S3 download, EXIF, thumbnails, filename date parsing, DB writes
 
 **GPU providers** (same inference code, different hosting):
 - **Modal** — serverless, scale-to-zero. Best for real-time processing (S3 webhook triggers). Low latency, pay-per-second.
-- **Vast.ai** — on-demand GPU instances. Best for batch processing (import/reprocess). Cheaper per-hour rates, auto-provisioned and destroyed per batch.
+- **Vast.ai** — interruptible (spot) or on-demand GPU instances. Best for batch processing (import/reprocess). Cheaper per-hour rates, auto-provisioned and destroyed per batch. Interruptible instances cut costs by ~68% with automatic eviction recovery.
 
 Both providers run the same Python inference server (BLIP captioning + InsightFace face detection) and expose the same `POST /analyze` HTTP API. The Node.js server uses a generic `GpuClient` interface so it is provider-agnostic.
 
@@ -60,7 +60,7 @@ A **local fallback mode** (`PROCESSING_MODE=local`) uses CPU-based extractors fo
 - **Frontend**: Preact + Vite
 - **Database**: PostgreSQL with pgvector (any provider)
 - **Storage**: Any S3-compatible storage (AWS S3, Scaleway, Cloudflare R2, MinIO)
-- **GPU inference**: [Modal](https://modal.com) (T4 GPU, scale-to-zero) or [Vast.ai](https://vast.ai) (RTX 4090, on-demand batch)
+- **GPU inference**: [Modal](https://modal.com) (T4 GPU, scale-to-zero) or [Vast.ai](https://vast.ai) (RTX 3090, interruptible/on-demand batch)
 
 ## Quick Start (Local Development)
 
@@ -179,11 +179,13 @@ curl -X POST http://localhost:8080/api/v1/photos/reprocess
 
 ## Vast.ai Setup (Batch GPU Processing)
 
-Vast.ai provides on-demand GPU instances at lower hourly rates than serverless providers. NuvoPic auto-provisions an instance at the start of a batch (import/reprocess), processes all photos, then destroys the instance. No manual server management required.
+Vast.ai provides GPU instances at lower hourly rates than serverless providers. NuvoPic auto-provisions an instance at the start of a batch (import/reprocess), processes all photos, then destroys the instance. No manual server management required.
+
+By default, NuvoPic uses **interruptible (spot/bid) instances** which are ~68% cheaper than on-demand ($0.08/hr vs $0.25/hr for RTX 3090). If the instance is evicted mid-batch, the app automatically re-provisions a new instance and retries only the failed photos.
 
 **When to use Vast.ai vs Modal:**
 - **Modal** — best for real-time (S3 triggers). Scale-to-zero, pay-per-second, low latency.
-- **Vast.ai** — best for batch (import/reprocess). RTX 3090 at ~$0.25/hr — best value with 24GB VRAM and similar speed to RTX 4090.
+- **Vast.ai** — best for batch (import/reprocess). RTX 3090 at ~$0.08/hr (interruptible) — best value with 24GB VRAM and automatic eviction recovery.
 
 > **Note:** `PROCESSING_MODE=vastai` is NOT supported for real-time processing (each photo would spin up a new instance). Use `BATCH_GPU_PROVIDER=vastai` to use Vast.ai for batch operations while keeping Modal for real-time.
 
@@ -222,6 +224,11 @@ VAST_INFERENCE_API_KEY=your-secret-bearer-token
 VAST_GPU_TYPE=RTX 3090
 VAST_MAX_PRICE_PER_HOUR=0.30
 VAST_DISK_GB=20
+
+# Interruptible/spot instances (optional — enabled by default)
+VAST_USE_INTERRUPTIBLE=true        # Use bid/spot instances (~68% cheaper)
+VAST_BID_PRICE=                    # Max bid $/hr (default: offer's listed price)
+VAST_MAX_REPROVISIONS=3            # Max re-provisions per batch on eviction
 ```
 
 ### 4. Run batch processing
@@ -237,48 +244,84 @@ curl -X POST http://localhost:8080/api/v1/photos/reprocess \
 ```
 
 The server will automatically:
-1. Search for available RTX 4090 datacenter offers on Vast.ai
+1. Search for available RTX 3090 datacenter offers on Vast.ai (interruptible first, on-demand fallback)
 2. Provision the cheapest instance matching your criteria
 3. Wait for the Docker image to pull and the inference server to become healthy (~5-6 min on first run)
 4. Process all photos in parallel chunks
-5. Destroy the instance when done (or on error)
+5. If evicted mid-batch: re-provision a new instance and retry only the failed photos (up to 3 times)
+6. Destroy the instance when done (or on error)
 
 ### Vast.ai Cost
 
-- RTX 3090 datacenter instances (recommended): ~$0.25/hr
-- RTX 4090 datacenter instances: ~$0.29-$0.40/hr
-- 90 photos on RTX 3090: ~$0.02 (~5 min total)
+- RTX 3090 interruptible (default): **~$0.08/hr** — best value
+- RTX 3090 on-demand: ~$0.25/hr
+- RTX 4090 on-demand: ~$0.29-$0.40/hr
+- 90 photos on RTX 3090 interruptible: **~$0.01** (~7 min total)
+- 90 photos on RTX 3090 on-demand: ~$0.02 (~5 min total)
 - Instance is destroyed after each batch — no idle cost
 - First run is slower due to 15GB Docker image pull (~5.5 min); subsequent runs on the same machine are faster
 
 ### Vast.ai Benchmarks
 
-Tested with 90 photos on three GPU types:
+Tested with 90 photos on three GPU types, including interruptible (spot) instances:
 
-| Metric | RTX 4090 (24GB) | RTX 3090 (24GB) | RTX 3060 (12GB) |
-|---|---|---|---|
-| Instance cost | $0.349/hr | $0.252/hr | $0.087/hr |
-| Provisioning time | ~5.5 min (first run) | ~44s (image cached) | ~1.2 min (image cached) |
-| Inference time (90 photos) | ~3-4 min | ~4.1 min | ~14.7 min |
-| Per photo (avg) | ~2-2.5s | ~2.7s | ~9.8s |
-| Total wall time | ~9-10 min | ~4.8 min | ~16 min |
-| Batch cost | ~$0.06 | ~$0.020 | ~$0.023 |
-| Timeouts | None | None | Frequent (12GB VRAM) |
+| Metric | RTX 4090 (24GB) | RTX 3090 On-demand (24GB) | RTX 3090 Interruptible (24GB) | RTX 3060 (12GB) |
+|---|---|---|---|---|
+| Instance cost | $0.349/hr | $0.252/hr | **$0.081/hr** | $0.087/hr |
+| Provisioning time | ~5.5 min (first run) | ~44s (image cached) | ~55s (image cached) | ~1.2 min (image cached) |
+| Inference time (90 photos) | ~3-4 min | ~4.1 min | ~6.4 min | ~14.7 min |
+| Per photo (avg) | ~2-2.5s | ~2.7s | ~4.3s | ~9.8s |
+| Total wall time | ~9-10 min | ~4.8 min | ~7.4 min | ~16 min |
+| Batch cost | ~$0.06 | ~$0.020 | **~$0.010** | ~$0.023 |
+| Timeouts | None | None | None | Frequent (12GB VRAM) |
 
-**Recommendation:** The **RTX 3090 is the best value** for batch processing. It has the same 24GB VRAM as the RTX 4090 (no concurrency issues), similar per-photo speed (~2.7s vs ~2.5s), but costs ~28% less per hour ($0.25 vs $0.35). This makes it the cheapest option per batch at ~$0.02 for 90 photos. The RTX 3060 is not recommended — while cheap per hour, its 12GB VRAM causes request timeouts under concurrency, inflating total time to ~16 min and negating the hourly savings.
+**Recommendation:** The **RTX 3090 Interruptible is the best value** for batch processing. At $0.081/hr it is ~68% cheaper than on-demand ($0.252/hr), cutting the per-batch cost in half ($0.010 vs $0.020 for 90 photos). Per-photo inference is ~60% slower (4.3s vs 2.7s) likely due to slightly lower-tier datacenter hardware, but this is irrelevant for batch workloads. The on-demand RTX 3090 remains an excellent fallback — it has the fastest total wall time (4.8 min) when the image is cached. The RTX 3060 is not recommended — while cheap per hour, its 12GB VRAM causes request timeouts under concurrency, inflating total time to ~16 min and negating the hourly savings.
+
+### Interruptible (Spot) Instances
+
+Interruptible instances are Vast.ai's equivalent of AWS spot instances — significantly cheaper but can be evicted at any time if outbid or displaced by an on-demand customer. NuvoPic handles this automatically:
+
+**How it works:**
+1. The app searches for interruptible offers (bid pricing) first
+2. Creates an instance with a bid price (default: the offer's listed price)
+3. A background health monitor polls the instance every 10 seconds
+4. If the instance is evicted mid-batch, all in-flight requests are aborted immediately via circuit breaker
+5. The app re-provisions a new instance and retries only the photos that failed
+6. If no interruptible offers are available, it falls back to on-demand automatically
+
+**Eviction recovery:**
+- Failed photos are tracked per-chunk — completed results are preserved
+- Re-provision searches for a new offer, creates a fresh instance, and waits for healthy
+- Up to `VAST_MAX_REPROVISIONS` retries (default 3) before returning partial results
+- Even if all retries are exhausted, successfully processed photos are kept
+
+**Configuration:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `VAST_USE_INTERRUPTIBLE` | `true` | Use bid/spot instances instead of on-demand |
+| `VAST_BID_PRICE` | Offer's listed price | Max bid in $/hr (override for aggressive bidding) |
+| `VAST_MAX_REPROVISIONS` | `3` | Max re-provisions per batch on eviction |
+
+To disable interruptible instances and always use on-demand:
+
+```bash
+VAST_USE_INTERRUPTIBLE=false
+```
 
 ### GPU Provider Comparison
 
-| | Local (CPU) | Modal (T4 GPU) | Vast.ai (RTX 3090) | Vast.ai (RTX 4090) | Vast.ai (RTX 3060) |
+| | Local (CPU) | Modal (T4 GPU) | Vast.ai RTX 3090 Interruptible | Vast.ai RTX 3090 On-demand | Vast.ai RTX 4090 |
 |---|---|---|---|---|---|
-| Best for | Development | Real-time (webhooks) | **Batch (best value)** | Batch (fastest) | Not recommended |
-| Per photo | ~11s (blocking) | ~2-3s | ~2.7s | ~2-2.5s | ~9.8s |
-| 90 photos | ~17 min | ~3.5 min | ~4.1 min | ~3-4 min | ~15 min |
-| Hourly cost | Free | $0.59/hr (T4) | ~$0.25/hr | ~$0.35/hr | ~$0.09/hr |
-| Batch cost (90 photos) | $0 | ~$0.04 | **~$0.02** | ~$0.06 | ~$0.023 |
-| VRAM | N/A | 16GB | 24GB | 24GB | 12GB |
+| Best for | Development | Real-time (webhooks) | **Batch (best value)** | Batch (fallback) | Batch (fastest) |
+| Per photo | ~11s (blocking) | ~2-3s | ~4.3s | ~2.7s | ~2-2.5s |
+| 90 photos | ~17 min | ~3.5 min | ~6.4 min | ~4.1 min | ~3-4 min |
+| Hourly cost | Free | $0.59/hr (T4) | **~$0.08/hr** | ~$0.25/hr | ~$0.35/hr |
+| Batch cost (90 photos) | $0 | ~$0.04 | **~$0.01** | ~$0.02 | ~$0.06 |
+| VRAM | N/A | 16GB | 24GB | 24GB | 24GB |
 | Idle cost | $0 | $0 (scale-to-zero) | $0 (destroyed) | $0 (destroyed) | $0 (destroyed) |
-| Provisioning | Instant | ~1-2s cold start | ~5-6 min first run | ~5-6 min first run | ~5-6 min first run |
+| Provisioning | Instant | ~1-2s cold start | ~1 min (cached) | ~44s (cached) | ~5.5 min (first run) |
+| Eviction risk | N/A | N/A | Yes (auto-recovery) | No | No |
 
 ## Self-Hosting
 
@@ -364,6 +407,9 @@ Any S3-compatible object storage works:
 | `VAST_GPU_TYPE` | No | GPU type to request on Vast.ai | `RTX 3090` |
 | `VAST_MAX_PRICE_PER_HOUR` | No | Max $/hr for Vast.ai offers | `0.30` |
 | `VAST_DISK_GB` | No | Disk space (GB) for Vast.ai instance | `20` |
+| `VAST_USE_INTERRUPTIBLE` | No | Use bid/spot instances (cheaper, may be evicted) | `true` |
+| `VAST_BID_PRICE` | No | Max bid $/hr for interruptible instances | Offer's listed price |
+| `VAST_MAX_REPROVISIONS` | No | Max re-provisions per batch on eviction | `3` |
 | `AUTH_PASSWORD` | No | Password for app access | Disabled |
 | `JWT_SECRET` | No*** | Secret for session tokens | Required if AUTH_PASSWORD is set |
 | `PORT` | No | HTTP server port | `8080` |

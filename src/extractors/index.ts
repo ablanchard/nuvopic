@@ -23,6 +23,9 @@ export {
   createBatchGpuClient,
 } from "./gpu-client.js";
 
+// Vast.ai exports
+export { InstanceDeadError } from "./vast-client.js";
+
 // Legacy Modal exports (backward compatibility)
 export {
   analyzeWithModal,

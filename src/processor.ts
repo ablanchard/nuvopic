@@ -262,6 +262,12 @@ const LOCAL_CONCURRENCY = 5;
 /** Max photos per chunk — bounds peak memory (image buffers + GPU promises). */
 const CHUNK_SIZE = 20;
 
+/** Max times to re-provision a new GPU instance after eviction within one batch. */
+const MAX_REPROVISIONS = parseInt(
+  process.env.VAST_MAX_REPROVISIONS ?? "3",
+  10
+);
+
 export async function processPhotoBatch(
   inputs: ProcessPhotoInput[],
   onProgress?: (completed: number, total: number) => void
@@ -310,29 +316,159 @@ export async function processPhotoBatch(
     logger.info(`GPU provisioning took ${(provisionMs / 1000).toFixed(1)}s`);
 
     const allResults: ProcessPhotoOutput[] = [];
-    const numChunks = Math.ceil(inputs.length / CHUNK_SIZE);
     const inferenceStart = Date.now();
+    let reprovisionCount = 0;
 
-    for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
-      const chunkStart = chunkIdx * CHUNK_SIZE;
-      const chunkInputs = inputs.slice(chunkStart, chunkStart + CHUNK_SIZE);
+    // Build the initial list of inputs to process
+    let remainingInputs = [...inputs];
 
-      const chunkStartTime = Date.now();
-      logger.info(`Processing chunk ${chunkIdx + 1}/${numChunks} (${chunkInputs.length} photos)`);
+    while (remainingInputs.length > 0) {
+      const numChunks = Math.ceil(remainingInputs.length / CHUNK_SIZE);
+      const failedInputs: ProcessPhotoInput[] = [];
 
-      const chunkResults = await processChunk(chunkInputs, gpuClient);
+      for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
+        const chunkStart = chunkIdx * CHUNK_SIZE;
+        const chunkInputs = remainingInputs.slice(
+          chunkStart,
+          chunkStart + CHUNK_SIZE
+        );
 
-      const chunkMs = Date.now() - chunkStartTime;
+        const chunkStartTime = Date.now();
+        logger.info(
+          `Processing chunk ${chunkIdx + 1}/${numChunks} (${chunkInputs.length} photos)`
+        );
+
+        const chunkResults = await processChunk(chunkInputs, gpuClient);
+
+        const chunkMs = Date.now() - chunkStartTime;
+        logger.info(
+          `Chunk ${chunkIdx + 1}/${numChunks} done in ${(chunkMs / 1000).toFixed(1)}s ` +
+            `(${(chunkMs / chunkInputs.length / 1000).toFixed(2)}s/photo)`
+        );
+
+        // Partition results: completed (has caption) vs failed (GPU error, caption=null)
+        for (let i = 0; i < chunkResults.length; i++) {
+          const result = chunkResults[i];
+          const hasGpuFailure =
+            result.description === null &&
+            result.errors.some(
+              (e) =>
+                e.includes("GPU analysis") ||
+                e.includes("Vast.ai") ||
+                e.includes("instance is dead") ||
+                e.includes("InstanceDead")
+            );
+
+          if (hasGpuFailure) {
+            failedInputs.push(chunkInputs[i]);
+            // Don't add to allResults yet — we'll retry these
+          } else {
+            allResults.push(result);
+            completed++;
+            onProgress?.(completed, total);
+          }
+        }
+
+        // If instance died mid-chunk, don't process more chunks — break out to reprovision
+        if (
+          gpuClient.isInterruptible &&
+          failedInputs.length > 0 &&
+          chunkResults.some((r) =>
+            r.errors.some(
+              (e) =>
+                e.includes("instance is dead") ||
+                e.includes("InstanceDead")
+            )
+          )
+        ) {
+          // Remaining chunks haven't been attempted yet — add their inputs to failedInputs
+          for (
+            let remaining = chunkIdx + 1;
+            remaining < numChunks;
+            remaining++
+          ) {
+            const start = remaining * CHUNK_SIZE;
+            failedInputs.push(
+              ...remainingInputs.slice(start, start + CHUNK_SIZE)
+            );
+          }
+          logger.warn(
+            `Vast.ai instance died during chunk ${chunkIdx + 1}/${numChunks}. ` +
+              `${failedInputs.length} photos need retry.`
+          );
+          break;
+        }
+      }
+
+      // If no failures, we're done
+      if (failedInputs.length === 0) {
+        break;
+      }
+
+      // Check if we can reprovision
+      if (!gpuClient.isInterruptible) {
+        // Non-interruptible provider — no point reprovisioning, just log and save partial results
+        logger.warn(
+          `${failedInputs.length} photos failed GPU analysis (non-interruptible provider, no retry).`
+        );
+        // Save failed photos with null caption so they appear in results
+        for (const input of failedInputs) {
+          allResults.push({
+            photoId: "",
+            s3Path: getS3Path(input.s3Bucket, input.s3Key),
+            takenAt: null,
+            location: null,
+            description: null,
+            facesDetected: 0,
+            thumbnailSize: 0,
+            errors: ["GPU analysis failed — non-interruptible, no retry"],
+          });
+          completed++;
+          onProgress?.(completed, total);
+        }
+        break;
+      }
+
+      if (reprovisionCount >= MAX_REPROVISIONS) {
+        logger.error(
+          `Max reprovisions (${MAX_REPROVISIONS}) reached. ` +
+            `${failedInputs.length} photos will not be retried.`
+        );
+        for (const input of failedInputs) {
+          allResults.push({
+            photoId: "",
+            s3Path: getS3Path(input.s3Bucket, input.s3Key),
+            takenAt: null,
+            location: null,
+            description: null,
+            facesDetected: 0,
+            thumbnailSize: 0,
+            errors: [
+              `GPU analysis failed — max reprovisions (${MAX_REPROVISIONS}) exhausted`,
+            ],
+          });
+          completed++;
+          onProgress?.(completed, total);
+        }
+        break;
+      }
+
+      // Reprovision and retry failed photos
+      reprovisionCount++;
       logger.info(
-        `Chunk ${chunkIdx + 1}/${numChunks} done in ${(chunkMs / 1000).toFixed(1)}s ` +
-          `(${(chunkMs / chunkInputs.length / 1000).toFixed(2)}s/photo)`
+        `Reprovisioning GPU instance (attempt ${reprovisionCount}/${MAX_REPROVISIONS}) ` +
+          `to retry ${failedInputs.length} failed photos...`
       );
 
-      for (const result of chunkResults) {
-        allResults.push(result);
-        completed++;
-        onProgress?.(completed, total);
-      }
+      const reprovisionStart = Date.now();
+      await gpuClient.reprovision();
+      const reprovisionMs = Date.now() - reprovisionStart;
+      logger.info(
+        `Reprovisioning took ${(reprovisionMs / 1000).toFixed(1)}s`
+      );
+
+      // Loop again with only the failed inputs
+      remainingInputs = failedInputs;
     }
 
     const inferenceMs = Date.now() - inferenceStart;
@@ -342,7 +478,11 @@ export async function processPhotoBatch(
       `Batch complete: ${total} photos in ${(totalMs / 1000).toFixed(1)}s total ` +
         `(provisioning=${(provisionMs / 1000).toFixed(1)}s, ` +
         `inference=${(inferenceMs / 1000).toFixed(1)}s, ` +
-        `avg=${(inferenceMs / total / 1000).toFixed(2)}s/photo)`
+        `avg=${(inferenceMs / total / 1000).toFixed(2)}s/photo` +
+        (reprovisionCount > 0
+          ? `, reprovisions=${reprovisionCount}`
+          : "") +
+        `)`
     );
 
     return allResults;
@@ -392,7 +532,11 @@ async function processChunk(
     logger.debug(`Downloaded ${imageBuffer.length} bytes`);
 
     // Fire GPU call immediately (don't await — let it run while we download more)
+    // Attach a no-op .catch() to prevent unhandled rejection if the promise rejects
+    // before we reach Promise.allSettled in phase 2. The rejection is still captured
+    // by allSettled when we await it later.
     const gpuPromise = gpuClient.analyze(imageBuffer);
+    gpuPromise.catch(() => {}); // suppress unhandled rejection
 
     // Start local work (EXIF + thumbnail) in parallel
     const localPromise = Promise.allSettled([

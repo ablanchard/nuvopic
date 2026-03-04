@@ -43,12 +43,17 @@ export async function analyzeWithModal(
 
 export class ModalGpuClient implements GpuClient {
   readonly provider = "modal" as const;
+  readonly isInterruptible = false;
 
   async start(): Promise<void> {
     // No-op: Modal manages container lifecycle (scale-to-zero).
   }
 
   async stop(): Promise<void> {
+    // No-op: Modal manages container lifecycle.
+  }
+
+  async reprovision(): Promise<void> {
     // No-op: Modal manages container lifecycle.
   }
 
