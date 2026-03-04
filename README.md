@@ -183,7 +183,7 @@ Vast.ai provides on-demand GPU instances at lower hourly rates than serverless p
 
 **When to use Vast.ai vs Modal:**
 - **Modal** — best for real-time (S3 triggers). Scale-to-zero, pay-per-second, low latency.
-- **Vast.ai** — best for batch (import/reprocess). RTX 4090 at ~$0.35/hr vs T4 at $0.59/hr, and faster inference per photo.
+- **Vast.ai** — best for batch (import/reprocess). RTX 3090 at ~$0.25/hr — best value with 24GB VRAM and similar speed to RTX 4090.
 
 > **Note:** `PROCESSING_MODE=vastai` is NOT supported for real-time processing (each photo would spin up a new instance). Use `BATCH_GPU_PROVIDER=vastai` to use Vast.ai for batch operations while keeping Modal for real-time.
 
@@ -219,8 +219,8 @@ VAST_DOCKER_IMAGE=bobmoriss/nuvopic-inference:latest
 VAST_INFERENCE_API_KEY=your-secret-bearer-token
 
 # Instance configuration (optional — sensible defaults)
-VAST_GPU_TYPE=RTX 4090
-VAST_MAX_PRICE_PER_HOUR=0.50
+VAST_GPU_TYPE=RTX 3090
+VAST_MAX_PRICE_PER_HOUR=0.30
 VAST_DISK_GB=20
 ```
 
@@ -245,37 +245,40 @@ The server will automatically:
 
 ### Vast.ai Cost
 
+- RTX 3090 datacenter instances (recommended): ~$0.25/hr
 - RTX 4090 datacenter instances: ~$0.29-$0.40/hr
-- 90 photos: ~$0.06 (10 min total including provisioning)
+- 90 photos on RTX 3090: ~$0.02 (~5 min total)
 - Instance is destroyed after each batch — no idle cost
 - First run is slower due to 15GB Docker image pull (~5.5 min); subsequent runs on the same machine are faster
 
 ### Vast.ai Benchmarks
 
-Tested with 90 photos on two GPU types:
+Tested with 90 photos on three GPU types:
 
-| Metric | RTX 4090 (24GB) | RTX 3060 (12GB) |
-|---|---|---|
-| Instance cost | $0.349/hr | $0.087/hr |
-| Provisioning time | ~5.5 min (first run) | ~1.2 min (image cached) |
-| Inference time (90 photos) | ~3-4 min | ~14.7 min |
-| Per photo (avg) | ~2-2.5s | ~9.8s |
-| Total wall time | ~9-10 min | ~16 min |
-| Batch cost | ~$0.06 | ~$0.023 |
+| Metric | RTX 4090 (24GB) | RTX 3090 (24GB) | RTX 3060 (12GB) |
+|---|---|---|---|
+| Instance cost | $0.349/hr | $0.252/hr | $0.087/hr |
+| Provisioning time | ~5.5 min (first run) | ~44s (image cached) | ~1.2 min (image cached) |
+| Inference time (90 photos) | ~3-4 min | ~4.1 min | ~14.7 min |
+| Per photo (avg) | ~2-2.5s | ~2.7s | ~9.8s |
+| Total wall time | ~9-10 min | ~4.8 min | ~16 min |
+| Batch cost | ~$0.06 | ~$0.020 | ~$0.023 |
+| Timeouts | None | None | Frequent (12GB VRAM) |
 
-**Recommendation:** The RTX 4090 is the best value for batch processing. While the RTX 3060 is 4x cheaper per hour, it is ~4x slower per photo, so the cost per photo is roughly the same. The RTX 4090 finishes in half the wall time and handles concurrent requests much better (24GB VRAM vs 12GB). The RTX 3060 experiences request timeouts under concurrency due to limited VRAM, requiring retries that inflate total time.
+**Recommendation:** The **RTX 3090 is the best value** for batch processing. It has the same 24GB VRAM as the RTX 4090 (no concurrency issues), similar per-photo speed (~2.7s vs ~2.5s), but costs ~28% less per hour ($0.25 vs $0.35). This makes it the cheapest option per batch at ~$0.02 for 90 photos. The RTX 3060 is not recommended — while cheap per hour, its 12GB VRAM causes request timeouts under concurrency, inflating total time to ~16 min and negating the hourly savings.
 
 ### GPU Provider Comparison
 
-| | Local (CPU) | Modal (T4 GPU) | Vast.ai (RTX 4090) | Vast.ai (RTX 3060) |
-|---|---|---|---|---|
-| Best for | Development | Real-time (webhooks) | Batch (recommended) | Batch (budget) |
-| Per photo | ~11s (blocking) | ~2-3s | ~2-2.5s | ~9.8s |
-| 90 photos | ~17 min | ~3.5 min | ~3-4 min (+ ~6 min provision) | ~15 min (+ ~1 min cached) |
-| Hourly cost | Free | $0.59/hr (T4) | ~$0.35/hr | ~$0.09/hr |
-| Batch cost (90 photos) | $0 | ~$0.04 | ~$0.06 | ~$0.023 |
-| Idle cost | $0 | $0 (scale-to-zero) | $0 (destroyed) | $0 (destroyed) |
-| Provisioning | Instant | ~1-2s cold start | ~5-6 min first run | ~5-6 min first run |
+| | Local (CPU) | Modal (T4 GPU) | Vast.ai (RTX 3090) | Vast.ai (RTX 4090) | Vast.ai (RTX 3060) |
+|---|---|---|---|---|---|
+| Best for | Development | Real-time (webhooks) | **Batch (best value)** | Batch (fastest) | Not recommended |
+| Per photo | ~11s (blocking) | ~2-3s | ~2.7s | ~2-2.5s | ~9.8s |
+| 90 photos | ~17 min | ~3.5 min | ~4.1 min | ~3-4 min | ~15 min |
+| Hourly cost | Free | $0.59/hr (T4) | ~$0.25/hr | ~$0.35/hr | ~$0.09/hr |
+| Batch cost (90 photos) | $0 | ~$0.04 | **~$0.02** | ~$0.06 | ~$0.023 |
+| VRAM | N/A | 16GB | 24GB | 24GB | 12GB |
+| Idle cost | $0 | $0 (scale-to-zero) | $0 (destroyed) | $0 (destroyed) | $0 (destroyed) |
+| Provisioning | Instant | ~1-2s cold start | ~5-6 min first run | ~5-6 min first run | ~5-6 min first run |
 
 ## Self-Hosting
 
@@ -358,8 +361,8 @@ Any S3-compatible object storage works:
 | `VAST_API_KEY` | No** | Vast.ai API key | |
 | `VAST_DOCKER_IMAGE` | No** | Docker image for Vast.ai inference | `bobmoriss/nuvopic-inference:latest` |
 | `VAST_INFERENCE_API_KEY` | No** | Bearer token for inference server auth | |
-| `VAST_GPU_TYPE` | No | GPU type to request on Vast.ai | `RTX 4090` |
-| `VAST_MAX_PRICE_PER_HOUR` | No | Max $/hr for Vast.ai offers | `0.50` |
+| `VAST_GPU_TYPE` | No | GPU type to request on Vast.ai | `RTX 3090` |
+| `VAST_MAX_PRICE_PER_HOUR` | No | Max $/hr for Vast.ai offers | `0.30` |
 | `VAST_DISK_GB` | No | Disk space (GB) for Vast.ai instance | `20` |
 | `AUTH_PASSWORD` | No | Password for app access | Disabled |
 | `JWT_SECRET` | No*** | Secret for session tokens | Required if AUTH_PASSWORD is set |

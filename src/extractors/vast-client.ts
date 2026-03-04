@@ -38,9 +38,9 @@ function getConfig() {
     apiKey,
     dockerImage,
     inferenceApiKey,
-    gpuType: (process.env.VAST_GPU_TYPE ?? "RTX 4090").replace(/_/g, " "),
+    gpuType: (process.env.VAST_GPU_TYPE ?? "RTX 3090").replace(/_/g, " "),
     maxPricePerHour: parseFloat(
-      process.env.VAST_MAX_PRICE_PER_HOUR ?? "0.50"
+      process.env.VAST_MAX_PRICE_PER_HOUR ?? "0.30"
     ),
     diskGb: parseInt(process.env.VAST_DISK_GB ?? "20", 10),
   };
