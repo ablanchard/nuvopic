@@ -4,6 +4,7 @@ import { logger } from "../logger.js";
 import photos from "./routes/photos.js";
 import persons from "./routes/persons.js";
 import tags from "./routes/tags.js";
+import clusters from "./routes/clusters.js";
 
 const api = new Hono();
 
@@ -20,5 +21,6 @@ api.onError((err, c) => {
 api.route("/photos", photos);
 api.route("/persons", persons);
 api.route("/tags", tags);
+api.route("/clusters", clusters);
 
 export default api;

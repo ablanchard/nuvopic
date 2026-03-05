@@ -7,6 +7,7 @@ import { isGpuEnabled } from "../../extractors/gpu-client.js";
 import { PROCESS_VERSION, PROCESS_CHANGELOG } from "../../version.js";
 import { listAllObjects, getS3Path, getPresignedImageUrl } from "../../s3/client.js";
 import { logger } from "../../logger.js";
+import { clusterUnassignedFaces } from "../../db/clusters.js";
 
 const photos = new Hono();
 
@@ -136,6 +137,14 @@ photos.post("/reprocess", async (c) => {
   const failed = results.filter((r) => !r.success).length;
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
+  // Auto-cluster newly detected faces after reprocess
+  try {
+    const clusterResult = await clusterUnassignedFaces({ threshold: 0.6, strategy: "first" });
+    logger.info(`Auto-clustered ${clusterResult.clustered} faces into ${clusterResult.newClusters} new clusters`);
+  } catch (err) {
+    logger.error("Auto-clustering failed:", err);
+  }
+
   return c.json({
     currentVersion: PROCESS_VERSION,
     reprocessed: succeeded,
@@ -254,6 +263,14 @@ photos.post("/import", async (c) => {
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
   logger.info(`Import complete: ${succeeded} succeeded, ${failed} failed in ${elapsed}s`);
+
+  // Auto-cluster newly detected faces
+  try {
+    const clusterResult = await clusterUnassignedFaces({ threshold: 0.6, strategy: "first" });
+    logger.info(`Auto-clustered ${clusterResult.clustered} faces into ${clusterResult.newClusters} new clusters`);
+  } catch (err) {
+    logger.error("Auto-clustering failed:", err);
+  }
 
   return c.json({
     bucket,

@@ -60,6 +60,41 @@ export interface PhotoFilters {
   limit?: number;
 }
 
+export type ClusterStrategy = 'first' | 'average';
+
+export interface Cluster {
+  id: string;
+  faceCount: number;
+  personId: string | null;
+  personName: string | null;
+  representativeFace: {
+    faceId: string;
+    photoId: string;
+    boundingBox: { x: number; y: number; width: number; height: number };
+    thumbnailUrl: string;
+  } | null;
+}
+
+export interface ClusterFace {
+  id: string;
+  photoId: string;
+  boundingBox: { x: number; y: number; width: number; height: number };
+  thumbnailUrl: string;
+  photoWidth: number | null;
+  photoHeight: number | null;
+}
+
+export interface ClusteringResult {
+  clustered: number;
+  newClusters: number;
+}
+
+export interface ReclusterResult {
+  totalClusters: number;
+  namedPreserved: number;
+  newClusters: number;
+}
+
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
   if (response.status === 401) {
@@ -141,6 +176,72 @@ export const api = {
   tags: {
     list: (): Promise<{ tags: Tag[] }> => {
       return fetchJson<{ tags: Tag[] }>(`${API_BASE}/tags`);
+    },
+  },
+
+  clusters: {
+    list: (): Promise<{ clusters: Cluster[] }> => {
+      return fetchJson<{ clusters: Cluster[] }>(`${API_BASE}/clusters`);
+    },
+
+    getUnassigned: (): Promise<{ faces: ClusterFace[] }> => {
+      return fetchJson<{ faces: ClusterFace[] }>(`${API_BASE}/clusters/unassigned`);
+    },
+
+    getFaces: (clusterId: string): Promise<{ faces: ClusterFace[] }> => {
+      return fetchJson<{ faces: ClusterFace[] }>(`${API_BASE}/clusters/${clusterId}/faces`);
+    },
+
+    create: (faceId: string): Promise<{ id: string; faceCount: number }> => {
+      return fetchJson<{ id: string; faceCount: number }>(`${API_BASE}/clusters`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ faceId }),
+      });
+    },
+
+    run: (opts?: { threshold?: number; strategy?: ClusterStrategy }): Promise<ClusteringResult> => {
+      return fetchJson<ClusteringResult>(`${API_BASE}/clusters/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts ?? {}),
+      });
+    },
+
+    recluster: (opts: { threshold: number; strategy: ClusterStrategy }): Promise<ReclusterResult> => {
+      return fetchJson<ReclusterResult>(`${API_BASE}/clusters/recluster`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts),
+      });
+    },
+
+    name: (clusterId: string, name: string): Promise<{ personId: string }> => {
+      return fetchJson<{ personId: string }>(`${API_BASE}/clusters/${clusterId}/name`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+    },
+
+    rename: (clusterId: string, name: string): Promise<void> => {
+      return fetchJson<void>(`${API_BASE}/clusters/${clusterId}/name`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+    },
+
+    assignFace: (clusterId: string, faceId: string): Promise<void> => {
+      return fetchJson<void>(`${API_BASE}/clusters/${clusterId}/faces/${faceId}`, {
+        method: 'POST',
+      });
+    },
+
+    removeFace: (clusterId: string, faceId: string): Promise<void> => {
+      return fetchJson<void>(`${API_BASE}/clusters/${clusterId}/faces/${faceId}`, {
+        method: 'DELETE',
+      });
     },
   },
 };
