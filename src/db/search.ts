@@ -1,4 +1,5 @@
 import { query } from "./client.js";
+import { getFaceQualitySettings, faceQualityFilter } from "./settings.js";
 
 export interface PhotoFilters {
   search?: string;
@@ -28,6 +29,9 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
   photos: PhotoWithStats[];
   total: number;
 }> {
+  const fqSettings = await getFaceQualitySettings();
+  const fqFilter = faceQualityFilter("f", fqSettings);
+
   const conditions: string[] = [];
   const params: unknown[] = [];
   let paramIndex = 1;
@@ -92,7 +96,7 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
       p.location_name,
       p.width,
       p.height,
-      (SELECT COUNT(*)::int FROM faces f WHERE f.photo_id = p.id) as face_count,
+      (SELECT COUNT(*)::int FROM faces f WHERE f.photo_id = p.id AND ${fqFilter}) as face_count,
       COALESCE(
         (SELECT array_agg(t.name ORDER BY t.name)
          FROM tags t
@@ -114,6 +118,9 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
 }
 
 export async function getPhotoWithDetails(id: string): Promise<PhotoWithStats | null> {
+  const fqSettings = await getFaceQualitySettings();
+  const fqFilter = faceQualityFilter("f", fqSettings);
+
   const result = await query<PhotoWithStats>(
     `SELECT
       p.id,
@@ -125,7 +132,7 @@ export async function getPhotoWithDetails(id: string): Promise<PhotoWithStats | 
       p.location_name,
       p.width,
       p.height,
-      (SELECT COUNT(*)::int FROM faces f WHERE f.photo_id = p.id) as face_count,
+      (SELECT COUNT(*)::int FROM faces f WHERE f.photo_id = p.id AND ${fqFilter}) as face_count,
       COALESCE(
         (SELECT array_agg(t.name ORDER BY t.name)
          FROM tags t

@@ -390,16 +390,6 @@ body {
   .cluster-grid {
     grid-template-columns: 1fr !important;
   }
-
-  .faces-page {
-    flex-direction: column;
-  }
-
-  .faces-sidebar {
-    width: 100%;
-    position: static;
-    max-height: 200px;
-  }
 }
 
 /* =========================================================================
@@ -440,44 +430,17 @@ body {
    Faces Page
    ========================================================================= */
 
-.faces-page {
-  display: flex;
-  gap: 1rem;
-  padding: 1rem;
-  max-width: 1400px;
-  margin: 0 auto;
-}
-
-/* Left Sidebar: Unassigned Faces */
-.faces-sidebar {
-  width: 220px;
-  flex-shrink: 0;
-  background: #fff;
-  border-radius: 8px;
-  padding: 1rem;
-  height: fit-content;
-  position: sticky;
-  top: 80px;
-  max-height: calc(100vh - 96px);
-  overflow-y: auto;
-}
-
-.faces-sidebar h3 {
+/* Generic sidebar helpers (used by Faces sidebar) */
+.sidebar-heading {
   margin: 0 0 0.75rem;
   font-size: 0.9rem;
   color: #333;
 }
 
-.faces-sidebar-empty {
+.sidebar-empty {
   font-size: 0.8rem;
   color: #999;
   padding: 0.5rem 0;
-}
-
-/* Main Content Area */
-.faces-main {
-  flex: 1;
-  min-width: 0;
 }
 
 /* Clustering Controls */
@@ -852,4 +815,128 @@ body {
 .assign-popover-count {
   font-size: 0.75rem;
   color: #999;
+}
+
+/* =========================================================================
+   Settings Page
+   ========================================================================= */
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.settings-nav-link {
+  display: block;
+  padding: 0.4rem 0.5rem;
+  text-decoration: none;
+  color: #555;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
+.settings-nav-link:hover {
+  background: #f0f0f0;
+  color: #222;
+}
+
+.settings-container {
+  max-width: 720px;
+}
+
+.settings-section {
+  margin-bottom: 2rem;
+}
+
+.settings-section-title {
+  margin: 0 0 1rem;
+  font-size: 1.1rem;
+  color: #222;
+}
+
+.settings-card {
+  background: #fff;
+  border-radius: 8px;
+  padding: 1.25rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.setting-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 2rem;
+}
+
+.setting-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.setting-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #222;
+  display: block;
+  margin-bottom: 0.2rem;
+}
+
+.setting-description {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #888;
+  line-height: 1.4;
+}
+
+.setting-control {
+  flex-shrink: 0;
+  width: 240px;
+}
+
+.setting-control input[type="range"] {
+  width: 180px;
+  cursor: pointer;
+}
+
+.setting-number-input {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.setting-number-input:focus {
+  border-color: #0066cc;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.15);
+}
+
+.settings-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.settings-status {
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.875rem;
+}
+
+.settings-status--success {
+  background: #f0fff4;
+  border: 1px solid #c6f0c6;
+  color: #256;
+}
+
+.settings-status--error {
+  background: #fff5f5;
+  border: 1px solid #f0c6c6;
+  color: #900;
 }

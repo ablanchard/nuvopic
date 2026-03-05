@@ -52,6 +52,7 @@ export interface InsertFaceParams {
     height: number;
   };
   embedding: number[];
+  confidence?: number | null;
 }
 
 export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
@@ -89,13 +90,14 @@ export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
 
 export async function insertFace(params: InsertFaceParams): Promise<string> {
   const result = await query<{ id: string }>(
-    `INSERT INTO faces (photo_id, bounding_box, embedding)
-     VALUES ($1, $2, $3)
+    `INSERT INTO faces (photo_id, bounding_box, embedding, confidence)
+     VALUES ($1, $2, $3, $4)
      RETURNING id`,
     [
       params.photoId,
       JSON.stringify(params.boundingBox),
       `[${params.embedding.join(",")}]`,
+      params.confidence ?? null,
     ]
   );
 

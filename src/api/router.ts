@@ -5,6 +5,7 @@ import photos from "./routes/photos.js";
 import persons from "./routes/persons.js";
 import tags from "./routes/tags.js";
 import clusters from "./routes/clusters.js";
+import settings from "./routes/settings.js";
 
 const api = new Hono();
 
@@ -22,5 +23,6 @@ api.route("/photos", photos);
 api.route("/persons", persons);
 api.route("/tags", tags);
 api.route("/clusters", clusters);
+api.route("/settings", settings);
 
 export default api;

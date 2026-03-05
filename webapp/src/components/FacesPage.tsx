@@ -130,14 +130,14 @@ export function FacesPage(_props: RoutableProps) {
   };
 
   return (
-    <div class="faces-page">
+    <div class="app-content">
       {/* Left Sidebar: Unassigned Faces */}
-      <aside class="faces-sidebar">
-        <h3>Unassigned ({unassigned.length})</h3>
+      <aside class="sidebar" style={{ maxHeight: 'calc(100vh - 96px)', overflowY: 'auto' }}>
+        <h3 class="sidebar-heading">Unassigned ({unassigned.length})</h3>
         {loading ? (
-          <div class="faces-sidebar-empty">Loading...</div>
+          <div class="sidebar-empty">Loading...</div>
         ) : unassigned.length === 0 ? (
-          <div class="faces-sidebar-empty">All faces assigned</div>
+          <div class="sidebar-empty">All faces assigned</div>
         ) : (
           <div class="unassigned-grid">
             {unassigned.map((face) => (
@@ -162,7 +162,7 @@ export function FacesPage(_props: RoutableProps) {
       </aside>
 
       {/* Main Content: Controls + Cluster Grid */}
-      <div class="faces-main">
+      <main class="main-content">
         {/* Clustering Controls */}
         <div class="clustering-controls">
           <h2>Face Clustering</h2>
@@ -245,7 +245,7 @@ export function FacesPage(_props: RoutableProps) {
             )}
           </>
         )}
-      </div>
+      </main>
 
       {/* Assign Popover */}
       {assignPopover && (

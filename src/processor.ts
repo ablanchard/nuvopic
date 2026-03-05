@@ -87,6 +87,7 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
         photoId,
         boundingBox: face.boundingBox,
         embedding: face.embedding,
+        confidence: face.confidence,
       });
     }
   }

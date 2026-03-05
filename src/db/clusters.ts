@@ -1,5 +1,6 @@
 import { query } from "./client.js";
 import { logger } from "../logger.js";
+import { getFaceQualitySettings, faceQualityFilter } from "./settings.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -69,8 +70,10 @@ export async function clusterUnassignedFaces(
 ): Promise<ClusteringResult> {
   const threshold = opts.threshold ?? 0.6;
   const strategy = opts.strategy ?? "first";
+  const fqSettings = await getFaceQualitySettings();
+  const fqFilter = faceQualityFilter("f", fqSettings);
 
-  // Fetch all unclustered faces with their embeddings
+  // Fetch all unclustered faces with their embeddings (quality-filtered)
   const unclustered = await query<{
     id: string;
     embedding: string;
@@ -79,6 +82,7 @@ export async function clusterUnassignedFaces(
      FROM faces f
      WHERE f.cluster_id IS NULL
        AND f.embedding IS NOT NULL
+       AND ${fqFilter}
        AND f.id NOT IN (SELECT face_id FROM face_manual_assignments)
      ORDER BY f.created_at ASC`
   );
@@ -227,14 +231,19 @@ export async function reclusterFaces(
 // ---------------------------------------------------------------------------
 
 /** Get all clusters with face count and representative face info.
- *  Excludes unnamed clusters with fewer than 2 faces (not meaningful). */
+ *  Excludes unnamed clusters with fewer than 2 quality faces (not meaningful).
+ *  Face counts only include faces that pass quality thresholds. */
 export async function getAllClusters(): Promise<ClusterRecord[]> {
+  const fqSettings = await getFaceQualitySettings();
+  const fqFilter = faceQualityFilter("f", fqSettings);
+  const fqFilter2 = faceQualityFilter("f2", fqSettings);
+
   const result = await query<ClusterRecord>(
     `SELECT
        c.id,
        c.person_id,
        p.name AS person_name,
-       (SELECT COUNT(*)::int FROM faces f WHERE f.cluster_id = c.id) AS face_count,
+       (SELECT COUNT(*)::int FROM faces f WHERE f.cluster_id = c.id AND ${fqFilter}) AS face_count,
        rep.id AS representative_face_id,
        rep.photo_id AS representative_photo_id,
        rep.bounding_box AS representative_bounding_box
@@ -243,12 +252,12 @@ export async function getAllClusters(): Promise<ClusterRecord[]> {
      LEFT JOIN LATERAL (
        SELECT f.id, f.photo_id, f.bounding_box
        FROM faces f
-       WHERE f.cluster_id = c.id
+       WHERE f.cluster_id = c.id AND ${fqFilter}
        ORDER BY f.created_at ASC
        LIMIT 1
      ) rep ON true
      WHERE c.person_id IS NOT NULL
-        OR (SELECT COUNT(*) FROM faces f2 WHERE f2.cluster_id = c.id) >= 2
+        OR (SELECT COUNT(*) FROM faces f2 WHERE f2.cluster_id = c.id AND ${fqFilter2}) >= 2
      ORDER BY
        CASE WHEN c.person_id IS NULL THEN 0 ELSE 1 END,
        face_count DESC`
@@ -257,10 +266,13 @@ export async function getAllClusters(): Promise<ClusterRecord[]> {
   return result.rows;
 }
 
-/** Get all faces in a cluster with photo dimensions for bounding box scaling. */
+/** Get all quality faces in a cluster with photo dimensions for bounding box scaling. */
 export async function getClusterFaces(
   clusterId: string
 ): Promise<ClusterFaceRecord[]> {
+  const fqSettings = await getFaceQualitySettings();
+  const fqFilter = faceQualityFilter("f", fqSettings);
+
   const result = await query<ClusterFaceRecord>(
     `SELECT
        f.id,
@@ -270,7 +282,7 @@ export async function getClusterFaces(
        ph.height AS photo_height
      FROM faces f
      JOIN photos ph ON ph.id = f.photo_id
-     WHERE f.cluster_id = $1
+     WHERE f.cluster_id = $1 AND ${fqFilter}
      ORDER BY f.created_at ASC`,
     [clusterId]
   );
@@ -278,8 +290,12 @@ export async function getClusterFaces(
   return result.rows;
 }
 
-/** Get faces that are effectively unassigned: no cluster, or in a single-face unnamed cluster. */
+/** Get faces that are effectively unassigned: no cluster, or in a single-face unnamed cluster.
+ *  Only returns faces that pass quality thresholds. */
 export async function getUnclusteredFaces(): Promise<ClusterFaceRecord[]> {
+  const fqSettings = await getFaceQualitySettings();
+  const fqFilter = faceQualityFilter("f", fqSettings);
+
   const result = await query<ClusterFaceRecord>(
     `SELECT
        f.id,
@@ -290,6 +306,7 @@ export async function getUnclusteredFaces(): Promise<ClusterFaceRecord[]> {
      FROM faces f
      JOIN photos ph ON ph.id = f.photo_id
      WHERE f.embedding IS NOT NULL
+       AND ${fqFilter}
        AND (
          f.cluster_id IS NULL
          OR (

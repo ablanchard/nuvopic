@@ -2,6 +2,7 @@ import Router from 'preact-router';
 import { SearchBar } from './components/SearchBar';
 import { HomePage } from './components/HomePage';
 import { FacesPage } from './components/FacesPage';
+import { SettingsPage } from './components/SettingsPage';
 import { photoSize } from './state/filters';
 import { getCurrentUrl } from 'preact-router';
 import { useState } from 'preact/hooks';
@@ -27,6 +28,12 @@ export function App() {
           >
             Faces
           </a>
+          <a
+            href="/settings"
+            class={`nav-link ${currentPath === '/settings' ? 'nav-link--active' : ''}`}
+          >
+            Settings
+          </a>
         </nav>
         {currentPath === '/' && (
           <>
@@ -51,6 +58,7 @@ export function App() {
       <Router onChange={(e) => setCurrentPath(e.url)}>
         <HomePage path="/" />
         <FacesPage path="/faces" />
+        <SettingsPage path="/settings" />
       </Router>
     </div>
   );

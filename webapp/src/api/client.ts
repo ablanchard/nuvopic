@@ -244,4 +244,18 @@ export const api = {
       });
     },
   },
+
+  settings: {
+    get: (): Promise<Record<string, string>> => {
+      return fetchJson<Record<string, string>>(`${API_BASE}/settings`);
+    },
+
+    update: (settings: Record<string, string>): Promise<Record<string, string>> => {
+      return fetchJson<Record<string, string>>(`${API_BASE}/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      });
+    },
+  },
 };

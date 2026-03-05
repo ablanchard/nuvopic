@@ -155,6 +155,30 @@ BEGIN
     END IF;
 END $$;
 
+-- Migration: add confidence column to faces table (detection score from InsightFace)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'faces' AND column_name = 'confidence'
+    ) THEN
+        ALTER TABLE faces ADD COLUMN confidence REAL;
+    END IF;
+END $$;
+
+-- Application settings (key-value store)
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Seed default settings (insert only if not already present)
+INSERT INTO settings (key, value) VALUES
+    ('face_min_confidence', '0.7'),
+    ('face_min_size', '2500')
+ON CONFLICT (key) DO NOTHING;
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_photos_taken_at ON photos(taken_at);
 CREATE INDEX IF NOT EXISTS idx_photos_s3_path ON photos(s3_path);
