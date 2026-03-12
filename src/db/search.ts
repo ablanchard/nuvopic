@@ -37,7 +37,15 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
   let paramIndex = 1;
 
   if (filters.search) {
-    conditions.push(`p.description ILIKE $${paramIndex}`);
+    conditions.push(`(
+      p.description ILIKE $${paramIndex}
+      OR EXISTS (
+        SELECT 1 FROM faces f2
+        JOIN face_clusters fc2 ON f2.cluster_id = fc2.id
+        JOIN persons per ON fc2.person_id = per.id
+        WHERE f2.photo_id = p.id AND per.name ILIKE $${paramIndex}
+      )
+    )`);
     params.push(`%${filters.search}%`);
     paramIndex++;
   }
@@ -57,7 +65,8 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
   if (filters.personId) {
     conditions.push(`EXISTS (
       SELECT 1 FROM faces f
-      WHERE f.photo_id = p.id AND f.person_id = $${paramIndex}
+      JOIN face_clusters fc ON f.cluster_id = fc.id
+      WHERE f.photo_id = p.id AND fc.person_id = $${paramIndex}
     )`);
     params.push(filters.personId);
     paramIndex++;

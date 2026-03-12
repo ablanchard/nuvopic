@@ -20,7 +20,7 @@ export function SearchBar() {
     <div class="search-bar">
       <input
         type="text"
-        placeholder="Search photos..."
+        placeholder="Search by description or person..."
         value={value}
         onInput={(e) => setValue((e.target as HTMLInputElement).value)}
       />

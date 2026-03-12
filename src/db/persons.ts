@@ -1,4 +1,5 @@
 import { query } from "./client.js";
+import { getFaceQualitySettings, faceQualityFilter } from "./settings.js";
 
 export interface PersonRecord {
   id: string;
@@ -23,12 +24,19 @@ export interface FaceWithPhoto {
 }
 
 export async function getAllPersons(): Promise<PersonWithStats[]> {
+  const fqSettings = await getFaceQualitySettings();
+  const fqFilter = faceQualityFilter("f", fqSettings);
+
   const result = await query<PersonWithStats>(
     `SELECT
       p.id,
       p.name,
       p.created_at,
-      (SELECT COUNT(*)::int FROM faces f WHERE f.person_id = p.id) as face_count
+      (SELECT COUNT(DISTINCT ph.id)::int
+       FROM faces f
+       JOIN face_clusters fc ON f.cluster_id = fc.id
+       JOIN photos ph ON f.photo_id = ph.id
+       WHERE fc.person_id = p.id AND ${fqFilter}) as face_count
     FROM persons p
     ORDER BY p.name`
   );
@@ -36,12 +44,19 @@ export async function getAllPersons(): Promise<PersonWithStats[]> {
 }
 
 export async function getPersonById(id: string): Promise<PersonWithStats | null> {
+  const fqSettings = await getFaceQualitySettings();
+  const fqFilter = faceQualityFilter("f", fqSettings);
+
   const result = await query<PersonWithStats>(
     `SELECT
       p.id,
       p.name,
       p.created_at,
-      (SELECT COUNT(*)::int FROM faces f WHERE f.person_id = p.id) as face_count
+      (SELECT COUNT(DISTINCT ph.id)::int
+       FROM faces f
+       JOIN face_clusters fc ON f.cluster_id = fc.id
+       JOIN photos ph ON f.photo_id = ph.id
+       WHERE fc.person_id = p.id AND ${fqFilter}) as face_count
     FROM persons p
     WHERE p.id = $1`,
     [id]
@@ -80,7 +95,8 @@ export async function getPhotosByPerson(personId: string): Promise<{ id: string;
     `SELECT DISTINCT p.id, p.s3_path, p.taken_at
     FROM photos p
     JOIN faces f ON f.photo_id = p.id
-    WHERE f.person_id = $1
+    JOIN face_clusters fc ON f.cluster_id = fc.id
+    WHERE fc.person_id = $1
     ORDER BY p.taken_at DESC NULLS LAST`,
     [personId]
   );
