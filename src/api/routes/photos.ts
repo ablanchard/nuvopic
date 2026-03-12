@@ -8,6 +8,7 @@ import { PROCESS_VERSION, PROCESS_CHANGELOG } from "../../version.js";
 import { listAllObjects, getS3Path, getPresignedImageUrl } from "../../s3/client.js";
 import { logger } from "../../logger.js";
 import { clusterUnassignedFaces } from "../../db/clusters.js";
+import { getS3Bucket } from "../../db/settings.js";
 
 const photos = new Hono();
 
@@ -163,9 +164,9 @@ function isSupportedImage(key: string): boolean {
 
 // Preview import: list S3 objects that would be imported
 photos.get("/import", async (c) => {
-  const bucket = process.env.S3_BUCKET;
+  const bucket = await getS3Bucket();
   if (!bucket) {
-    return c.json({ error: "S3_BUCKET not configured" }, 500);
+    return c.json({ error: "S3 bucket not configured. Set S3_BUCKET env var or configure it in Settings." }, 500);
   }
 
   const prefix = c.req.query("prefix") ?? "";
@@ -209,9 +210,9 @@ photos.get("/import", async (c) => {
 
 // Import photos from S3 bucket
 photos.post("/import", async (c) => {
-  const bucket = process.env.S3_BUCKET;
+  const bucket = await getS3Bucket();
   if (!bucket) {
-    return c.json({ error: "S3_BUCKET not configured" }, 500);
+    return c.json({ error: "S3 bucket not configured. Set S3_BUCKET env var or configure it in Settings." }, 500);
   }
 
   const body = await c.req.json().catch(() => ({}));

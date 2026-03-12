@@ -257,5 +257,9 @@ export const api = {
         body: JSON.stringify(settings),
       });
     },
+
+    getS3Config: (): Promise<Record<string, { envValue: string | null; effectiveValue: string | null; effectiveSource: 'db' | 'env' | null }>> => {
+      return fetchJson<Record<string, { envValue: string | null; effectiveValue: string | null; effectiveSource: 'db' | 'env' | null }>>(`${API_BASE}/settings/s3`);
+    },
   },
 };

@@ -86,3 +86,121 @@ export function faceQualityFilter(
     `AND (${alias}.bounding_box->>'width')::int * (${alias}.bounding_box->>'height')::int >= ${settings.minSize}`
   );
 }
+
+// ---------------------------------------------------------------------------
+// S3 configuration helpers
+// ---------------------------------------------------------------------------
+
+/** Keys that contain secrets and should be masked in API responses. */
+export const SECRET_SETTING_KEYS = new Set(["s3_secret_access_key"]);
+
+/** Sentinel value used in GET responses for masked secrets. */
+export const MASKED_VALUE = "__MASKED__";
+
+/**
+ * Map of S3 setting keys to their corresponding environment variables.
+ * DB setting takes precedence over the env var for each field.
+ */
+const S3_SETTING_ENV_MAP: Record<string, string> = {
+  s3_bucket: "S3_BUCKET",
+  s3_region: "S3_REGION",
+  s3_endpoint: "S3_ENDPOINT",
+  s3_access_key_id: "S3_ACCESS_KEY_ID",
+  s3_secret_access_key: "S3_SECRET_ACCESS_KEY",
+  s3_force_path_style: "S3_FORCE_PATH_STYLE",
+};
+
+/**
+ * Resolve the effective S3 bucket name.
+ * DB setting `s3_bucket` takes precedence over the `S3_BUCKET` env var.
+ * Returns null if neither is configured.
+ */
+export async function getS3Bucket(): Promise<string | null> {
+  const override = await getSetting("s3_bucket");
+  if (override?.trim()) {
+    return override.trim();
+  }
+  return process.env.S3_BUCKET || null;
+}
+
+export interface ResolvedS3Config {
+  bucket: string | null;
+  region: string | null;
+  endpoint: string | null;
+  accessKeyId: string | null;
+  secretAccessKey: string | null;
+  forcePathStyle: boolean;
+}
+
+/**
+ * Resolve the full S3 config from DB settings + env vars.
+ * DB settings take precedence over env vars for each field.
+ */
+export async function getResolvedS3Config(): Promise<ResolvedS3Config> {
+  const allSettings = await getAllSettings();
+
+  function resolve(settingKey: string): string | null {
+    const dbVal = allSettings[settingKey]?.trim();
+    if (dbVal) return dbVal;
+    const envVar = S3_SETTING_ENV_MAP[settingKey];
+    return envVar ? process.env[envVar] || null : null;
+  }
+
+  return {
+    bucket: resolve("s3_bucket"),
+    region: resolve("s3_region"),
+    endpoint: resolve("s3_endpoint"),
+    accessKeyId: resolve("s3_access_key_id"),
+    secretAccessKey: resolve("s3_secret_access_key"),
+    forcePathStyle: resolve("s3_force_path_style") === "true",
+  };
+}
+
+export interface S3ConfigInfo {
+  envValue: string | null;
+  effectiveValue: string | null;
+  effectiveSource: "db" | "env" | null;
+}
+
+/**
+ * Returns info about all S3 config fields for the settings UI.
+ * Secret values are masked.
+ */
+export async function getS3ConfigInfo(): Promise<Record<string, S3ConfigInfo>> {
+  const allSettings = await getAllSettings();
+  const result: Record<string, S3ConfigInfo> = {};
+
+  for (const [settingKey, envVar] of Object.entries(S3_SETTING_ENV_MAP)) {
+    const dbVal = allSettings[settingKey]?.trim() || null;
+    const envVal = process.env[envVar] || null;
+    const isSecret = SECRET_SETTING_KEYS.has(settingKey);
+
+    let effectiveValue: string | null = dbVal || envVal;
+    let effectiveSource: "db" | "env" | null = null;
+    if (dbVal) {
+      effectiveSource = "db";
+    } else if (envVal) {
+      effectiveSource = "env";
+    }
+
+    // Mask secrets
+    if (isSecret) {
+      if (effectiveValue) {
+        effectiveValue = "••••" + effectiveValue.slice(-4);
+      }
+      result[settingKey] = {
+        envValue: envVal ? "••••" + envVal.slice(-4) : null,
+        effectiveValue,
+        effectiveSource,
+      };
+    } else {
+      result[settingKey] = {
+        envValue: envVal,
+        effectiveValue,
+        effectiveSource,
+      };
+    }
+  }
+
+  return result;
+}

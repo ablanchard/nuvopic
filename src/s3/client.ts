@@ -5,6 +5,7 @@ import {
   type GetObjectCommandOutput,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { getResolvedS3Config } from "../db/settings.js";
 
 let s3Client: S3Client | null = null;
 
@@ -16,29 +17,33 @@ export interface S3Config {
   forcePathStyle?: boolean;
 }
 
-function getS3Config(): S3Config {
-  const region = process.env.S3_REGION;
-  const accessKeyId = process.env.S3_ACCESS_KEY_ID;
-  const secretAccessKey = process.env.S3_SECRET_ACCESS_KEY;
+/**
+ * Build S3Config by resolving DB settings over env vars.
+ * Throws if required fields (region, accessKeyId, secretAccessKey) are missing.
+ */
+async function buildS3Config(): Promise<S3Config> {
+  const resolved = await getResolvedS3Config();
 
-  if (!region || !accessKeyId || !secretAccessKey) {
+  if (!resolved.region || !resolved.accessKeyId || !resolved.secretAccessKey) {
     throw new Error(
-      "S3_REGION, S3_ACCESS_KEY_ID, and S3_SECRET_ACCESS_KEY environment variables are required"
+      "S3 region, access key ID, and secret access key are required. " +
+        "Configure them via S3_REGION / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY env vars " +
+        "or set s3_region / s3_access_key_id / s3_secret_access_key in Settings."
     );
   }
 
   return {
-    endpoint: process.env.S3_ENDPOINT,
-    region,
-    accessKeyId,
-    secretAccessKey,
-    forcePathStyle: process.env.S3_FORCE_PATH_STYLE === "true",
+    endpoint: resolved.endpoint || undefined,
+    region: resolved.region,
+    accessKeyId: resolved.accessKeyId,
+    secretAccessKey: resolved.secretAccessKey,
+    forcePathStyle: resolved.forcePathStyle || undefined,
   };
 }
 
-export function getS3Client(): S3Client {
+export async function getS3Client(): Promise<S3Client> {
   if (!s3Client) {
-    const config = getS3Config();
+    const config = await buildS3Config();
 
     s3Client = new S3Client({
       endpoint: config.endpoint,
@@ -54,11 +59,23 @@ export function getS3Client(): S3Client {
   return s3Client;
 }
 
+/**
+ * Invalidate the cached S3 client so the next call to getS3Client()
+ * rebuilds it from current DB settings + env vars.
+ * Call this after S3-related settings are changed.
+ */
+export function invalidateS3Client(): void {
+  if (s3Client) {
+    s3Client.destroy();
+  }
+  s3Client = null;
+}
+
 export async function getObject(
   bucket: string,
   key: string
 ): Promise<GetObjectCommandOutput> {
-  const client = getS3Client();
+  const client = await getS3Client();
   const command = new GetObjectCommand({ Bucket: bucket, Key: key });
   return client.send(command);
 }
@@ -107,7 +124,7 @@ export async function listAllObjects(
   prefix?: string,
   maxKeys?: number
 ): Promise<string[]> {
-  const client = getS3Client();
+  const client = await getS3Client();
   const keys: string[] = [];
   let continuationToken: string | undefined;
 
@@ -147,7 +164,7 @@ export async function getPresignedImageUrl(
   key: string,
   expiresInSeconds: number = 900
 ): Promise<string> {
-  const client = getS3Client();
+  const client = await getS3Client();
   const command = new GetObjectCommand({ Bucket: bucket, Key: key });
   return getSignedUrl(client, command, { expiresIn: expiresInSeconds });
 }

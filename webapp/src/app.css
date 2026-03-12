@@ -940,3 +940,50 @@ body {
   border: 1px solid #f0c6c6;
   color: #900;
 }
+
+.setting-text-input {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.setting-text-input:focus {
+  border-color: #0066cc;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.15);
+}
+
+.setting-hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  color: #666;
+  line-height: 1.4;
+}
+
+.setting-hint code {
+  background: #f0f0f0;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.75rem;
+}
+
+.setting-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.setting-toggle input[type="checkbox"] {
+  width: 1.1rem;
+  height: 1.1rem;
+  cursor: pointer;
+}
+
+.setting-toggle-label {
+  color: #555;
+  user-select: none;
+}
