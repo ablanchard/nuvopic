@@ -3,6 +3,10 @@ Shared inference core for NuvoPic GPU processing.
 
 Pure Python — no Modal or FastAPI dependencies.
 Used by both modal/inference.py (Modal deployment) and modal/server.py (standalone).
+
+Provides separate CaptionAnalyzer and FaceAnalyzer so each can be updated
+and reprocessed independently. PhotoAnalyzer combines both for backward
+compatibility with the /analyze endpoint.
 """
 
 import base64
@@ -32,23 +36,41 @@ def download_models():
     fa.get(dummy)
 
 
-class PhotoAnalyzer:
+def _decode_image(data: dict):
+    """Validate input and decode base64 image to PIL Image."""
+    from PIL import Image
+
+    if not data or "image" not in data:
+        raise ValueError("Missing 'image' field in request body")
+
+    try:
+        image_bytes = base64.b64decode(data["image"])
+    except Exception:
+        raise ValueError("Invalid base64-encoded image data")
+
+    try:
+        pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except Exception:
+        raise ValueError("Could not decode image from provided bytes")
+
+    return pil_image
+
+
+class CaptionAnalyzer:
     """
-    GPU-accelerated image captioning (BLIP) + face detection (InsightFace).
+    GPU-accelerated image captioning using BLIP.
 
     Usage:
-        analyzer = PhotoAnalyzer()
+        analyzer = CaptionAnalyzer()
         analyzer.load_models()
-        result = analyzer.analyze({"image": "<base64>"})
+        result = analyzer.caption({"image": "<base64>"})
     """
 
     def load_models(self):
-        """Load BLIP + InsightFace models onto GPU. Call once at startup."""
+        """Load BLIP model onto GPU. Call once at startup."""
         import torch
         from transformers import BlipProcessor, BlipForConditionalGeneration
-        from insightface.app import FaceAnalysis
 
-        # BLIP captioning
         self.blip_processor = BlipProcessor.from_pretrained(
             "Salesforce/blip-image-captioning-base"
         )
@@ -56,15 +78,57 @@ class PhotoAnalyzer:
             "Salesforce/blip-image-captioning-base"
         ).to("cuda")
         self.blip_model.eval()
+        self.device = torch.device("cuda")
 
-        # InsightFace (uses ONNX Runtime with GPU)
+        print("BLIP captioning model loaded on GPU")
+
+    def caption(self, data: dict) -> dict[str, Any]:
+        """
+        Generate a caption for a base64-encoded image.
+
+        Args:
+            data: {"image": "<base64-encoded image bytes>"}
+
+        Returns:
+            {"caption": "..."}
+        """
+        import torch
+
+        pil_image = _decode_image(data)
+
+        try:
+            inputs = self.blip_processor(pil_image, return_tensors="pt").to(self.device)
+            with torch.no_grad():
+                output_ids = self.blip_model.generate(**inputs, max_new_tokens=50)
+            caption = self.blip_processor.decode(
+                output_ids[0], skip_special_tokens=True
+            )
+            return {"caption": caption}
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(f"Captioning failed: {str(e)}")
+
+
+class FaceAnalyzer:
+    """
+    GPU-accelerated face detection and embedding using InsightFace.
+
+    Usage:
+        analyzer = FaceAnalyzer()
+        analyzer.load_models()
+        result = analyzer.detect({"image": "<base64>"})
+    """
+
+    def load_models(self):
+        """Load InsightFace model onto GPU. Call once at startup."""
+        import torch
+        from insightface.app import FaceAnalysis
+
         self.face_app = FaceAnalysis(
             name="buffalo_l",
             providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
         )
         self.face_app.prepare(ctx_id=0, det_size=(640, 640))
-
-        self.device = torch.device("cuda")
 
         # Verify GPU is actually being used
         import onnxruntime as ort
@@ -75,7 +139,6 @@ class PhotoAnalyzer:
         print(f"PyTorch CUDA version: {torch.version.cuda}")
         print(f"GPU device: {torch.cuda.get_device_name(0)}")
 
-        # Check which provider InsightFace models are actually using
         for model in self.face_app.models:
             if hasattr(model, "session") and model.session:
                 active_providers = model.session.get_providers()
@@ -83,50 +146,23 @@ class PhotoAnalyzer:
                     f"InsightFace model '{model.taskname}' providers: {active_providers}"
                 )
 
-        print("Models loaded on GPU")
+        print("InsightFace face detection model loaded on GPU")
 
-    def analyze(self, data: dict) -> dict[str, Any]:
+    def detect(self, data: dict) -> dict[str, Any]:
         """
-        Analyze a base64-encoded image.
+        Detect faces in a base64-encoded image.
 
         Args:
             data: {"image": "<base64-encoded image bytes>"}
 
         Returns:
-            {"caption": "...", "faces": [{"bbox": {...}, "embedding": [...], "confidence": float}]}
-
-        Raises:
-            ValueError: on invalid input (missing image, bad base64, undecodable image)
-            RuntimeError: on inference failure
+            {"faces": [{"bbox": {...}, "embedding": [...], "confidence": float}]}
         """
         import numpy as np
-        import torch
-        from PIL import Image
 
-        # Validate input
-        if not data or "image" not in data:
-            raise ValueError("Missing 'image' field in request body")
+        pil_image = _decode_image(data)
 
         try:
-            image_bytes = base64.b64decode(data["image"])
-        except Exception:
-            raise ValueError("Invalid base64-encoded image data")
-
-        try:
-            pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        except Exception:
-            raise ValueError("Could not decode image from provided bytes")
-
-        try:
-            # --- Captioning ---
-            inputs = self.blip_processor(pil_image, return_tensors="pt").to(self.device)
-            with torch.no_grad():
-                output_ids = self.blip_model.generate(**inputs, max_new_tokens=50)
-            caption = self.blip_processor.decode(
-                output_ids[0], skip_special_tokens=True
-            )
-
-            # --- Face detection + embedding ---
             # InsightFace expects BGR numpy array
             img_array = np.array(pil_image)[:, :, ::-1]  # RGB -> BGR
             detected_faces = self.face_app.get(img_array)
@@ -147,8 +183,53 @@ class PhotoAnalyzer:
                     }
                 )
 
-            return {"caption": caption, "faces": faces}
-
+            return {"faces": faces}
         except Exception as e:
             traceback.print_exc()
-            raise RuntimeError(f"Inference failed: {str(e)}")
+            raise RuntimeError(f"Face detection failed: {str(e)}")
+
+
+class PhotoAnalyzer:
+    """
+    Combined GPU-accelerated image captioning (BLIP) + face detection (InsightFace).
+
+    Wraps CaptionAnalyzer + FaceAnalyzer for backward compatibility with
+    the /analyze endpoint. New code should use the individual analyzers.
+
+    Usage:
+        analyzer = PhotoAnalyzer()
+        analyzer.load_models()
+        result = analyzer.analyze({"image": "<base64>"})
+    """
+
+    def __init__(self):
+        self._caption = CaptionAnalyzer()
+        self._faces = FaceAnalyzer()
+
+    def load_models(self):
+        """Load BLIP + InsightFace models onto GPU. Call once at startup."""
+        self._caption.load_models()
+        self._faces.load_models()
+        print("All models loaded on GPU")
+
+    @property
+    def caption_analyzer(self) -> CaptionAnalyzer:
+        return self._caption
+
+    @property
+    def face_analyzer(self) -> FaceAnalyzer:
+        return self._faces
+
+    def analyze(self, data: dict) -> dict[str, Any]:
+        """
+        Analyze a base64-encoded image (caption + face detection).
+
+        Args:
+            data: {"image": "<base64-encoded image bytes>"}
+
+        Returns:
+            {"caption": "...", "faces": [{"bbox": {...}, "embedding": [...], "confidence": float}]}
+        """
+        caption_result = self._caption.caption(data)
+        faces_result = self._faces.detect(data)
+        return {**caption_result, **faces_result}

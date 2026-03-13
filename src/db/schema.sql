@@ -109,6 +109,24 @@ BEGIN
     END IF;
 END $$;
 
+-- Migration: add caption_version and faces_version for independent reprocessing
+-- (v3.0.0: split GPU processing so caption and face detection can be updated separately)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'photos' AND column_name = 'caption_version'
+    ) THEN
+        ALTER TABLE photos ADD COLUMN caption_version TEXT;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'photos' AND column_name = 'faces_version'
+    ) THEN
+        ALTER TABLE photos ADD COLUMN faces_version TEXT;
+    END IF;
+END $$;
+
 -- Face clusters: groups of visually similar faces
 CREATE TABLE IF NOT EXISTS face_clusters (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -183,6 +201,8 @@ ON CONFLICT (key) DO NOTHING;
 CREATE INDEX IF NOT EXISTS idx_photos_taken_at ON photos(taken_at);
 CREATE INDEX IF NOT EXISTS idx_photos_s3_path ON photos(s3_path);
 CREATE INDEX IF NOT EXISTS idx_photos_process_version ON photos(process_version);
+CREATE INDEX IF NOT EXISTS idx_photos_caption_version ON photos(caption_version);
+CREATE INDEX IF NOT EXISTS idx_photos_faces_version ON photos(faces_version);
 CREATE INDEX IF NOT EXISTS idx_faces_photo_id ON faces(photo_id);
 CREATE INDEX IF NOT EXISTS idx_faces_person_id ON faces(person_id);
 CREATE INDEX IF NOT EXISTS idx_photo_tags_tag_id ON photo_tags(tag_id);

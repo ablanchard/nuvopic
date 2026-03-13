@@ -4,6 +4,12 @@ Standalone FastAPI inference server for NuvoPic.
 Runs the same BLIP + InsightFace pipeline as the Modal endpoint, but as a
 plain HTTP server — suitable for Vast.ai, RunPod, or any GPU instance.
 
+Endpoints:
+    POST /analyze  — combined caption + face detection (backward compat)
+    POST /caption  — caption only
+    POST /faces    — face detection only
+    GET  /health   — health check
+
 Usage:
     INFERENCE_API_KEY=secret uvicorn server:app --host 0.0.0.0 --port 8000
 
@@ -73,7 +79,7 @@ async def health():
 @app.post("/analyze")
 async def analyze(request: Request):
     """
-    POST /analyze
+    POST /analyze — combined caption + face detection (backward compatible).
     Body: { "image": "<base64-encoded image bytes>" }
     Headers: Authorization: Bearer <INFERENCE_API_KEY>
 
@@ -97,6 +103,64 @@ async def analyze(request: Request):
 
     try:
         result = analyzer.analyze(data)
+        return result
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except RuntimeError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/caption")
+async def caption(request: Request):
+    """
+    POST /caption — caption only.
+    Body: { "image": "<base64-encoded image bytes>" }
+    Headers: Authorization: Bearer <INFERENCE_API_KEY>
+
+    Returns: { "caption": "a dog sitting on a couch" }
+    """
+    _check_auth(request)
+
+    if analyzer is None:
+        raise HTTPException(status_code=503, detail="Models not loaded yet")
+
+    data = await request.json()
+
+    try:
+        result = analyzer.caption_analyzer.caption(data)
+        return result
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except RuntimeError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/faces")
+async def faces(request: Request):
+    """
+    POST /faces — face detection only.
+    Body: { "image": "<base64-encoded image bytes>" }
+    Headers: Authorization: Bearer <INFERENCE_API_KEY>
+
+    Returns: {
+        "faces": [
+            {
+                "bbox": { "x": 100, "y": 50, "width": 80, "height": 100 },
+                "embedding": [0.123, -0.456, ...],  // 512 floats
+                "confidence": 0.98
+            }
+        ]
+    }
+    """
+    _check_auth(request)
+
+    if analyzer is None:
+        raise HTTPException(status_code=503, detail="Models not loaded yet")
+
+    data = await request.json()
+
+    try:
+        result = analyzer.face_analyzer.detect(data)
         return result
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})

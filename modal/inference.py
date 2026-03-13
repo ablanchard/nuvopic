@@ -1,9 +1,14 @@
 """
 NuvoPic GPU inference endpoint on Modal.
 
-Thin wrapper around core.PhotoAnalyzer with Modal decorators.
+Thin wrapper around core analyzers with Modal decorators.
 Deploy: modal deploy modal/inference.py
 Test:   modal serve modal/inference.py  (local dev with hot reload)
+
+Endpoints:
+    POST /analyze  — combined caption + face detection (backward compat)
+    POST /caption  — caption only
+    POST /faces    — face detection only
 """
 
 import modal
@@ -58,16 +63,19 @@ image = (
 app = modal.App("nuvopic-inference", image=image)
 
 # ---------------------------------------------------------------------------
-# PhotoAnalyzer: Modal wrapper around core.PhotoAnalyzer
+# PhotoAnalyzer: Modal wrapper around core analyzers
 # ---------------------------------------------------------------------------
 
 
 @app.cls(gpu="T4", scaledown_window=30, min_containers=0, max_containers=1)
 class PhotoAnalyzer:
     """
-    Accepts a base64-encoded image and returns:
-    - caption: text description of the image
-    - faces: list of detected faces with bounding boxes and 512-dim embeddings
+    GPU inference endpoints for image captioning and face detection.
+
+    Endpoints:
+        POST /analyze  — combined caption + faces (backward compatible)
+        POST /caption  — caption only (BLIP)
+        POST /faces    — face detection only (InsightFace)
     """
 
     @modal.enter()
@@ -78,7 +86,7 @@ class PhotoAnalyzer:
     @modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
     def analyze(self, data: dict):
         """
-        POST /analyze
+        POST /analyze — combined caption + face detection (backward compatible).
         Body: { "image": "<base64-encoded image bytes>" }
         Returns: {
             "caption": "a dog sitting on a couch",
@@ -95,6 +103,46 @@ class PhotoAnalyzer:
 
         try:
             return self._core.analyze(data)
+        except ValueError as e:
+            return JSONResponse(status_code=400, content={"error": str(e)})
+        except RuntimeError as e:
+            return JSONResponse(status_code=500, content={"error": str(e)})
+
+    @modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
+    def caption(self, data: dict):
+        """
+        POST /caption — caption only.
+        Body: { "image": "<base64-encoded image bytes>" }
+        Returns: { "caption": "a dog sitting on a couch" }
+        """
+        from fastapi.responses import JSONResponse
+
+        try:
+            return self._core.caption_analyzer.caption(data)
+        except ValueError as e:
+            return JSONResponse(status_code=400, content={"error": str(e)})
+        except RuntimeError as e:
+            return JSONResponse(status_code=500, content={"error": str(e)})
+
+    @modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
+    def faces(self, data: dict):
+        """
+        POST /faces — face detection only.
+        Body: { "image": "<base64-encoded image bytes>" }
+        Returns: {
+            "faces": [
+                {
+                    "bbox": { "x": 100, "y": 50, "width": 80, "height": 100 },
+                    "embedding": [0.123, -0.456, ...],  // 512 floats
+                    "confidence": 0.98
+                }
+            ]
+        }
+        """
+        from fastapi.responses import JSONResponse
+
+        try:
+            return self._core.face_analyzer.detect(data)
         except ValueError as e:
             return JSONResponse(status_code=400, content={"error": str(e)})
         except RuntimeError as e:

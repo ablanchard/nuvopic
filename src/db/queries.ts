@@ -12,6 +12,8 @@ export interface PhotoRecord {
   width: number | null;
   height: number | null;
   process_version: string | null;
+  caption_version: string | null;
+  faces_version: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -41,6 +43,8 @@ export interface InsertPhotoParams {
   width?: number | null;
   height?: number | null;
   processVersion?: string | null;
+  captionVersion?: string | null;
+  facesVersion?: string | null;
 }
 
 export interface InsertFaceParams {
@@ -57,8 +61,8 @@ export interface InsertFaceParams {
 
 export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
   const result = await query<{ id: string }>(
-    `INSERT INTO photos (s3_path, taken_at, location_lat, location_lng, location_name, description, thumbnail, width, height, process_version)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    `INSERT INTO photos (s3_path, taken_at, location_lat, location_lng, location_name, description, thumbnail, width, height, process_version, caption_version, faces_version)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      ON CONFLICT (s3_path) DO UPDATE SET
        taken_at = COALESCE(EXCLUDED.taken_at, photos.taken_at),
        location_lat = COALESCE(EXCLUDED.location_lat, photos.location_lat),
@@ -69,6 +73,8 @@ export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
        width = COALESCE(EXCLUDED.width, photos.width),
        height = COALESCE(EXCLUDED.height, photos.height),
        process_version = COALESCE(EXCLUDED.process_version, photos.process_version),
+       caption_version = COALESCE(EXCLUDED.caption_version, photos.caption_version),
+       faces_version = COALESCE(EXCLUDED.faces_version, photos.faces_version),
        updated_at = NOW()
      RETURNING id`,
     [
@@ -82,6 +88,8 @@ export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
       params.width ?? null,
       params.height ?? null,
       params.processVersion ?? null,
+      params.captionVersion ?? null,
+      params.facesVersion ?? null,
     ]
   );
 
@@ -144,6 +152,32 @@ export async function getPhotosToReprocess(
      WHERE process_version IS NULL OR process_version < $1
      ORDER BY created_at ASC`,
     [belowVersion]
+  );
+
+  return result.rows;
+}
+
+export async function getPhotosToReprocessCaption(
+  belowCaptionVersion: string
+): Promise<Pick<PhotoRecord, "id" | "s3_path" | "caption_version">[]> {
+  const result = await query<Pick<PhotoRecord, "id" | "s3_path" | "caption_version">>(
+    `SELECT id, s3_path, caption_version FROM photos
+     WHERE caption_version IS NULL OR caption_version < $1
+     ORDER BY created_at ASC`,
+    [belowCaptionVersion]
+  );
+
+  return result.rows;
+}
+
+export async function getPhotosToReprocessFaces(
+  belowFacesVersion: string
+): Promise<Pick<PhotoRecord, "id" | "s3_path" | "faces_version">[]> {
+  const result = await query<Pick<PhotoRecord, "id" | "s3_path" | "faces_version">>(
+    `SELECT id, s3_path, faces_version FROM photos
+     WHERE faces_version IS NULL OR faces_version < $1
+     ORDER BY created_at ASC`,
+    [belowFacesVersion]
   );
 
   return result.rows;

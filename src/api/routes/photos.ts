@@ -1,10 +1,10 @@
 import { Hono } from "hono";
 import { searchPhotos, getPhotoWithDetails } from "../../db/search.js";
-import { getPhotoById, getPhotosToReprocess, getAllPhotosForReprocess, getExistingS3Paths } from "../../db/queries.js";
+import { getPhotoById, getPhotosToReprocess, getPhotosToReprocessCaption, getPhotosToReprocessFaces, getAllPhotosForReprocess, getExistingS3Paths } from "../../db/queries.js";
 import { getFacesByPhotoId } from "../../db/queries.js";
-import { processPhoto, processPhotoBatch } from "../../processor.js";
+import { processPhoto, processPhotoBatch, type GpuMode } from "../../processor.js";
 import { isGpuEnabled } from "../../extractors/gpu-client.js";
-import { PROCESS_VERSION, PROCESS_CHANGELOG } from "../../version.js";
+import { PROCESS_VERSION, CAPTION_VERSION, FACES_VERSION, PROCESS_CHANGELOG, CAPTION_CHANGELOG, FACES_CHANGELOG } from "../../version.js";
 import { listAllObjects, getS3Path, getPresignedImageUrl } from "../../s3/client.js";
 import { logger } from "../../logger.js";
 import { clusterUnassignedFaces } from "../../db/clusters.js";
@@ -60,45 +60,87 @@ photos.get("/", async (c) => {
 
 // Preview reprocessing: show what would be reprocessed and why
 photos.get("/reprocess", async (c) => {
-  const outdated = await getPhotosToReprocess(PROCESS_VERSION);
+  const mode = c.req.query("mode") ?? "all"; // "all" | "caption" | "faces"
 
-  // Collect changelog entries for versions newer than each photo's version
-  const changesApplied: Record<string, string> = {};
-  for (const [version, description] of Object.entries(PROCESS_CHANGELOG)) {
-    changesApplied[version] = description;
+  let photosToReprocess;
+  if (mode === "caption") {
+    photosToReprocess = await getPhotosToReprocessCaption(CAPTION_VERSION);
+  } else if (mode === "faces") {
+    photosToReprocess = await getPhotosToReprocessFaces(FACES_VERSION);
+  } else {
+    photosToReprocess = await getPhotosToReprocess(PROCESS_VERSION);
   }
 
   return c.json({
-    currentVersion: PROCESS_VERSION,
-    photosToReprocess: outdated.length,
-    photos: outdated.map((p) => ({
+    mode,
+    currentVersions: {
+      process: PROCESS_VERSION,
+      caption: CAPTION_VERSION,
+      faces: FACES_VERSION,
+    },
+    photosToReprocess: photosToReprocess.length,
+    photos: photosToReprocess.map((p) => ({
       id: p.id,
       s3Path: p.s3_path,
-      processVersion: p.process_version ?? null,
     })),
-    changelog: changesApplied,
+    changelog: {
+      process: PROCESS_CHANGELOG,
+      caption: CAPTION_CHANGELOG,
+      faces: FACES_CHANGELOG,
+    },
   });
 });
 
-// Trigger reprocessing of outdated photos (pass { "force": true } to reprocess all, { "skipModal": true } to skip GPU work)
+// Trigger reprocessing of outdated photos
+// Body options:
+//   { "force": true }             — reprocess all photos (not just outdated)
+//   { "skipModal": true }         — skip GPU work entirely (local extraction only)
+//   { "mode": "caption" }         — reprocess only captions (skip face detection)
+//   { "mode": "faces" }           — reprocess only faces (skip captioning)
+//   { "mode": "all" }             — reprocess both (default)
 photos.post("/reprocess", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const force: boolean = body.force === true;
   const skipModal: boolean = body.skipModal === true;
+  const mode: string = body.mode ?? "all";
 
-  const photosToProcess = force
-    ? await getAllPhotosForReprocess()
-    : await getPhotosToReprocess(PROCESS_VERSION);
+  // Determine which photos need reprocessing
+  let photosToProcess;
+  if (force) {
+    photosToProcess = await getAllPhotosForReprocess();
+  } else if (mode === "caption") {
+    photosToProcess = await getPhotosToReprocessCaption(CAPTION_VERSION);
+  } else if (mode === "faces") {
+    photosToProcess = await getPhotosToReprocessFaces(FACES_VERSION);
+  } else {
+    photosToProcess = await getPhotosToReprocess(PROCESS_VERSION);
+  }
 
   if (photosToProcess.length === 0) {
     return c.json({
       message: "All photos are up to date",
-      currentVersion: PROCESS_VERSION,
+      currentVersions: {
+        process: PROCESS_VERSION,
+        caption: CAPTION_VERSION,
+        faces: FACES_VERSION,
+      },
       reprocessed: 0,
     });
   }
 
-  logger.info(`Reprocessing ${photosToProcess.length} photos (force=${force}, skipModal=${skipModal})`);
+  // Resolve GPU mode
+  let gpuMode: GpuMode;
+  if (skipModal) {
+    gpuMode = "skip";
+  } else if (mode === "caption") {
+    gpuMode = "caption-only";
+  } else if (mode === "faces") {
+    gpuMode = "faces-only";
+  } else {
+    gpuMode = "all";
+  }
+
+  logger.info(`Reprocessing ${photosToProcess.length} photos (force=${force}, gpuMode=${gpuMode})`);
   const startTime = Date.now();
 
   // Build batch inputs, skipping any with invalid s3_path
@@ -115,7 +157,7 @@ photos.post("/reprocess", async (c) => {
   }
 
   const batchResults = await processPhotoBatch(
-    batchInputs.map((p) => ({ s3Bucket: p.s3Bucket, s3Key: p.s3Key, skipModal })),
+    batchInputs.map((p) => ({ s3Bucket: p.s3Bucket, s3Key: p.s3Key, gpuMode })),
     (completed, total) => {
       if (completed % 10 === 0 || completed === total) {
         logger.info(`Reprocess progress: ${completed}/${total}`);
@@ -138,16 +180,23 @@ photos.post("/reprocess", async (c) => {
   const failed = results.filter((r) => !r.success).length;
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
-  // Auto-cluster newly detected faces after reprocess
-  try {
-    const clusterResult = await clusterUnassignedFaces({ threshold: 0.6, strategy: "first" });
-    logger.info(`Auto-clustered ${clusterResult.clustered} faces into ${clusterResult.newClusters} new clusters`);
-  } catch (err) {
-    logger.error("Auto-clustering failed:", err);
+  // Auto-cluster newly detected faces after reprocess (only if we processed faces)
+  if (gpuMode === "all" || gpuMode === "faces-only") {
+    try {
+      const clusterResult = await clusterUnassignedFaces({ threshold: 0.6, strategy: "first" });
+      logger.info(`Auto-clustered ${clusterResult.clustered} faces into ${clusterResult.newClusters} new clusters`);
+    } catch (err) {
+      logger.error("Auto-clustering failed:", err);
+    }
   }
 
   return c.json({
-    currentVersion: PROCESS_VERSION,
+    mode: gpuMode,
+    currentVersions: {
+      process: PROCESS_VERSION,
+      caption: CAPTION_VERSION,
+      faces: FACES_VERSION,
+    },
     reprocessed: succeeded,
     failed,
     elapsedSeconds: parseFloat(elapsed),

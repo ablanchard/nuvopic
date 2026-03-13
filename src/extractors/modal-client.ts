@@ -2,15 +2,16 @@
  * Modal GPU client — implements GpuClient for Modal's serverless GPU endpoint.
  *
  * Modal is always-on (scale-to-zero managed by Modal itself), so start/stop
- * are no-ops. The analyze() method sends a base64-encoded image via HTTP POST.
+ * are no-ops. Supports both the combined /analyze endpoint (backward compat)
+ * and the independent /caption and /faces endpoints.
  */
 
 import { logger } from "../logger.js";
-import type { GpuClient, GpuAnalysisResult } from "./gpu-client.js";
+import type { GpuClient, GpuAnalysisResult, GpuCaptionResult, GpuFacesResult } from "./gpu-client.js";
 
 export { type GpuAnalysisResult } from "./gpu-client.js";
 
-const MODAL_TIMEOUT_MS = 30_000; // 30s — accounts for cold start + inference
+const MODAL_TIMEOUT_MS = 120_000; // 120s — accounts for cold start (model loading) + inference
 const MAX_RETRIES = 1; // Retry once on 5xx / network errors
 
 // ---------------------------------------------------------------------------
@@ -57,11 +58,47 @@ export class ModalGpuClient implements GpuClient {
     // No-op: Modal manages container lifecycle.
   }
 
+  /**
+   * Combined caption + face detection (backward compat).
+   * Calls the /analyze endpoint.
+   */
   async analyze(imageBuffer: Buffer): Promise<GpuAnalysisResult> {
-    const endpointUrl = process.env.MODAL_ENDPOINT_URL;
-    if (!endpointUrl) {
+    return this._post<GpuAnalysisResult>("/analyze", imageBuffer);
+  }
+
+  /**
+   * Caption only — calls the /caption endpoint.
+   */
+  async caption(imageBuffer: Buffer): Promise<GpuCaptionResult> {
+    return this._post<GpuCaptionResult>("/caption", imageBuffer);
+  }
+
+  /**
+   * Face detection only — calls the /faces endpoint.
+   */
+  async faces(imageBuffer: Buffer): Promise<GpuFacesResult> {
+    return this._post<GpuFacesResult>("/faces", imageBuffer);
+  }
+
+  // -------------------------------------------------------------------------
+  // Shared HTTP POST logic
+  // -------------------------------------------------------------------------
+  private async _post<T>(path: string, imageBuffer: Buffer): Promise<T> {
+    const baseUrl = process.env.MODAL_ENDPOINT_URL;
+    if (!baseUrl) {
       throw new Error("MODAL_ENDPOINT_URL is not configured");
     }
+
+    // Modal generates URLs with the method name in the subdomain:
+    //   https://<workspace>--<app>-<class>-<method>.modal.run
+    // For new endpoints, we replace the method name (last hyphen-segment
+    // before .modal.run) with the target method name.
+    // e.g., "...-analyze.modal.run" → "...-caption.modal.run"
+    const method = path.replace(/^\//, ""); // "/faces" → "faces"
+    const endpointUrl =
+      method === "analyze"
+        ? baseUrl
+        : baseUrl.replace(/-analyze\.modal\.run/, `-${method}.modal.run`);
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -94,8 +131,7 @@ export class ModalGpuClient implements GpuClient {
         clearTimeout(timeout);
 
         if (response.ok) {
-          const result = (await response.json()) as GpuAnalysisResult;
-          return result;
+          return (await response.json()) as T;
         }
 
         // 4xx = client error, don't retry

@@ -23,7 +23,7 @@
  */
 
 import { logger } from "../logger.js";
-import type { GpuClient, GpuAnalysisResult } from "./gpu-client.js";
+import type { GpuClient, GpuAnalysisResult, GpuCaptionResult, GpuFacesResult } from "./gpu-client.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -612,10 +612,36 @@ export class VastGpuClient implements GpuClient {
   }
 
   /**
-   * Send an image to the running Vast.ai inference server for analysis.
-   * Includes circuit breaker: aborts immediately if instance is dead.
+   * Combined caption + face detection (backward compat).
+   * Calls the /analyze endpoint.
    */
   async analyze(imageBuffer: Buffer): Promise<GpuAnalysisResult> {
+    return this._post<GpuAnalysisResult>("/analyze", imageBuffer);
+  }
+
+  /**
+   * Caption only — calls the /caption endpoint.
+   */
+  async caption(imageBuffer: Buffer): Promise<GpuCaptionResult> {
+    return this._post<GpuCaptionResult>("/caption", imageBuffer);
+  }
+
+  /**
+   * Face detection only — calls the /faces endpoint.
+   */
+  async faces(imageBuffer: Buffer): Promise<GpuFacesResult> {
+    return this._post<GpuFacesResult>("/faces", imageBuffer);
+  }
+
+  // -------------------------------------------------------------------------
+  // Shared HTTP POST logic with circuit breaker + retries
+  // -------------------------------------------------------------------------
+
+  /**
+   * Send an image to the running Vast.ai inference server.
+   * Includes circuit breaker: aborts immediately if instance is dead.
+   */
+  private async _post<T>(path: string, imageBuffer: Buffer): Promise<T> {
     // Circuit breaker: fail fast if instance is dead
     if (this.instanceDead) {
       throw new InstanceDeadError(
@@ -629,7 +655,7 @@ export class VastGpuClient implements GpuClient {
       );
     }
 
-    const url = `${this.endpointUrl}/analyze`;
+    const url = `${this.endpointUrl}${path}`;
     const body = JSON.stringify({ image: imageBuffer.toString("base64") });
 
     let lastError: Error | null = null;
@@ -669,7 +695,7 @@ export class VastGpuClient implements GpuClient {
         clearTimeout(timeout);
 
         if (response.ok) {
-          return (await response.json()) as GpuAnalysisResult;
+          return (await response.json()) as T;
         }
 
         // 4xx = client error, don't retry

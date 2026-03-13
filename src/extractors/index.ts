@@ -14,6 +14,8 @@ export {
 export {
   type GpuClient,
   type GpuAnalysisResult,
+  type GpuCaptionResult,
+  type GpuFacesResult,
   type GpuProvider,
   isGpuEnabled,
   getRealtimeGpuProvider,

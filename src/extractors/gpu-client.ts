@@ -3,16 +3,34 @@
  *
  * Provides a provider-agnostic interface so processor.ts doesn't need to
  * know whether inference runs on Modal, Vast.ai, or any other GPU backend.
+ *
+ * Supports both combined analysis (backward compat) and independent
+ * caption / face detection calls for selective reprocessing.
  */
 
 import { logger } from "../logger.js";
 
 // ---------------------------------------------------------------------------
-// Shared result type (same shape regardless of provider)
+// Result types
 // ---------------------------------------------------------------------------
 
+/** Result from the combined /analyze endpoint (backward compat). */
 export interface GpuAnalysisResult {
   caption: string;
+  faces: Array<{
+    bbox: { x: number; y: number; width: number; height: number };
+    embedding: number[];
+    confidence: number;
+  }>;
+}
+
+/** Result from the /caption endpoint. */
+export interface GpuCaptionResult {
+  caption: string;
+}
+
+/** Result from the /faces endpoint. */
+export interface GpuFacesResult {
   faces: Array<{
     bbox: { x: number; y: number; width: number; height: number };
     embedding: number[];
@@ -32,10 +50,20 @@ export interface GpuClient {
   readonly isInterruptible: boolean;
 
   /**
-   * Analyze an image: generate a caption + detect faces.
-   * The image is sent as a raw Buffer (the client handles encoding).
+   * Analyze an image: generate a caption + detect faces (combined call).
+   * Kept for backward compatibility. New code should prefer caption() + faces().
    */
   analyze(imageBuffer: Buffer): Promise<GpuAnalysisResult>;
+
+  /**
+   * Generate a caption for an image (caption only, no face detection).
+   */
+  caption(imageBuffer: Buffer): Promise<GpuCaptionResult>;
+
+  /**
+   * Detect faces in an image (face detection only, no captioning).
+   */
+  faces(imageBuffer: Buffer): Promise<GpuFacesResult>;
 
   /**
    * Provision / start the GPU backend (if needed).
