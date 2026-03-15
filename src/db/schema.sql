@@ -194,8 +194,20 @@ CREATE TABLE IF NOT EXISTS settings (
 -- Seed default settings (insert only if not already present)
 INSERT INTO settings (key, value) VALUES
     ('face_min_confidence', '0.7'),
-    ('face_min_size', '2500')
+    ('face_min_size', '2500'),
+    ('generate_thumbnail', 'true')
 ON CONFLICT (key) DO NOTHING;
+
+-- Migration: add placeholder column for tiny inline preview (base64 data URI)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'photos' AND column_name = 'placeholder'
+    ) THEN
+        ALTER TABLE photos ADD COLUMN placeholder TEXT;
+    END IF;
+END $$;
 
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_photos_taken_at ON photos(taken_at);

@@ -9,6 +9,7 @@ export interface PhotoRecord {
   location_name: string | null;
   description: string | null;
   thumbnail: Buffer | null;
+  placeholder: string | null;
   width: number | null;
   height: number | null;
   process_version: string | null;
@@ -40,6 +41,7 @@ export interface InsertPhotoParams {
   locationName?: string | null;
   description?: string | null;
   thumbnail?: Buffer | null;
+  placeholder?: string | null;
   width?: number | null;
   height?: number | null;
   processVersion?: string | null;
@@ -61,8 +63,8 @@ export interface InsertFaceParams {
 
 export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
   const result = await query<{ id: string }>(
-    `INSERT INTO photos (s3_path, taken_at, location_lat, location_lng, location_name, description, thumbnail, width, height, process_version, caption_version, faces_version)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    `INSERT INTO photos (s3_path, taken_at, location_lat, location_lng, location_name, description, thumbnail, placeholder, width, height, process_version, caption_version, faces_version)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      ON CONFLICT (s3_path) DO UPDATE SET
        taken_at = COALESCE(EXCLUDED.taken_at, photos.taken_at),
        location_lat = COALESCE(EXCLUDED.location_lat, photos.location_lat),
@@ -70,6 +72,7 @@ export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
        location_name = COALESCE(EXCLUDED.location_name, photos.location_name),
        description = COALESCE(EXCLUDED.description, photos.description),
        thumbnail = COALESCE(EXCLUDED.thumbnail, photos.thumbnail),
+       placeholder = COALESCE(EXCLUDED.placeholder, photos.placeholder),
        width = COALESCE(EXCLUDED.width, photos.width),
        height = COALESCE(EXCLUDED.height, photos.height),
        process_version = COALESCE(EXCLUDED.process_version, photos.process_version),
@@ -85,6 +88,7 @@ export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
       params.locationName ?? null,
       params.description ?? null,
       params.thumbnail ?? null,
+      params.placeholder ?? null,
       params.width ?? null,
       params.height ?? null,
       params.processVersion ?? null,

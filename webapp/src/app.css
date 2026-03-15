@@ -214,6 +214,37 @@ body {
   transform: scale(1.05);
 }
 
+.photo-card-placeholder {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: blur(8px);
+  transform: scale(1.1); /* slightly oversized to hide blur edges */
+  z-index: 0;
+}
+
+.photo-card-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  z-index: 1;
+}
+
+.photo-card-image--loaded {
+  opacity: 1;
+}
+
+.photo-card-empty {
+  width: 100%;
+  height: 100%;
+}
+
 .photo-card-overlay {
   position: absolute;
   bottom: 0;

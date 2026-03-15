@@ -84,7 +84,7 @@ export function HomePage(_props: RoutableProps) {
                 : undefined}
             >
               <img
-                src={fullImageLoaded && fullImageSrc ? fullImageSrc : selectedPhoto.thumbnailUrl}
+                src={fullImageLoaded && fullImageSrc ? fullImageSrc : (selectedPhoto.placeholder || selectedPhoto.thumbnailUrl)}
                 alt={selectedPhoto.description || 'Photo'}
                 class={`modal-image ${fullImageLoaded ? 'modal-image--full' : 'modal-image--thumbnail'}`}
               />

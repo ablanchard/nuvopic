@@ -4,6 +4,7 @@ export interface Photo {
   id: string;
   thumbnailUrl: string;
   fullImageUrl: string;
+  placeholder: string | null;
   takenAt: string | null;
   description: string | null;
   width: number | null;

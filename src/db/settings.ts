@@ -88,6 +88,21 @@ export function faceQualityFilter(
 }
 
 // ---------------------------------------------------------------------------
+// Thumbnail generation setting
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether to generate and store the 300×300 BYTEA thumbnail during processing.
+ * When false, only the tiny placeholder is generated (saves DB space).
+ * Default: true (backward compatible).
+ */
+export async function getGenerateThumbnailSetting(): Promise<boolean> {
+  const val = await getSetting("generate_thumbnail");
+  if (val === null) return true; // default: generate thumbnails
+  return val === "true";
+}
+
+// ---------------------------------------------------------------------------
 // S3 configuration helpers
 // ---------------------------------------------------------------------------
 

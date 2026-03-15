@@ -2,6 +2,7 @@ import { getObjectAsBuffer, getS3Path } from "./s3/client.js";
 import {
   extractExif,
   generateThumbnail,
+  generatePlaceholder,
   generateCaption,
   detectFaces,
   parseDateFromFilename,
@@ -22,6 +23,7 @@ import {
   deleteFacesByPhotoId,
   getPhotoByS3Path,
 } from "./db/queries.js";
+import { getGenerateThumbnailSetting } from "./db/settings.js";
 import { logger } from "./logger.js";
 import { PROCESS_VERSION, CAPTION_VERSION, FACES_VERSION } from "./version.js";
 import sharp from "sharp";
@@ -66,6 +68,7 @@ interface ExtractedData {
   height: number | null;
   exif: { takenAt: Date | null; location: { lat: number; lng: number } | null };
   thumbnail: { buffer: Buffer; width: number; height: number; format: string } | null;
+  placeholder: string | null;
   caption: string | null;
   faces: Array<{ boundingBox: { x: number; y: number; width: number; height: number }; embedding: number[]; confidence: number }>;
   errors: string[];
@@ -79,7 +82,7 @@ interface ExtractedData {
 }
 
 async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
-  const { s3Path, s3Key, width, height, exif, thumbnail, caption, faces, errors } = data;
+  const { s3Path, s3Key, width, height, exif, thumbnail, placeholder, caption, faces, errors } = data;
 
   const takenAt = exif.takenAt ?? parseDateFromFilename(s3Key);
   const existingPhoto = await getPhotoByS3Path(s3Path);
@@ -91,6 +94,7 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
     locationLng: exif.location?.lng,
     description: data.skipCaption ? undefined : caption,
     thumbnail: thumbnail?.buffer,
+    placeholder,
     width,
     height,
     processVersion: PROCESS_VERSION,
@@ -221,6 +225,16 @@ function parseThumbnailResult(
   return null;
 }
 
+function parsePlaceholderResult(
+  result: PromiseSettledResult<string>,
+  errors: string[]
+): string | null {
+  if (result.status === "fulfilled") return result.value;
+  errors.push(`Placeholder: ${result.reason}`);
+  logger.error("Placeholder error:", result.reason);
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Single-photo processing (realtime — used by S3 webhook, single import)
 // ---------------------------------------------------------------------------
@@ -240,6 +254,14 @@ export async function processPhoto(
   const imageBuffer = await getObjectAsBuffer(s3Bucket, s3Key);
   logger.debug(`Downloaded ${imageBuffer.length} bytes`);
 
+  // Check whether we should generate the 300×300 BYTEA thumbnail
+  const shouldGenerateThumbnail = await getGenerateThumbnailSetting();
+  /** Returns a thumbnail promise or a pre-resolved null (skipped). */
+  const thumbnailTask = () =>
+    shouldGenerateThumbnail
+      ? generateThumbnail(imageBuffer)
+      : Promise.resolve(null as unknown as { buffer: Buffer; width: number; height: number; format: string });
+
   // Extract original image dimensions
   let width: number | null = null;
   let height: number | null = null;
@@ -254,6 +276,7 @@ export async function processPhoto(
 
   let exif: ExtractedData["exif"];
   let thumbnail: ExtractedData["thumbnail"];
+  let placeholder: string | null = null;
   let caption: string | null;
   let faces: ExtractedData["faces"];
   let skipFaces = false;
@@ -262,14 +285,16 @@ export async function processPhoto(
   let facesVersion: string | null = null;
 
   if (gpuMode === "skip") {
-    // Skip all GPU work: only run local extraction (EXIF + thumbnail + dimensions)
-    const [exifResult, thumbnailResult] = await Promise.allSettled([
+    // Skip all GPU work: only run local extraction (EXIF + thumbnail + placeholder + dimensions)
+    const [exifResult, thumbnailResult, placeholderResult] = await Promise.allSettled([
       extractExif(imageBuffer),
-      generateThumbnail(imageBuffer),
+      thumbnailTask(),
+      generatePlaceholder(imageBuffer),
     ]);
 
     exif = parseExifResult(exifResult, errors);
     thumbnail = parseThumbnailResult(thumbnailResult, errors);
+    placeholder = parsePlaceholderResult(placeholderResult, errors);
     caption = null;
     faces = [];
     skipFaces = true;
@@ -281,15 +306,17 @@ export async function processPhoto(
 
     if (gpuMode === "caption-only") {
       // Caption only — skip face detection
-      const [exifResult, thumbnailResult, captionResult] =
+      const [exifResult, thumbnailResult, placeholderResult, captionResult] =
         await Promise.allSettled([
           extractExif(imageBuffer),
-          generateThumbnail(imageBuffer),
+          thumbnailTask(),
+          generatePlaceholder(imageBuffer),
           client.caption(imageBuffer),
         ]);
 
       exif = parseExifResult(exifResult, errors);
       thumbnail = parseThumbnailResult(thumbnailResult, errors);
+      placeholder = parsePlaceholderResult(placeholderResult, errors);
       caption = parseCaptionResult(captionResult, errors);
       faces = [];
       skipFaces = true;
@@ -297,15 +324,17 @@ export async function processPhoto(
       captionVersion = captionResult.status === "fulfilled" ? CAPTION_VERSION : null;
     } else if (gpuMode === "faces-only") {
       // Face detection only — skip captioning
-      const [exifResult, thumbnailResult, facesResult] =
+      const [exifResult, thumbnailResult, placeholderResult, facesResult] =
         await Promise.allSettled([
           extractExif(imageBuffer),
-          generateThumbnail(imageBuffer),
+          thumbnailTask(),
+          generatePlaceholder(imageBuffer),
           client.faces(imageBuffer),
         ]);
 
       exif = parseExifResult(exifResult, errors);
       thumbnail = parseThumbnailResult(thumbnailResult, errors);
+      placeholder = parsePlaceholderResult(placeholderResult, errors);
       caption = null;
       skipCaption = true;
       faces = parseFacesResult(facesResult, errors);
@@ -313,16 +342,18 @@ export async function processPhoto(
       facesVersion = facesResult.status === "fulfilled" ? FACES_VERSION : null;
     } else {
       // Full processing: both caption + faces (separate calls for independent versioning)
-      const [exifResult, thumbnailResult, captionResult, facesResult] =
+      const [exifResult, thumbnailResult, placeholderResult, captionResult, facesResult] =
         await Promise.allSettled([
           extractExif(imageBuffer),
-          generateThumbnail(imageBuffer),
+          thumbnailTask(),
+          generatePlaceholder(imageBuffer),
           client.caption(imageBuffer),
           client.faces(imageBuffer),
         ]);
 
       exif = parseExifResult(exifResult, errors);
       thumbnail = parseThumbnailResult(thumbnailResult, errors);
+      placeholder = parsePlaceholderResult(placeholderResult, errors);
       caption = parseCaptionResult(captionResult, errors);
       faces = parseFacesResult(facesResult, errors);
       // Only stamp version if the respective GPU call succeeded
@@ -332,15 +363,17 @@ export async function processPhoto(
   } else {
     // Local mode (no GPU): use CPU-based extractors
     if (gpuMode === "caption-only") {
-      const [exifResult, thumbnailResult, captionResult] =
+      const [exifResult, thumbnailResult, placeholderResult, captionResult] =
         await Promise.allSettled([
           extractExif(imageBuffer),
-          generateThumbnail(imageBuffer),
+          thumbnailTask(),
+          generatePlaceholder(imageBuffer),
           generateCaption(imageBuffer),
         ]);
 
       exif = parseExifResult(exifResult, errors);
       thumbnail = parseThumbnailResult(thumbnailResult, errors);
+      placeholder = parsePlaceholderResult(placeholderResult, errors);
       caption =
         captionResult.status === "fulfilled"
           ? captionResult.value
@@ -349,15 +382,17 @@ export async function processPhoto(
       skipFaces = true;
       captionVersion = captionResult.status === "fulfilled" ? CAPTION_VERSION : null;
     } else if (gpuMode === "faces-only") {
-      const [exifResult, thumbnailResult, facesResult] =
+      const [exifResult, thumbnailResult, placeholderResult, facesResult] =
         await Promise.allSettled([
           extractExif(imageBuffer),
-          generateThumbnail(imageBuffer),
+          thumbnailTask(),
+          generatePlaceholder(imageBuffer),
           detectFaces(imageBuffer),
         ]);
 
       exif = parseExifResult(exifResult, errors);
       thumbnail = parseThumbnailResult(thumbnailResult, errors);
+      placeholder = parsePlaceholderResult(placeholderResult, errors);
       caption = null;
       skipCaption = true;
       faces =
@@ -366,16 +401,18 @@ export async function processPhoto(
           : (errors.push(`Faces: ${facesResult.reason}`), logger.error("Faces error:", facesResult.reason), []);
       facesVersion = facesResult.status === "fulfilled" ? FACES_VERSION : null;
     } else {
-      const [exifResult, thumbnailResult, captionResult, facesResult] =
+      const [exifResult, thumbnailResult, placeholderResult, captionResult, facesResult] =
         await Promise.allSettled([
           extractExif(imageBuffer),
-          generateThumbnail(imageBuffer),
+          thumbnailTask(),
+          generatePlaceholder(imageBuffer),
           generateCaption(imageBuffer),
           detectFaces(imageBuffer),
         ]);
 
       exif = parseExifResult(exifResult, errors);
       thumbnail = parseThumbnailResult(thumbnailResult, errors);
+      placeholder = parsePlaceholderResult(placeholderResult, errors);
 
       caption =
         captionResult.status === "fulfilled"
@@ -392,7 +429,7 @@ export async function processPhoto(
     }
   }
 
-  return saveToDb({ s3Path, s3Key, width, height, exif, thumbnail, caption, faces, errors, skipFaces, skipCaption, captionVersion, facesVersion });
+  return saveToDb({ s3Path, s3Key, width, height, exif, thumbnail, placeholder, caption, faces, errors, skipFaces, skipCaption, captionVersion, facesVersion });
 }
 
 // ---------------------------------------------------------------------------
@@ -656,6 +693,9 @@ async function processChunk(
   inputs: ProcessPhotoInput[],
   gpuClient: GpuClient
 ): Promise<ProcessPhotoOutput[]> {
+  // Check thumbnail setting once per chunk
+  const shouldGenerateThumbnail = await getGenerateThumbnailSetting();
+
   interface PendingPhoto {
     input: ProcessPhotoInput;
     s3Path: string;
@@ -666,6 +706,7 @@ async function processChunk(
     localPromise: Promise<{
       exif: PromiseSettledResult<ExtractedData["exif"]>;
       thumbnail: PromiseSettledResult<{ buffer: Buffer; width: number; height: number; format: string }>;
+      placeholder: PromiseSettledResult<string>;
     }>;
   }
 
@@ -694,11 +735,14 @@ async function processChunk(
       facesPromise.catch(() => {}); // suppress unhandled rejection
     }
 
-    // Start local work (EXIF + thumbnail) in parallel
+    // Start local work (EXIF + thumbnail + placeholder) in parallel
     const localPromise = Promise.allSettled([
       extractExif(imageBuffer),
-      generateThumbnail(imageBuffer),
-    ]).then(([exif, thumbnail]) => ({ exif, thumbnail }));
+      shouldGenerateThumbnail
+        ? generateThumbnail(imageBuffer)
+        : Promise.resolve(null as unknown as { buffer: Buffer; width: number; height: number; format: string }),
+      generatePlaceholder(imageBuffer),
+    ]).then(([exif, thumbnail, placeholder]) => ({ exif, thumbnail, placeholder }));
 
     pending.push({ input, s3Path, imageBuffer, gpuMode: mode, captionPromise, facesPromise, localPromise });
   });
@@ -732,6 +776,7 @@ async function processChunk(
       const local = await item.localPromise;
       const exif = parseExifResult(local.exif, errors);
       const thumbnail = parseThumbnailResult(local.thumbnail, errors);
+      const placeholder = parsePlaceholderResult(local.placeholder, errors);
 
       // Await GPU results based on mode
       let caption: string | null = null;
@@ -759,7 +804,7 @@ async function processChunk(
         skipFaces = true;
       }
 
-      const output = await saveToDb({ s3Path, s3Key, width, height, exif, thumbnail, caption, faces, errors, skipFaces, skipCaption, captionVersion, facesVersion });
+      const output = await saveToDb({ s3Path, s3Key, width, height, exif, thumbnail, placeholder, caption, faces, errors, skipFaces, skipCaption, captionVersion, facesVersion });
       results.push(output);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

@@ -11,8 +11,8 @@
  * so you can update one model without reprocessing the other.
  */
 
-/** Overall process version (for local extraction: EXIF, thumbnail, dimensions). */
-export const PROCESS_VERSION = "3.0.0";
+/** Overall process version (for local extraction: EXIF, thumbnail, placeholder, dimensions). */
+export const PROCESS_VERSION = "3.1.0";
 
 /** Caption model version — bump when changing the captioning model or prompt. */
 export const CAPTION_VERSION = "1.0.0";
@@ -25,6 +25,8 @@ export const FACES_VERSION = "1.0.0";
  * Used by the reprocess endpoint to inform the user what re-running will do.
  */
 export const PROCESS_CHANGELOG: Record<string, string> = {
+  "3.1.0":
+    "Generate tiny 16x16 WebP placeholder for progressive grid loading; photos load directly from S3 on scroll",
   "3.0.0":
     "Split GPU processing: caption and face detection are now independent pipelines with separate versioning. Reprocess one without the other.",
   "2.2.0":

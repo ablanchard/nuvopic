@@ -21,6 +21,7 @@ export interface PhotoWithStats {
   location_name: string | null;
   width: number | null;
   height: number | null;
+  placeholder: string | null;
   face_count: number;
   tags: string[];
 }
@@ -105,6 +106,7 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
       p.location_name,
       p.width,
       p.height,
+      p.placeholder,
       (SELECT COUNT(*)::int FROM faces f WHERE f.photo_id = p.id AND ${fqFilter}) as face_count,
       COALESCE(
         (SELECT array_agg(t.name ORDER BY t.name)
@@ -141,6 +143,7 @@ export async function getPhotoWithDetails(id: string): Promise<PhotoWithStats | 
       p.location_name,
       p.width,
       p.height,
+      p.placeholder,
       (SELECT COUNT(*)::int FROM faces f WHERE f.photo_id = p.id AND ${fqFilter}) as face_count,
       COALESCE(
         (SELECT array_agg(t.name ORDER BY t.name)
