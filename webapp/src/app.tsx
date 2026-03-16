@@ -3,6 +3,7 @@ import { SearchBar } from './components/SearchBar';
 import { HomePage } from './components/HomePage';
 import { FacesPage } from './components/FacesPage';
 import { SettingsPage } from './components/SettingsPage';
+import { GpuLogsPage } from './components/GpuLogsPage';
 import { photoSize } from './state/filters';
 import { getCurrentUrl } from 'preact-router';
 import { useState } from 'preact/hooks';
@@ -30,7 +31,7 @@ export function App() {
           </a>
           <a
             href="/settings"
-            class={`nav-link ${currentPath === '/settings' ? 'nav-link--active' : ''}`}
+            class={`nav-link ${currentPath.startsWith('/settings') ? 'nav-link--active' : ''}`}
           >
             Settings
           </a>
@@ -59,6 +60,7 @@ export function App() {
         <HomePage path="/" />
         <FacesPage path="/faces" />
         <SettingsPage path="/settings" />
+        <GpuLogsPage path="/settings/gpu-logs" />
       </Router>
     </div>
   );

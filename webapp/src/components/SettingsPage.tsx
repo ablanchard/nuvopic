@@ -214,11 +214,8 @@ export function SettingsPage(_props: RoutableProps) {
       <aside class="sidebar">
         <h3 class="sidebar-heading">Settings</h3>
         <nav class="settings-nav">
-          {Object.keys(sections).map((section) => (
-            <a key={section} href={`#settings-${section.toLowerCase().replace(/\s+/g, '-')}`} class="settings-nav-link">
-              {section}
-            </a>
-          ))}
+          <a href="/settings" class="settings-nav-link settings-nav-link--active">General</a>
+          <a href="/settings/gpu-logs" class="settings-nav-link">GPU Logs</a>
         </nav>
       </aside>
 

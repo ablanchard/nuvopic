@@ -96,6 +96,47 @@ export interface ReclusterResult {
   newClusters: number;
 }
 
+export interface GpuLog {
+  id: string;
+  parentId: string | null;
+  type: string;
+  provider: string | null;
+  gpuMode: string | null;
+  photoId: string | null;
+  s3Path: string | null;
+  status: 'running' | 'completed' | 'failed';
+  photoCount: number | null;
+  photosSucceeded: number | null;
+  photosFailed: number | null;
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+  error: string | null;
+  childrenCount: number;
+}
+
+export interface GpuLogListResponse {
+  logs: GpuLog[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    hasMore: boolean;
+  };
+}
+
+export interface GpuLogDetailResponse {
+  log: GpuLog;
+  children: GpuLog[];
+}
+
+export interface GpuLogFilters {
+  type?: string;
+  status?: string;
+  page?: number;
+  limit?: number;
+}
+
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
   if (response.status === 401) {
@@ -261,6 +302,27 @@ export const api = {
 
     getS3Config: (): Promise<Record<string, { envValue: string | null; effectiveValue: string | null; effectiveSource: 'db' | 'env' | null }>> => {
       return fetchJson<Record<string, { envValue: string | null; effectiveValue: string | null; effectiveSource: 'db' | 'env' | null }>>(`${API_BASE}/settings/s3`);
+    },
+  },
+
+  gpuLogs: {
+    list: (filters: GpuLogFilters = {}): Promise<GpuLogListResponse> => {
+      const params = new URLSearchParams();
+      if (filters.type) params.set('type', filters.type);
+      if (filters.status) params.set('status', filters.status);
+      if (filters.page) params.set('page', String(filters.page));
+      if (filters.limit) params.set('limit', String(filters.limit));
+
+      const query = params.toString();
+      return fetchJson<GpuLogListResponse>(`${API_BASE}/gpu-logs${query ? `?${query}` : ''}`);
+    },
+
+    get: (id: string): Promise<GpuLogDetailResponse> => {
+      return fetchJson<GpuLogDetailResponse>(`${API_BASE}/gpu-logs/${id}`);
+    },
+
+    getChildren: (id: string): Promise<{ children: GpuLog[] }> => {
+      return fetchJson<{ children: GpuLog[] }>(`${API_BASE}/gpu-logs/${id}/children`);
     },
   },
 };

@@ -6,6 +6,7 @@ import persons from "./routes/persons.js";
 import tags from "./routes/tags.js";
 import clusters from "./routes/clusters.js";
 import settings from "./routes/settings.js";
+import gpuLogs from "./routes/gpu-logs.js";
 
 const api = new Hono();
 
@@ -24,5 +25,6 @@ api.route("/persons", persons);
 api.route("/tags", tags);
 api.route("/clusters", clusters);
 api.route("/settings", settings);
+api.route("/gpu-logs", gpuLogs);
 
 export default api;

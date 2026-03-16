@@ -209,6 +209,35 @@ BEGIN
     END IF;
 END $$;
 
+-- GPU process logs: tracks every GPU operation (batch jobs + per-photo calls)
+CREATE TABLE IF NOT EXISTS gpu_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- Self-referencing: parent_id IS NULL = job-level, otherwise photo-level child
+    parent_id UUID REFERENCES gpu_logs(id) ON DELETE CASCADE,
+    -- Log type: 'import' | 'reprocess' | 'caption' | 'faces' | 'analyze' | 'single'
+    type TEXT NOT NULL,
+    -- GPU provider used: 'modal' | 'vastai' | 'local'
+    provider TEXT,
+    -- GPU mode: 'all' | 'caption-only' | 'faces-only' | 'skip'
+    gpu_mode TEXT,
+    -- Per-photo context (NULL for job-level logs)
+    photo_id UUID,
+    s3_path TEXT,
+    -- Status: 'running' | 'completed' | 'failed'
+    status TEXT NOT NULL DEFAULT 'running',
+    -- Job-level aggregates
+    photo_count INTEGER,
+    photos_succeeded INTEGER,
+    photos_failed INTEGER,
+    -- Timing
+    started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMP,
+    duration_ms INTEGER,
+    -- Error details
+    error TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_photos_taken_at ON photos(taken_at);
 CREATE INDEX IF NOT EXISTS idx_photos_s3_path ON photos(s3_path);
@@ -219,6 +248,10 @@ CREATE INDEX IF NOT EXISTS idx_faces_photo_id ON faces(photo_id);
 CREATE INDEX IF NOT EXISTS idx_faces_person_id ON faces(person_id);
 CREATE INDEX IF NOT EXISTS idx_photo_tags_tag_id ON photo_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_faces_cluster_id ON faces(cluster_id);
+CREATE INDEX IF NOT EXISTS idx_gpu_logs_parent_id ON gpu_logs(parent_id);
+CREATE INDEX IF NOT EXISTS idx_gpu_logs_type ON gpu_logs(type);
+CREATE INDEX IF NOT EXISTS idx_gpu_logs_status ON gpu_logs(status);
+CREATE INDEX IF NOT EXISTS idx_gpu_logs_started_at ON gpu_logs(started_at);
 
 -- HNSW index for fast cosine similarity search on face embeddings
 CREATE INDEX IF NOT EXISTS idx_faces_embedding_cosine

@@ -872,6 +872,16 @@ body {
   color: #222;
 }
 
+.settings-nav-link--active {
+  background: #0066cc;
+  color: #fff;
+}
+
+.settings-nav-link--active:hover {
+  background: #0055aa;
+  color: #fff;
+}
+
 .settings-container {
   max-width: 720px;
 }
@@ -1017,4 +1027,215 @@ body {
 .setting-toggle-label {
   color: #555;
   user-select: none;
+}
+
+/* =========================================================================
+   GPU Logs Page
+   ========================================================================= */
+
+/* Sidebar filters */
+.gpu-log-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.gpu-log-filter-label {
+  font-size: 0.8rem;
+  color: #666;
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  margin-top: 0.25rem;
+}
+
+.gpu-log-filter-select {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  background: #fff;
+  cursor: pointer;
+  width: 100%;
+}
+
+.gpu-log-filter-select:focus {
+  border-color: #0066cc;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.15);
+}
+
+.gpu-log-refresh-btn {
+  margin-top: 0.5rem;
+  width: 100%;
+}
+
+/* Empty state */
+.gpu-log-empty {
+  padding: 3rem 2rem;
+  text-align: center;
+  color: #888;
+  font-size: 0.95rem;
+}
+
+/* Table wrapper & table */
+.gpu-log-table-wrapper {
+  background: #fff;
+  border-radius: 8px;
+  overflow-x: auto;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.gpu-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.gpu-log-table thead th {
+  text-align: left;
+  padding: 0.75rem 0.75rem;
+  border-bottom: 2px solid #eee;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: #888;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.gpu-log-table tbody td {
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid #f0f0f0;
+  vertical-align: middle;
+}
+
+/* Expand column */
+.gpu-log-expand-col {
+  width: 2rem;
+  text-align: center;
+}
+
+/* Row styles */
+.gpu-log-row {
+  cursor: default;
+  transition: background 0.1s;
+}
+
+.gpu-log-row:hover {
+  background: #fafafa;
+}
+
+.gpu-log-row--expanded {
+  background: #f8f9ff;
+}
+
+.gpu-log-row--expanded:hover {
+  background: #f0f2ff;
+}
+
+/* Caret */
+.gpu-log-caret {
+  display: inline-block;
+  font-size: 0.7rem;
+  color: #999;
+  transition: transform 0.15s;
+  cursor: pointer;
+}
+
+.gpu-log-caret--open {
+  transform: rotate(90deg);
+}
+
+/* Status badges */
+.gpu-log-badge {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.gpu-log-badge--completed {
+  background: #e6f9ed;
+  color: #1a7f37;
+}
+
+.gpu-log-badge--failed {
+  background: #fff0f0;
+  color: #c33;
+}
+
+.gpu-log-badge--running {
+  background: #fff8e0;
+  color: #8a6d00;
+}
+
+/* Type badge */
+.gpu-log-type-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  background: #eef2ff;
+  color: #4455aa;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+/* Photo counts sub-text */
+.gpu-log-photo-counts {
+  font-size: 0.75rem;
+  color: #888;
+}
+
+/* Truncated cells */
+.gpu-log-s3path,
+.gpu-log-error {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gpu-log-error {
+  color: #999;
+  font-size: 0.8rem;
+}
+
+/* Child (per-photo) rows */
+.gpu-log-child-row {
+  background: #f9fafb;
+}
+
+.gpu-log-child-row td {
+  padding-top: 0.4rem;
+  padding-bottom: 0.4rem;
+  font-size: 0.8rem;
+  color: #555;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.gpu-log-children-loading {
+  text-align: center;
+  color: #999;
+  padding: 0.75rem;
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+/* Pagination */
+.gpu-log-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 1rem 0;
+}
+
+.gpu-log-page-info {
+  font-size: 0.85rem;
+  color: #666;
+  font-variant-numeric: tabular-nums;
 }

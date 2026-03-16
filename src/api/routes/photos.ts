@@ -3,12 +3,13 @@ import { searchPhotos, getPhotoWithDetails } from "../../db/search.js";
 import { getPhotoById, getPhotosToReprocess, getPhotosToReprocessCaption, getPhotosToReprocessFaces, getAllPhotosForReprocess, getExistingS3Paths } from "../../db/queries.js";
 import { getFacesByPhotoId } from "../../db/queries.js";
 import { processPhoto, processPhotoBatch, type GpuMode } from "../../processor.js";
-import { isGpuEnabled } from "../../extractors/gpu-client.js";
+import { isGpuEnabled, getBatchGpuProvider } from "../../extractors/gpu-client.js";
 import { PROCESS_VERSION, CAPTION_VERSION, FACES_VERSION, PROCESS_CHANGELOG, CAPTION_CHANGELOG, FACES_CHANGELOG } from "../../version.js";
 import { listAllObjects, getS3Path, getPresignedImageUrl } from "../../s3/client.js";
 import { logger } from "../../logger.js";
 import { clusterUnassignedFaces } from "../../db/clusters.js";
 import { getS3Bucket } from "../../db/settings.js";
+import { safeCreateGpuLog, safeCompleteGpuLog, safeFailGpuLog } from "../../db/gpu-logs.js";
 
 const photos = new Hono();
 
@@ -144,6 +145,15 @@ photos.post("/reprocess", async (c) => {
   logger.info(`Reprocessing ${photosToProcess.length} photos (force=${force}, gpuMode=${gpuMode})`);
   const startTime = Date.now();
 
+  // Create a job-level GPU log entry
+  const provider = getBatchGpuProvider();
+  const jobLogId = await safeCreateGpuLog({
+    type: "reprocess",
+    provider,
+    gpuMode,
+    photoCount: photosToProcess.length,
+  });
+
   // Build batch inputs, skipping any with invalid s3_path
   const batchInputs: Array<{ id: string; s3Path: string; s3Bucket: string; s3Key: string }> = [];
   const skipped: Array<{ id: string; s3Path: string; error: string }> = [];
@@ -163,7 +173,8 @@ photos.post("/reprocess", async (c) => {
       if (completed % 10 === 0 || completed === total) {
         logger.info(`Reprocess progress: ${completed}/${total}`);
       }
-    }
+    },
+    jobLogId
   );
 
   // Merge results
@@ -180,6 +191,9 @@ photos.post("/reprocess", async (c) => {
   const succeeded = results.filter((r) => r.success).length;
   const failed = results.filter((r) => !r.success).length;
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+  // Complete the job-level GPU log
+  await safeCompleteGpuLog(jobLogId, { photosSucceeded: succeeded, photosFailed: failed });
 
   // Auto-cluster newly detected faces after reprocess (only if we processed faces)
   if (gpuMode === "all" || gpuMode === "faces-only") {
@@ -291,6 +305,15 @@ photos.post("/import", async (c) => {
 
   const startTime = Date.now();
 
+  // Create a job-level GPU log entry for this import
+  const importProvider = getBatchGpuProvider();
+  const jobLogId = await safeCreateGpuLog({
+    type: "import",
+    provider: importProvider,
+    gpuMode: "all",
+    photoCount: toProcess.length,
+  });
+
   const batchInputs = toProcess.map((key) => ({ s3Bucket: bucket, s3Key: key }));
   const batchResults = await processPhotoBatch(
     batchInputs,
@@ -300,7 +323,8 @@ photos.post("/import", async (c) => {
         const rate = (completed / parseFloat(elapsed)).toFixed(2);
         logger.info(`Import progress: ${completed}/${total} (${elapsed}s, ${rate} photos/s)`);
       }
-    }
+    },
+    jobLogId
   );
 
   const results = toProcess.map((key, i) => ({
@@ -312,6 +336,9 @@ photos.post("/import", async (c) => {
   const succeeded = results.filter((r) => r.success).length;
   const failed = results.filter((r) => !r.success).length;
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+  // Complete the job-level GPU log
+  await safeCompleteGpuLog(jobLogId, { photosSucceeded: succeeded, photosFailed: failed });
 
   logger.info(`Import complete: ${succeeded} succeeded, ${failed} failed in ${elapsed}s`);
 

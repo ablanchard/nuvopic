@@ -24,6 +24,11 @@ import {
   getPhotoByS3Path,
 } from "./db/queries.js";
 import { getGenerateThumbnailSetting } from "./db/settings.js";
+import {
+  safeCreateGpuLog,
+  safeCompleteGpuLog,
+  safeFailGpuLog,
+} from "./db/gpu-logs.js";
 import { logger } from "./logger.js";
 import { PROCESS_VERSION, CAPTION_VERSION, FACES_VERSION } from "./version.js";
 import sharp from "sharp";
@@ -241,7 +246,9 @@ function parsePlaceholderResult(
 export async function processPhoto(
   input: ProcessPhotoInput,
   /** Optional pre-created GPU client (used by batch processor to share a client). */
-  gpuClient?: GpuClient
+  gpuClient?: GpuClient,
+  /** Optional parent job log ID — child photo logs will reference this. */
+  jobLogId?: string | null
 ): Promise<ProcessPhotoOutput> {
   const { s3Bucket, s3Key } = input;
   const s3Path = getS3Path(s3Bucket, s3Key);
@@ -250,6 +257,18 @@ export async function processPhoto(
   const gpuMode = resolveGpuMode(input);
 
   logger.info(`Processing photo: ${s3Path} (gpuMode=${gpuMode})`);
+
+  // Create a per-photo GPU log entry (fire-and-forget safe)
+  const realtimeProvider = getRealtimeGpuProvider();
+  const photoLogId = gpuMode !== "skip"
+    ? await safeCreateGpuLog({
+        parentId: jobLogId,
+        type: gpuMode === "caption-only" ? "caption" : gpuMode === "faces-only" ? "faces" : "single",
+        provider: gpuClient?.provider ?? realtimeProvider,
+        gpuMode,
+        s3Path,
+      })
+    : null;
 
   const imageBuffer = await getObjectAsBuffer(s3Bucket, s3Key);
   logger.debug(`Downloaded ${imageBuffer.length} bytes`);
@@ -429,7 +448,16 @@ export async function processPhoto(
     }
   }
 
-  return saveToDb({ s3Path, s3Key, width, height, exif, thumbnail, placeholder, caption, faces, errors, skipFaces, skipCaption, captionVersion, facesVersion });
+  const result = await saveToDb({ s3Path, s3Key, width, height, exif, thumbnail, placeholder, caption, faces, errors, skipFaces, skipCaption, captionVersion, facesVersion });
+
+  // Complete or fail the per-photo GPU log
+  if (result.errors.length > 0) {
+    await safeFailGpuLog(photoLogId, result.errors.join("; "));
+  } else {
+    await safeCompleteGpuLog(photoLogId);
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -450,7 +478,9 @@ const MAX_REPROVISIONS = parseInt(
 
 export async function processPhotoBatch(
   inputs: ProcessPhotoInput[],
-  onProgress?: (completed: number, total: number) => void
+  onProgress?: (completed: number, total: number) => void,
+  /** Optional parent job log ID — per-photo child logs will reference this. */
+  jobLogId?: string | null
 ): Promise<ProcessPhotoOutput[]> {
   if (inputs.length === 0) return [];
 
@@ -469,7 +499,7 @@ export async function processPhotoBatch(
   if (!useGpu) {
     // Local mode (or skip): just run processPhoto with local concurrency
     return runLocalConcurrency(inputs, LOCAL_CONCURRENCY, async (input) => {
-      const result = await processPhoto(input);
+      const result = await processPhoto(input, undefined, jobLogId);
       completed++;
       onProgress?.(completed, total);
       return result;
@@ -480,7 +510,7 @@ export async function processPhotoBatch(
   const allSkipGpu = inputs.every((i) => resolveGpuMode(i) === "skip");
   if (allSkipGpu) {
     return runLocalConcurrency(inputs, LOCAL_CONCURRENCY, async (input) => {
-      const result = await processPhoto(input);
+      const result = await processPhoto(input, undefined, jobLogId);
       completed++;
       onProgress?.(completed, total);
       return result;
@@ -521,7 +551,7 @@ export async function processPhotoBatch(
           `Processing chunk ${chunkIdx + 1}/${numChunks} (${chunkInputs.length} photos)`
         );
 
-        const chunkResults = await processChunk(chunkInputs, gpuClient);
+        const chunkResults = await processChunk(chunkInputs, gpuClient, jobLogId);
 
         const chunkMs = Date.now() - chunkStartTime;
         logger.info(
@@ -691,7 +721,8 @@ export async function processPhotoBatch(
  */
 async function processChunk(
   inputs: ProcessPhotoInput[],
-  gpuClient: GpuClient
+  gpuClient: GpuClient,
+  jobLogId?: string | null
 ): Promise<ProcessPhotoOutput[]> {
   // Check thumbnail setting once per chunk
   const shouldGenerateThumbnail = await getGenerateThumbnailSetting();
@@ -759,6 +790,18 @@ async function processChunk(
     const { s3Path } = item;
     const s3Key = item.input.s3Key;
 
+    // Create a per-photo GPU log entry
+    const mode = item.gpuMode;
+    const photoLogId = mode !== "skip"
+      ? await safeCreateGpuLog({
+          parentId: jobLogId,
+          type: mode === "caption-only" ? "caption" : mode === "faces-only" ? "faces" : "analyze",
+          provider: gpuClient.provider,
+          gpuMode: mode,
+          s3Path,
+        })
+      : null;
+
     try {
       // Extract original image dimensions
       let width: number | null = null;
@@ -806,9 +849,17 @@ async function processChunk(
 
       const output = await saveToDb({ s3Path, s3Key, width, height, exif, thumbnail, placeholder, caption, faces, errors, skipFaces, skipCaption, captionVersion, facesVersion });
       results.push(output);
+
+      // Complete or fail the per-photo GPU log
+      if (output.errors.length > 0) {
+        await safeFailGpuLog(photoLogId, output.errors.join("; "));
+      } else {
+        await safeCompleteGpuLog(photoLogId);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.error(`Batch item failed for ${s3Path}:`, err);
+      await safeFailGpuLog(photoLogId, message);
       results.push({
         photoId: "",
         s3Path,
