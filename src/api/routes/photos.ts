@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { searchPhotos, getPhotoWithDetails } from "../../db/search.js";
+import { searchPhotos, getPhotoWithDetails, getTimelineIndex } from "../../db/search.js";
 import { getPhotoById, getPhotosToReprocess, getPhotosToReprocessCaption, getPhotosToReprocessFaces, getAllPhotosForReprocess, getExistingS3Paths } from "../../db/queries.js";
 import { getFacesByPhotoId } from "../../db/queries.js";
 import { processPhoto, processPhotoBatch, type GpuMode } from "../../processor.js";
@@ -58,6 +58,28 @@ photos.get("/", async (c) => {
       hasMore: page * limit < total,
     },
   });
+});
+
+// Timeline index: lightweight year/month counts for virtual scrolling
+photos.get("/timeline", async (c) => {
+  const q = c.req.query("q");
+  const tag = c.req.query("tag");
+  const personId = c.req.query("person");
+  const from = c.req.query("from");
+  const to = c.req.query("to");
+
+  const filters = {
+    search: q || undefined,
+    tagIds: tag ? [tag] : undefined,
+    personId: personId || undefined,
+    dateFrom: from ? new Date(from) : undefined,
+    dateTo: to ? new Date(to) : undefined,
+  };
+
+  const groups = await getTimelineIndex(filters);
+  const total = groups.reduce((sum, g) => sum + g.count, 0);
+
+  return c.json({ groups, total });
 });
 
 // Preview reprocessing: show what would be reprocessed and why

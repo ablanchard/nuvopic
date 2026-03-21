@@ -128,6 +128,102 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
   };
 }
 
+export interface TimelineGroup {
+  year: number | null;
+  month: number | null;
+  count: number;
+}
+
+export async function getTimelineIndex(
+  filters: Omit<PhotoFilters, "limit" | "offset">
+): Promise<TimelineGroup[]> {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  let paramIndex = 1;
+
+  if (filters.search) {
+    conditions.push(`(
+      p.description ILIKE $${paramIndex}
+      OR EXISTS (
+        SELECT 1 FROM faces f2
+        JOIN face_clusters fc2 ON f2.cluster_id = fc2.id
+        JOIN persons per ON fc2.person_id = per.id
+        WHERE f2.photo_id = p.id AND per.name ILIKE $${paramIndex}
+      )
+    )`);
+    params.push(`%${filters.search}%`);
+    paramIndex++;
+  }
+
+  if (filters.dateFrom) {
+    conditions.push(`p.taken_at >= $${paramIndex}`);
+    params.push(filters.dateFrom);
+    paramIndex++;
+  }
+
+  if (filters.dateTo) {
+    conditions.push(`p.taken_at <= $${paramIndex}`);
+    params.push(filters.dateTo);
+    paramIndex++;
+  }
+
+  if (filters.personId) {
+    conditions.push(`EXISTS (
+      SELECT 1 FROM faces f
+      JOIN face_clusters fc ON f.cluster_id = fc.id
+      WHERE f.photo_id = p.id AND fc.person_id = $${paramIndex}
+    )`);
+    params.push(filters.personId);
+    paramIndex++;
+  }
+
+  if (filters.tagIds && filters.tagIds.length > 0) {
+    conditions.push(`EXISTS (
+      SELECT 1 FROM photo_tags pt
+      WHERE pt.photo_id = p.id AND pt.tag_id = ANY($${paramIndex})
+    )`);
+    params.push(filters.tagIds);
+    paramIndex++;
+  }
+
+  const whereClause =
+    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  // Get monthly counts for photos with a date
+  const dated = await query<{ year: string; month: string; count: string }>(
+    `SELECT
+      EXTRACT(YEAR FROM p.taken_at)::int AS year,
+      EXTRACT(MONTH FROM p.taken_at)::int AS month,
+      COUNT(*)::int AS count
+    FROM photos p
+    ${whereClause}${conditions.length > 0 ? " AND" : " WHERE"} p.taken_at IS NOT NULL
+    GROUP BY year, month
+    ORDER BY year DESC, month DESC`,
+    params
+  );
+
+  // Count photos with no date
+  const undated = await query<{ count: string }>(
+    `SELECT COUNT(*)::int AS count
+    FROM photos p
+    ${whereClause}${conditions.length > 0 ? " AND" : " WHERE"} p.taken_at IS NULL`,
+    params
+  );
+
+  const groups: TimelineGroup[] = dated.rows.map((r) => ({
+    year: parseInt(r.year, 10),
+    month: parseInt(r.month, 10),
+    count: parseInt(r.count, 10),
+  }));
+
+  const undatedCount = parseInt(undated.rows[0]?.count ?? "0", 10);
+  if (undatedCount > 0) {
+    groups.push({ year: null, month: null, count: undatedCount });
+  }
+
+  return groups;
+}
+
 export async function getPhotoWithDetails(id: string): Promise<PhotoWithStats | null> {
   const fqSettings = await getFaceQualitySettings();
   const fqFilter = faceQualityFilter("f", fqSettings);

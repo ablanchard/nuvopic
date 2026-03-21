@@ -61,6 +61,17 @@ export interface PhotoFilters {
   limit?: number;
 }
 
+export interface TimelineGroup {
+  year: number | null;
+  month: number | null;
+  count: number;
+}
+
+export interface TimelineResponse {
+  groups: TimelineGroup[];
+  total: number;
+}
+
 export type ClusterStrategy = 'first' | 'average';
 
 export interface Cluster {
@@ -178,6 +189,18 @@ export const api = {
     getFullImageUrl: async (id: string): Promise<string> => {
       const result = await fetchJson<{ url: string }>(`${API_BASE}/photos/${id}/image`);
       return result.url;
+    },
+
+    timeline: (filters: Omit<PhotoFilters, 'page' | 'limit'> = {}): Promise<TimelineResponse> => {
+      const params = new URLSearchParams();
+      if (filters.search) params.set('q', filters.search);
+      if (filters.tag) params.set('tag', filters.tag);
+      if (filters.person) params.set('person', filters.person);
+      if (filters.from) params.set('from', filters.from);
+      if (filters.to) params.set('to', filters.to);
+
+      const query = params.toString();
+      return fetchJson<TimelineResponse>(`${API_BASE}/photos/timeline${query ? `?${query}` : ''}`);
     },
   },
 

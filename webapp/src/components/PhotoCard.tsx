@@ -10,48 +10,53 @@ interface PhotoCardProps {
 export function PhotoCard({ photo, onClick }: PhotoCardProps) {
   const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const cardRef = useRef<HTMLDivElement>(null);
   const loadingRef = useRef(false);
 
+  // Wait 500ms after mount before loading the full image from S3.
+  // This prevents firing S3 requests for cards that are only briefly
+  // visible while the user is actively scrolling.
   useEffect(() => {
-    const el = cardRef.current;
-    if (!el) return;
+    let cancelled = false;
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting && !loadingRef.current && !imageSrc) {
-          loadingRef.current = true;
-          // Fetch presigned S3 URL and preload the image
-          api.photos.getFullImageUrl(photo.id).then((url) => {
-            const img = new Image();
-            img.onload = () => {
-              setImageSrc(url);
-              setLoaded(true);
-            };
-            img.onerror = () => {
-              // Fallback to the DB thumbnail if S3 fails
-              setImageSrc(photo.thumbnailUrl);
-              setLoaded(true);
-            };
-            img.src = url;
-          }).catch(() => {
-            // Fallback to the DB thumbnail if presigned URL fetch fails
+    const timer = setTimeout(() => {
+      if (cancelled || loadingRef.current) return;
+      loadingRef.current = true;
+
+      api.photos.getFullImageUrl(photo.id).then((url) => {
+        if (cancelled) return;
+        const img = new Image();
+        img.onload = () => {
+          if (!cancelled) {
+            setImageSrc(url);
+            setLoaded(true);
+          }
+        };
+        img.onerror = () => {
+          if (!cancelled) {
             setImageSrc(photo.thumbnailUrl);
             setLoaded(true);
-          });
+          }
+        };
+        img.src = url;
+      }).catch(() => {
+        if (!cancelled) {
+          setImageSrc(photo.thumbnailUrl);
+          setLoaded(true);
         }
-      },
-      { rootMargin: '200px' }
-    );
+      });
+    }, 500);
 
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [photo.id, photo.thumbnailUrl, imageSrc]);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      loadingRef.current = false;
+    };
+  }, [photo.id, photo.thumbnailUrl]);
 
   const placeholderSrc = photo.placeholder || undefined;
 
   return (
-    <div class="photo-card" onClick={onClick} ref={cardRef}>
+    <div class="photo-card" onClick={onClick}>
       {placeholderSrc && !loaded && (
         <img
           src={placeholderSrc}
