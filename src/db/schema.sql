@@ -238,6 +238,15 @@ CREATE TABLE IF NOT EXISTS gpu_logs (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Photo sources: user-defined labels grouping S3 path prefixes
+CREATE TABLE IF NOT EXISTS photo_sources (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    label TEXT NOT NULL UNIQUE,
+    path_prefixes TEXT[] NOT NULL DEFAULT '{}',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_photos_taken_at ON photos(taken_at);
 CREATE INDEX IF NOT EXISTS idx_photos_s3_path ON photos(s3_path);

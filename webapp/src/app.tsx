@@ -4,6 +4,7 @@ import { HomePage } from './components/HomePage';
 import { FacesPage } from './components/FacesPage';
 import { SettingsPage } from './components/SettingsPage';
 import { GpuLogsPage } from './components/GpuLogsPage';
+import { SourcesSettingsPage } from './components/SourcesSettingsPage';
 import { photoSize } from './state/filters';
 import { getCurrentUrl } from 'preact-router';
 import { useState } from 'preact/hooks';
@@ -61,6 +62,7 @@ export function App() {
         <FacesPage path="/faces" />
         <SettingsPage path="/settings" />
         <GpuLogsPage path="/settings/gpu-logs" />
+        <SourcesSettingsPage path="/settings/sources" />
       </Router>
     </div>
   );

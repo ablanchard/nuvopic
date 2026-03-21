@@ -211,3 +211,139 @@ export async function getExistingS3Paths(
 
   return new Set(result.rows.map((r) => r.s3_path));
 }
+
+// ---------------------------------------------------------------------------
+// Photo Sources CRUD
+// ---------------------------------------------------------------------------
+
+export interface PhotoSourceRecord {
+  id: string;
+  label: string;
+  path_prefixes: string[];
+  sort_order: number;
+  created_at: Date;
+}
+
+export async function listPhotoSources(): Promise<PhotoSourceRecord[]> {
+  const result = await query<PhotoSourceRecord>(
+    `SELECT * FROM photo_sources ORDER BY sort_order ASC, label ASC`
+  );
+  return result.rows;
+}
+
+export async function getPhotoSourceById(id: string): Promise<PhotoSourceRecord | null> {
+  const result = await query<PhotoSourceRecord>(
+    `SELECT * FROM photo_sources WHERE id = $1`,
+    [id]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function createPhotoSource(params: {
+  label: string;
+  pathPrefixes: string[];
+  sortOrder?: number;
+}): Promise<PhotoSourceRecord> {
+  const result = await query<PhotoSourceRecord>(
+    `INSERT INTO photo_sources (label, path_prefixes, sort_order)
+     VALUES ($1, $2, $3)
+     RETURNING *`,
+    [params.label, params.pathPrefixes, params.sortOrder ?? 0]
+  );
+  return result.rows[0];
+}
+
+export async function updatePhotoSource(
+  id: string,
+  params: { label?: string; pathPrefixes?: string[]; sortOrder?: number }
+): Promise<PhotoSourceRecord | null> {
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  let idx = 1;
+
+  if (params.label !== undefined) {
+    sets.push(`label = $${idx++}`);
+    values.push(params.label);
+  }
+  if (params.pathPrefixes !== undefined) {
+    sets.push(`path_prefixes = $${idx++}`);
+    values.push(params.pathPrefixes);
+  }
+  if (params.sortOrder !== undefined) {
+    sets.push(`sort_order = $${idx++}`);
+    values.push(params.sortOrder);
+  }
+
+  if (sets.length === 0) return getPhotoSourceById(id);
+
+  values.push(id);
+  const result = await query<PhotoSourceRecord>(
+    `UPDATE photo_sources SET ${sets.join(", ")} WHERE id = $${idx} RETURNING *`,
+    values
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function deletePhotoSource(id: string): Promise<boolean> {
+  const result = await query(`DELETE FROM photo_sources WHERE id = $1`, [id]);
+  return (result.rowCount ?? 0) > 0;
+}
+
+/**
+ * Count photos matching a source's path prefixes.
+ * Each prefix is matched with `s3_path LIKE prefix || '%'`.
+ */
+export async function countPhotosForPrefixes(prefixes: string[]): Promise<number> {
+  if (prefixes.length === 0) return 0;
+  const likes = prefixes.map((_, i) => `p.s3_path LIKE $${i + 1}`).join(" OR ");
+  const result = await query<{ count: string }>(
+    `SELECT COUNT(*) AS count FROM photos p WHERE ${likes}`,
+    prefixes.map((pf) => pf + "%")
+  );
+  return parseInt(result.rows[0].count, 10);
+}
+
+/**
+ * Path breakdown: level-1, level-2, and level-3 prefix counts.
+ * Returns rows like { level1: "Photos", level2: "Camera", level3: "2018", count: 5484 }.
+ * The s3_path format is `s3://<bucket>/<key>` so we strip the bucket prefix first.
+ * Level-3 entries are only included when their count > 1 to exclude individual filenames.
+ */
+export async function getPathBreakdown(): Promise<
+  { level1: string; level2: string | null; level3: string | null; count: number }[]
+> {
+  const result = await query<{ level1: string; level2: string | null; level3: string | null; count: string }>(
+    `WITH keys AS (
+       SELECT regexp_replace(s3_path, '^s3://[^/]+/', '') AS key FROM photos
+     ),
+     parts AS (
+       SELECT
+         split_part(key, '/', 1) AS level1,
+         CASE WHEN position('/' in key) > 0
+              THEN split_part(key, '/', 2)
+              ELSE NULL
+         END AS level2,
+         CASE WHEN array_length(string_to_array(key, '/'), 1) >= 3
+              THEN split_part(key, '/', 3)
+              ELSE NULL
+         END AS level3
+       FROM keys
+     ),
+     grouped AS (
+       SELECT level1, level2, level3, COUNT(*)::int AS count
+       FROM parts
+       WHERE level1 != ''
+       GROUP BY level1, level2, level3
+     )
+     SELECT level1, level2, level3, count
+     FROM grouped
+     WHERE level3 IS NULL OR count > 1
+     ORDER BY count DESC`
+  );
+  return result.rows.map((r) => ({
+    level1: r.level1,
+    level2: r.level2 || null,
+    level3: r.level3 || null,
+    count: parseInt(r.count, 10),
+  }));
+}

@@ -55,6 +55,7 @@ export interface PhotoFilters {
   search?: string;
   tag?: string;
   person?: string;
+  source?: string;
   from?: string;
   to?: string;
   page?: number;
@@ -148,6 +149,22 @@ export interface GpuLogFilters {
   limit?: number;
 }
 
+export interface PhotoSource {
+  id: string;
+  label: string;
+  pathPrefixes: string[];
+  sortOrder: number;
+  photoCount: number;
+  createdAt: string;
+}
+
+export interface PathBreakdownEntry {
+  level1: string;
+  level2: string | null;
+  level3: string | null;
+  count: number;
+}
+
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
   if (response.status === 401) {
@@ -169,6 +186,7 @@ export const api = {
       if (filters.search) params.set('q', filters.search);
       if (filters.tag) params.set('tag', filters.tag);
       if (filters.person) params.set('person', filters.person);
+      if (filters.source) params.set('source', filters.source);
       if (filters.from) params.set('from', filters.from);
       if (filters.to) params.set('to', filters.to);
       if (filters.page) params.set('page', String(filters.page));
@@ -196,6 +214,7 @@ export const api = {
       if (filters.search) params.set('q', filters.search);
       if (filters.tag) params.set('tag', filters.tag);
       if (filters.person) params.set('person', filters.person);
+      if (filters.source) params.set('source', filters.source);
       if (filters.from) params.set('from', filters.from);
       if (filters.to) params.set('to', filters.to);
 
@@ -346,6 +365,38 @@ export const api = {
 
     getChildren: (id: string): Promise<{ children: GpuLog[] }> => {
       return fetchJson<{ children: GpuLog[] }>(`${API_BASE}/gpu-logs/${id}/children`);
+    },
+  },
+
+  sources: {
+    list: (): Promise<{ sources: PhotoSource[] }> => {
+      return fetchJson<{ sources: PhotoSource[] }>(`${API_BASE}/sources`);
+    },
+
+    create: (data: { label: string; pathPrefixes: string[]; sortOrder?: number }): Promise<PhotoSource> => {
+      return fetchJson<PhotoSource>(`${API_BASE}/sources`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+    },
+
+    update: (id: string, data: { label?: string; pathPrefixes?: string[]; sortOrder?: number }): Promise<PhotoSource> => {
+      return fetchJson<PhotoSource>(`${API_BASE}/sources/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+    },
+
+    delete: (id: string): Promise<{ ok: boolean }> => {
+      return fetchJson<{ ok: boolean }>(`${API_BASE}/sources/${id}`, {
+        method: 'DELETE',
+      });
+    },
+
+    pathBreakdown: (): Promise<{ breakdown: PathBreakdownEntry[] }> => {
+      return fetchJson<{ breakdown: PathBreakdownEntry[] }>(`${API_BASE}/sources/path-breakdown`);
     },
   },
 };

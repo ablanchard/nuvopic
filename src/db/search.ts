@@ -1,10 +1,12 @@
 import { query } from "./client.js";
 import { getFaceQualitySettings, faceQualityFilter } from "./settings.js";
+import { getPhotoSourceById } from "./queries.js";
 
 export interface PhotoFilters {
   search?: string;
   tagIds?: string[];
   personId?: string;
+  sourceId?: string;
   dateFrom?: Date;
   dateTo?: Date;
   limit?: number;
@@ -80,6 +82,19 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
     )`);
     params.push(filters.tagIds);
     paramIndex++;
+  }
+
+  // Source filter: resolve source's path_prefixes and match via LIKE
+  if (filters.sourceId) {
+    const source = await getPhotoSourceById(filters.sourceId);
+    if (source && source.path_prefixes.length > 0) {
+      const likes = source.path_prefixes.map((_, i) => `p.s3_path LIKE $${paramIndex + i}`);
+      conditions.push(`(${likes.join(" OR ")})`);
+      for (const prefix of source.path_prefixes) {
+        params.push(prefix + "%");
+        paramIndex++;
+      }
+    }
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -184,6 +199,19 @@ export async function getTimelineIndex(
     )`);
     params.push(filters.tagIds);
     paramIndex++;
+  }
+
+  // Source filter: resolve source's path_prefixes and match via LIKE
+  if (filters.sourceId) {
+    const source = await getPhotoSourceById(filters.sourceId);
+    if (source && source.path_prefixes.length > 0) {
+      const likes = source.path_prefixes.map((_, i) => `p.s3_path LIKE $${paramIndex + i}`);
+      conditions.push(`(${likes.join(" OR ")})`);
+      for (const prefix of source.path_prefixes) {
+        params.push(prefix + "%");
+        paramIndex++;
+      }
+    }
   }
 
   const whereClause =

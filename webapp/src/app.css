@@ -1397,3 +1397,228 @@ body {
   color: #666;
   font-variant-numeric: tabular-nums;
 }
+
+/* =========================================================================
+   Source Filter (sidebar dropdown)
+   ========================================================================= */
+
+.source-filter-select {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  background: #fff;
+  cursor: pointer;
+}
+
+.source-filter-select:focus {
+  border-color: #0066cc;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.15);
+}
+
+/* =========================================================================
+   Sources Settings Page
+   ========================================================================= */
+
+/* Path breakdown tree */
+.path-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.path-tree-node {
+  border: 1px solid #eee;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.path-tree-level1 {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.35rem 0.5rem;
+  background: #fafafa;
+}
+
+.path-tree-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.15rem;
+  line-height: 1;
+  color: #888;
+  flex-shrink: 0;
+}
+
+.path-tree-toggle:hover {
+  color: #333;
+}
+
+.path-tree-caret {
+  display: inline-block;
+  font-size: 0.65rem;
+  transition: transform 0.15s;
+}
+
+.path-tree-caret--open {
+  transform: rotate(90deg);
+}
+
+.path-tree-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.path-tree-label input[type="checkbox"] {
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.path-tree-name {
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 0.8rem;
+  color: #333;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.path-tree-count {
+  font-size: 0.75rem;
+  color: #999;
+  margin-left: auto;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.path-tree-children {
+  padding: 0.15rem 0 0.35rem 1.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.path-tree-level2 {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 3px;
+}
+
+.path-tree-level2:hover {
+  background: #f5f5f5;
+}
+
+.path-tree-node--nested {
+  border: none;
+}
+
+.path-tree-toggle-spacer {
+  display: inline-block;
+  width: 1.1rem;
+  flex-shrink: 0;
+}
+
+.path-tree-level3 {
+  padding: 0.15rem 0.5rem 0.15rem 1.75rem;
+  border-radius: 3px;
+}
+
+.path-tree-level3:hover {
+  background: #f0f0f0;
+}
+
+/* Source cards (existing sources list) */
+.sources-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.source-card {
+  padding: 1rem 1.25rem;
+}
+
+.source-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.source-label {
+  font-weight: 600;
+  font-size: 1rem;
+  color: #222;
+}
+
+.source-photo-count {
+  font-size: 0.8rem;
+  color: #888;
+  white-space: nowrap;
+}
+
+.source-card-prefixes {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.source-prefix {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  background: #f0f0f0;
+  border-radius: 3px;
+  font-size: 0.75rem;
+  color: #555;
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+}
+
+.source-prefix-heading {
+  width: 100%;
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  color: #666;
+}
+
+.source-card-actions {
+  margin-top: 0.75rem;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.source-delete-btn {
+  color: #c33;
+  border-color: #e0b0b0;
+}
+
+.source-delete-btn:hover {
+  background: #fff0f0;
+  color: #900;
+}
+
+.sources-empty {
+  color: #888;
+  font-size: 0.9rem;
+  padding: 1rem 0;
+  margin: 0;
+}
+
+.source-selected-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: #555;
+}
