@@ -34,6 +34,31 @@ import { PROCESS_VERSION, CAPTION_VERSION, FACES_VERSION } from "./version.js";
 import sharp from "sharp";
 
 // ---------------------------------------------------------------------------
+// Performance timing helper
+// ---------------------------------------------------------------------------
+function memoryMB(): string {
+  const mem = process.memoryUsage();
+  return `rss=${(mem.rss / 1024 / 1024).toFixed(0)}MB heap=${(mem.heapUsed / 1024 / 1024).toFixed(0)}/${(mem.heapTotal / 1024 / 1024).toFixed(0)}MB`;
+}
+
+// ---------------------------------------------------------------------------
+// Cached thumbnail setting (avoids DB round-trip per photo)
+// ---------------------------------------------------------------------------
+let cachedThumbnailSetting: boolean | null = null;
+let cachedThumbnailSettingAt = 0;
+const THUMBNAIL_SETTING_TTL_MS = 30_000; // refresh every 30s
+
+async function getCachedThumbnailSetting(): Promise<boolean> {
+  const now = Date.now();
+  if (cachedThumbnailSetting !== null && now - cachedThumbnailSettingAt < THUMBNAIL_SETTING_TTL_MS) {
+    return cachedThumbnailSetting;
+  }
+  cachedThumbnailSetting = await getGenerateThumbnailSetting();
+  cachedThumbnailSettingAt = now;
+  return cachedThumbnailSetting;
+}
+
+// ---------------------------------------------------------------------------
 // Processing modes: what GPU work to do
 // ---------------------------------------------------------------------------
 
@@ -88,10 +113,15 @@ interface ExtractedData {
 
 async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
   const { s3Path, s3Key, width, height, exif, thumbnail, placeholder, caption, faces, errors } = data;
+  const tSave0 = Date.now();
 
   const takenAt = exif.takenAt ?? parseDateFromFilename(s3Key);
-  const existingPhoto = await getPhotoByS3Path(s3Path);
 
+  const tLookupStart = Date.now();
+  const existingPhoto = await getPhotoByS3Path(s3Path);
+  const tLookupMs = Date.now() - tLookupStart;
+
+  const tInsertStart = Date.now();
   const photoId = await insertPhoto({
     s3Path,
     takenAt,
@@ -106,8 +136,11 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
     captionVersion: data.captionVersion,
     facesVersion: data.facesVersion,
   });
+  const tInsertMs = Date.now() - tInsertStart;
 
+  let tFacesMs = 0;
   if (!data.skipFaces) {
+    const tFacesStart = Date.now();
     if (existingPhoto) {
       await deleteFacesByPhotoId(photoId);
     }
@@ -120,6 +153,12 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
         confidence: face.confidence,
       });
     }
+    tFacesMs = Date.now() - tFacesStart;
+  }
+
+  const tSaveTotal = Date.now() - tSave0;
+  if (tSaveTotal > 100) {
+    logger.info(`[perf] saveToDb ${s3Key}: total=${tSaveTotal}ms (lookup=${tLookupMs}ms insert=${tInsertMs}ms faces=${tFacesMs}ms)`);
   }
 
   const realtimeProvider = getRealtimeGpuProvider();
@@ -255,6 +294,7 @@ export async function processPhoto(
   const errors: string[] = [];
   const gpuEnabled = isGpuEnabled();
   const gpuMode = resolveGpuMode(input);
+  const t0 = Date.now();
 
   logger.info(`Processing photo: ${s3Path} (gpuMode=${gpuMode})`);
 
@@ -270,11 +310,19 @@ export async function processPhoto(
       })
     : null;
 
+  const tDownloadStart = Date.now();
   const imageBuffer = await getObjectAsBuffer(s3Bucket, s3Key);
-  logger.debug(`Downloaded ${imageBuffer.length} bytes`);
+  const tDownloadMs = Date.now() - tDownloadStart;
+  const fileSizeKB = (imageBuffer.length / 1024).toFixed(0);
+  logger.info(`[perf] ${s3Key}: download=${tDownloadMs}ms size=${fileSizeKB}KB`);
 
-  // Check whether we should generate the 300×300 BYTEA thumbnail
-  const shouldGenerateThumbnail = await getGenerateThumbnailSetting();
+  // Check whether we should generate the 300×300 BYTEA thumbnail (cached)
+  const tSettingStart = Date.now();
+  const shouldGenerateThumbnail = await getCachedThumbnailSetting();
+  const tSettingMs = Date.now() - tSettingStart;
+  if (tSettingMs > 5) {
+    logger.info(`[perf] ${s3Key}: thumbnailSetting=${tSettingMs}ms (cache miss)`);
+  }
   /** Returns a thumbnail promise or a pre-resolved null (skipped). */
   const thumbnailTask = () =>
     shouldGenerateThumbnail
@@ -282,6 +330,7 @@ export async function processPhoto(
       : Promise.resolve(null as unknown as { buffer: Buffer; width: number; height: number; format: string });
 
   // Extract original image dimensions
+  const tMetaStart = Date.now();
   let width: number | null = null;
   let height: number | null = null;
   try {
@@ -292,6 +341,8 @@ export async function processPhoto(
     errors.push(`Dimensions: ${err}`);
     logger.error("Dimensions error:", err);
   }
+  const tMetaMs = Date.now() - tMetaStart;
+  logger.info(`[perf] ${s3Key}: sharpMeta=${tMetaMs}ms dims=${width}x${height}`);
 
   let exif: ExtractedData["exif"];
   let thumbnail: ExtractedData["thumbnail"];
@@ -305,11 +356,13 @@ export async function processPhoto(
 
   if (gpuMode === "skip") {
     // Skip all GPU work: only run local extraction (EXIF + thumbnail + placeholder + dimensions)
+    const tLocalStart = Date.now();
     const [exifResult, thumbnailResult, placeholderResult] = await Promise.allSettled([
       extractExif(imageBuffer),
       thumbnailTask(),
       generatePlaceholder(imageBuffer),
     ]);
+    const tLocalMs = Date.now() - tLocalStart;
 
     exif = parseExifResult(exifResult, errors);
     thumbnail = parseThumbnailResult(thumbnailResult, errors);
@@ -318,6 +371,12 @@ export async function processPhoto(
     faces = [];
     skipFaces = true;
     skipCaption = true;
+
+    // Log individual task results
+    const exifMs = exifResult.status === "fulfilled" ? "ok" : "err";
+    const thumbMs = thumbnailResult.status === "fulfilled" ? "ok" : "err";
+    const placeholderMs = placeholderResult.status === "fulfilled" ? "ok" : "err";
+    logger.info(`[perf] ${s3Key}: localExtract=${tLocalMs}ms (exif=${exifMs} thumb=${thumbMs} placeholder=${placeholderMs})`);
   } else if (gpuEnabled) {
     // Get or create a GPU client
     const client =
@@ -448,7 +507,12 @@ export async function processPhoto(
     }
   }
 
+  const tSaveStart = Date.now();
   const result = await saveToDb({ s3Path, s3Key, width, height, exif, thumbnail, placeholder, caption, faces, errors, skipFaces, skipCaption, captionVersion, facesVersion });
+  const tSaveMs = Date.now() - tSaveStart;
+
+  const totalMs = Date.now() - t0;
+  logger.info(`[perf] ${s3Key}: saveToDb=${tSaveMs}ms TOTAL=${totalMs}ms (download=${tDownloadMs} meta=${tMetaMs} save=${tSaveMs}) ${memoryMB()}`);
 
   // Complete or fail the per-photo GPU log
   if (result.errors.length > 0) {
@@ -724,8 +788,8 @@ async function processChunk(
   gpuClient: GpuClient,
   jobLogId?: string | null
 ): Promise<ProcessPhotoOutput[]> {
-  // Check thumbnail setting once per chunk
-  const shouldGenerateThumbnail = await getGenerateThumbnailSetting();
+  // Check thumbnail setting once per chunk (cached)
+  const shouldGenerateThumbnail = await getCachedThumbnailSetting();
 
   interface PendingPhoto {
     input: ProcessPhotoInput;
@@ -886,11 +950,20 @@ async function runLocalConcurrency<T, R>(
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let nextIndex = 0;
+  let completedCount = 0;
+  const startTime = Date.now();
+  const logEveryN = 50; // log memory/throughput every N items
 
   async function worker(): Promise<void> {
     while (nextIndex < items.length) {
       const index = nextIndex++;
       results[index] = await fn(items[index]);
+      completedCount++;
+      if (completedCount % logEveryN === 0) {
+        const elapsed = (Date.now() - startTime) / 1000;
+        const rate = (completedCount / elapsed).toFixed(1);
+        logger.info(`[perf] progress: ${completedCount}/${items.length} (${rate} items/s) ${memoryMB()}`);
+      }
     }
   }
 

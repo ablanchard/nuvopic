@@ -283,8 +283,10 @@ photos.post("/import", async (c) => {
   const prefix: string = body.prefix ?? "";
   const limit: number = body.limit ?? 100;
   const sort: string = body.sort ?? "recent";
+  const skipModal: boolean = body.skipModal === true;
+  const gpuMode: GpuMode = skipModal ? "skip" : "all";
 
-  logger.info(`Import started: bucket=${bucket}, prefix=${prefix}, limit=${limit}, sort=${sort}`);
+  logger.info(`Import started: bucket=${bucket}, prefix=${prefix}, limit=${limit}, sort=${sort}, gpuMode=${gpuMode}`);
 
   // List all objects under prefix
   const allKeys = await listAllObjects(bucket, prefix || undefined);
@@ -306,15 +308,15 @@ photos.post("/import", async (c) => {
   const startTime = Date.now();
 
   // Create a job-level GPU log entry for this import
-  const importProvider = getBatchGpuProvider();
+  const importProvider = skipModal ? "local" : getBatchGpuProvider();
   const jobLogId = await safeCreateGpuLog({
     type: "import",
     provider: importProvider,
-    gpuMode: "all",
+    gpuMode,
     photoCount: toProcess.length,
   });
 
-  const batchInputs = toProcess.map((key) => ({ s3Bucket: bucket, s3Key: key }));
+  const batchInputs = toProcess.map((key) => ({ s3Bucket: bucket, s3Key: key, gpuMode }));
   const batchResults = await processPhotoBatch(
     batchInputs,
     (completed, total) => {
