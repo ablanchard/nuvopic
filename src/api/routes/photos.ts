@@ -1,11 +1,12 @@
 import { Hono } from "hono";
 import { searchPhotos, getPhotoWithDetails, getTimelineIndex } from "../../db/search.js";
-import { getPhotoById, getPhotosToReprocess, getPhotosToReprocessCaption, getPhotosToReprocessFaces, getAllPhotosForReprocess, getExistingS3Paths } from "../../db/queries.js";
+import { getPhotosToReprocess, getPhotosToReprocessCaption, getPhotosToReprocessFaces, getAllPhotosForReprocess, getExistingS3Paths } from "../../db/queries.js";
+import { getPhotoById } from "../../db/queries.js";
 import { getFacesByPhotoId } from "../../db/queries.js";
 import { processPhoto, processPhotoBatch, type GpuMode } from "../../processor.js";
 import { isGpuEnabled, getBatchGpuProvider } from "../../extractors/gpu-client.js";
 import { PROCESS_VERSION, CAPTION_VERSION, FACES_VERSION, PROCESS_CHANGELOG, CAPTION_CHANGELOG, FACES_CHANGELOG } from "../../version.js";
-import { listAllObjects, getS3Path, getPresignedImageUrl } from "../../s3/client.js";
+import { listAllObjects, getS3Path, getPresignedImageUrl, isSupportedImage } from "../../s3/client.js";
 import { logger } from "../../logger.js";
 import { clusterUnassignedFaces } from "../../db/clusters.js";
 import { getS3Bucket } from "../../db/settings.js";
@@ -40,7 +41,6 @@ photos.get("/", async (c) => {
   return c.json({
     photos: photoList.map((p) => ({
       id: p.id,
-      thumbnailUrl: `/api/v1/photos/${p.id}/thumbnail?v=${PROCESS_VERSION}`,
       fullImageUrl: `/api/v1/photos/${p.id}/image`,
       placeholder: p.placeholder,
       takenAt: p.taken_at,
@@ -245,13 +245,6 @@ photos.post("/reprocess", async (c) => {
   });
 });
 
-// Supported image extensions (same as index.ts)
-const SUPPORTED_EXTENSIONS = [".jpg", ".jpeg", ".png", ".heic", ".webp"];
-function isSupportedImage(key: string): boolean {
-  const lower = key.toLowerCase();
-  return SUPPORTED_EXTENSIONS.some((ext) => lower.endsWith(ext));
-}
-
 // Preview import: list S3 objects that would be imported
 photos.get("/import", async (c) => {
   const bucket = await getS3Bucket();
@@ -310,7 +303,15 @@ photos.post("/import", async (c) => {
   const limit: number = body.limit ?? 100;
   const sort: string = body.sort ?? "recent";
   const skipModal: boolean = body.skipModal === true;
-  const gpuMode: GpuMode = skipModal ? "skip" : "all";
+
+  // Granular GPU mode: accept explicit gpuMode, or derive from legacy skipModal flag
+  // Supported: "all" | "caption-only" | "faces-only" | "skip"
+  let gpuMode: GpuMode;
+  if (body.gpuMode) {
+    gpuMode = body.gpuMode as GpuMode;
+  } else {
+    gpuMode = skipModal ? "skip" : "all";
+  }
 
   logger.info(`Import started: bucket=${bucket}, prefix=${prefix}, limit=${limit}, sort=${sort}, gpuMode=${gpuMode}`);
 
@@ -404,7 +405,6 @@ photos.get("/:id", async (c) => {
   return c.json({
     id: photo.id,
     s3Path: photo.s3_path,
-    thumbnailUrl: `/api/v1/photos/${photo.id}/thumbnail?v=${PROCESS_VERSION}`,
     fullImageUrl: `/api/v1/photos/${photo.id}/image`,
     placeholder: photo.placeholder,
     takenAt: photo.taken_at,
@@ -416,32 +416,6 @@ photos.get("/:id", async (c) => {
     location: photo.location_lat && photo.location_lng
       ? { lat: photo.location_lat, lng: photo.location_lng, name: photo.location_name }
       : null,
-  });
-});
-
-// Get thumbnail image
-photos.get("/:id/thumbnail", async (c) => {
-  const id = c.req.param("id");
-  const photo = await getPhotoById(id);
-
-  if (!photo?.thumbnail) {
-    return c.json({ error: "Thumbnail not found" }, 404);
-  }
-
-  // Detect format from magic bytes: WebP starts with "RIFF....WEBP", JPEG with 0xFF 0xD8
-  const bytes = photo.thumbnail;
-  const isWebP =
-    bytes.length >= 12 &&
-    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
-    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
-  const contentType = isWebP ? "image/webp" : "image/jpeg";
-
-  return new Response(photo.thumbnail, {
-    headers: {
-      "Content-Type": contentType,
-      "Cache-Control": "public, max-age=31536000, immutable",
-      "ETag": `"${id}"`,
-    },
   });
 });
 

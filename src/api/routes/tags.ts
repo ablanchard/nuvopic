@@ -28,7 +28,6 @@ tags.get("/:name/photos", async (c) => {
   return c.json({
     photos: photos.map((p) => ({
       id: p.photo_id,
-      thumbnailUrl: `/api/v1/photos/${p.photo_id}/thumbnail`,
     })),
   });
 });

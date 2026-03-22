@@ -1,9 +1,5 @@
 export { extractExif, parseDateFromFilename, type ExifData } from "./exif.js";
-export {
-  generateThumbnail,
-  generatePlaceholder,
-  type ThumbnailResult,
-} from "./thumbnail.js";
+export { generatePlaceholder } from "./thumbnail.js";
 export { generateCaption, loadCaptionModel } from "./caption.js";
 export {
   detectFaces,

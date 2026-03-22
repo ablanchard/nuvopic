@@ -127,6 +127,7 @@ export function GpuLogsPage(_props: RoutableProps) {
           <a href="/settings" class="settings-nav-link">General</a>
           <a href="/settings/gpu-logs" class="settings-nav-link settings-nav-link--active">GPU Logs</a>
           <a href="/settings/smart-tags" class="settings-nav-link">Smart Tags</a>
+          <a href="/settings/storage" class="settings-nav-link">Storage</a>
         </nav>
 
         <h3 class="sidebar-heading" style="margin-top: 1.25rem;">Filters</h3>

@@ -1,73 +1,7 @@
 import { describe, it, expect } from "vitest";
 import sharp from "sharp";
-import { generateThumbnail } from "../../src/extractors/thumbnail.js";
 import { extractExif, parseDateFromFilename } from "../../src/extractors/exif.js";
 import { compareSemver } from "../../src/version.js";
-
-describe("Thumbnail Extractor", () => {
-  it("should generate a 300x300 WebP thumbnail", async () => {
-    // Create a test image
-    const testImage = await sharp({
-      create: {
-        width: 1920,
-        height: 1080,
-        channels: 3,
-        background: { r: 255, g: 0, b: 0 },
-      },
-    })
-      .jpeg()
-      .toBuffer();
-
-    const result = await generateThumbnail(testImage);
-
-    expect(result.width).toBe(300);
-    expect(result.height).toBe(300);
-    expect(result.format).toBe("webp");
-    expect(result.buffer.length).toBeGreaterThan(0);
-
-    // Verify the output is valid WebP
-    const metadata = await sharp(result.buffer).metadata();
-    expect(metadata.format).toBe("webp");
-    expect(metadata.width).toBe(300);
-    expect(metadata.height).toBe(300);
-  });
-
-  it("should handle portrait images", async () => {
-    const portraitImage = await sharp({
-      create: {
-        width: 1080,
-        height: 1920,
-        channels: 3,
-        background: { r: 0, g: 255, b: 0 },
-      },
-    })
-      .jpeg()
-      .toBuffer();
-
-    const result = await generateThumbnail(portraitImage);
-
-    expect(result.width).toBe(300);
-    expect(result.height).toBe(300);
-  });
-
-  it("should accept custom size", async () => {
-    const testImage = await sharp({
-      create: {
-        width: 800,
-        height: 600,
-        channels: 3,
-        background: { r: 0, g: 0, b: 255 },
-      },
-    })
-      .jpeg()
-      .toBuffer();
-
-    const result = await generateThumbnail(testImage, 100);
-
-    expect(result.width).toBe(100);
-    expect(result.height).toBe(100);
-  });
-});
 
 describe("EXIF Extractor", () => {
   it("should return null values for image without EXIF", async () => {

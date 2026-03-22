@@ -143,7 +143,7 @@ export function FacesPage(_props: RoutableProps) {
             {unassigned.map((face) => (
               <div key={face.id} class="unassigned-face-item">
                 <FaceCrop
-                  thumbnailUrl={face.thumbnailUrl}
+                  photoId={face.photoId}
                   boundingBox={face.boundingBox}
                   photoWidth={face.photoWidth}
                   photoHeight={face.photoHeight}
@@ -270,7 +270,7 @@ export function FacesPage(_props: RoutableProps) {
             >
               {cluster.representativeFace && (
                 <FaceCrop
-                  thumbnailUrl={cluster.representativeFace.thumbnailUrl}
+                  photoId={cluster.representativeFace.photoId}
                   boundingBox={cluster.representativeFace.boundingBox}
                   photoWidth={null}
                   photoHeight={null}

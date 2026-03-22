@@ -155,6 +155,102 @@ export async function listAllObjects(
   return keys;
 }
 
+/** Supported image extensions for import/browsing. */
+export const SUPPORTED_EXTENSIONS = [".jpg", ".jpeg", ".png", ".heic", ".webp"];
+
+export function isSupportedImage(key: string): boolean {
+  const lower = key.toLowerCase();
+  return SUPPORTED_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+export interface FolderEntry {
+  prefix: string;       // Full prefix (e.g. "Photos/2024/")
+  name: string;         // Just the folder name (e.g. "2024")
+  imageCount: number;   // Number of supported image files directly in this folder (not recursive)
+}
+
+export interface BrowseFolderResult {
+  folders: FolderEntry[];
+  imageCount: number;    // Supported images directly at this prefix level (not in subfolders)
+  imageKeys: string[];   // The actual keys of images at this level
+}
+
+/**
+ * Browse a "folder" in S3 using delimiter-based listing.
+ * Returns immediate subfolders (CommonPrefixes) and a count of supported
+ * image files at the current level.
+ *
+ * For each subfolder, we issue a separate recursive listing to count images.
+ * This is intentionally lazy — only called when the user expands a folder.
+ */
+export async function browseFolder(
+  bucket: string,
+  prefix: string = "",
+): Promise<BrowseFolderResult> {
+  const client = await getS3Client();
+  const folders: FolderEntry[] = [];
+  const imageKeys: string[] = [];
+  let continuationToken: string | undefined;
+
+  // Single-level listing with delimiter
+  do {
+    const command = new ListObjectsV2Command({
+      Bucket: bucket,
+      Prefix: prefix || undefined,
+      Delimiter: "/",
+      MaxKeys: 1000,
+      ContinuationToken: continuationToken,
+    });
+
+    const response = await client.send(command);
+
+    // Collect subfolders
+    if (response.CommonPrefixes) {
+      for (const cp of response.CommonPrefixes) {
+        if (cp.Prefix) {
+          const name = cp.Prefix.slice(prefix.length).replace(/\/$/, "");
+          if (name) {
+            folders.push({ prefix: cp.Prefix, name, imageCount: 0 });
+          }
+        }
+      }
+    }
+
+    // Collect image files at this level
+    if (response.Contents) {
+      for (const obj of response.Contents) {
+        if (obj.Key && isSupportedImage(obj.Key)) {
+          imageKeys.push(obj.Key);
+        }
+      }
+    }
+
+    continuationToken = response.NextContinuationToken;
+  } while (continuationToken);
+
+  // For each subfolder, count images recursively (full listing without delimiter)
+  // We do this in parallel with a concurrency limit
+  const CONCURRENCY = 5;
+  for (let i = 0; i < folders.length; i += CONCURRENCY) {
+    const batch = folders.slice(i, i + CONCURRENCY);
+    const counts = await Promise.all(
+      batch.map(async (folder) => {
+        const allKeys = await listAllObjects(bucket, folder.prefix);
+        return allKeys.filter(isSupportedImage).length;
+      })
+    );
+    for (let j = 0; j < batch.length; j++) {
+      batch[j].imageCount = counts[j];
+    }
+  }
+
+  return {
+    folders,
+    imageCount: imageKeys.length,
+    imageKeys,
+  };
+}
+
 /**
  * Generate a presigned URL for an S3 object.
  * The URL is valid for the specified duration (default: 15 minutes).

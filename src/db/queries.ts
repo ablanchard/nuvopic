@@ -8,7 +8,6 @@ export interface PhotoRecord {
   location_lng: number | null;
   location_name: string | null;
   description: string | null;
-  thumbnail: Buffer | null;
   placeholder: string | null;
   width: number | null;
   height: number | null;
@@ -40,7 +39,6 @@ export interface InsertPhotoParams {
   locationLng?: number | null;
   locationName?: string | null;
   description?: string | null;
-  thumbnail?: Buffer | null;
   placeholder?: string | null;
   width?: number | null;
   height?: number | null;
@@ -63,15 +61,14 @@ export interface InsertFaceParams {
 
 export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
   const result = await query<{ id: string }>(
-    `INSERT INTO photos (s3_path, taken_at, location_lat, location_lng, location_name, description, thumbnail, placeholder, width, height, process_version, caption_version, faces_version)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    `INSERT INTO photos (s3_path, taken_at, location_lat, location_lng, location_name, description, placeholder, width, height, process_version, caption_version, faces_version)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      ON CONFLICT (s3_path) DO UPDATE SET
        taken_at = COALESCE(EXCLUDED.taken_at, photos.taken_at),
        location_lat = COALESCE(EXCLUDED.location_lat, photos.location_lat),
        location_lng = COALESCE(EXCLUDED.location_lng, photos.location_lng),
        location_name = COALESCE(EXCLUDED.location_name, photos.location_name),
        description = COALESCE(EXCLUDED.description, photos.description),
-       thumbnail = COALESCE(EXCLUDED.thumbnail, photos.thumbnail),
        placeholder = COALESCE(EXCLUDED.placeholder, photos.placeholder),
        width = COALESCE(EXCLUDED.width, photos.width),
        height = COALESCE(EXCLUDED.height, photos.height),
@@ -87,7 +84,6 @@ export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
       params.locationLng ?? null,
       params.locationName ?? null,
       params.description ?? null,
-      params.thumbnail ?? null,
       params.placeholder ?? null,
       params.width ?? null,
       params.height ?? null,
@@ -210,6 +206,25 @@ export async function getExistingS3Paths(
   );
 
   return new Set(result.rows.map((r) => r.s3_path));
+}
+
+// ---------------------------------------------------------------------------
+// Storage browser helpers — count imported photos by S3 key prefix
+// ---------------------------------------------------------------------------
+
+/**
+ * Count how many photos exist in the DB whose s3_path matches a given set
+ * of full S3 keys. Used to compute "already imported" counts per folder.
+ */
+export async function countImportedByKeys(
+  s3Paths: string[]
+): Promise<number> {
+  if (s3Paths.length === 0) return 0;
+  const result = await query<{ count: string }>(
+    `SELECT COUNT(*) AS count FROM photos WHERE s3_path = ANY($1)`,
+    [s3Paths]
+  );
+  return parseInt(result.rows[0].count, 10);
 }
 
 // ---------------------------------------------------------------------------

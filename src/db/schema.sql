@@ -194,9 +194,11 @@ CREATE TABLE IF NOT EXISTS settings (
 -- Seed default settings (insert only if not already present)
 INSERT INTO settings (key, value) VALUES
     ('face_min_confidence', '0.7'),
-    ('face_min_size', '2500'),
-    ('generate_thumbnail', 'true')
+    ('face_min_size', '2500')
 ON CONFLICT (key) DO NOTHING;
+
+-- Migration: remove generate_thumbnail setting (no longer used)
+DELETE FROM settings WHERE key = 'generate_thumbnail';
 
 -- Migration: add placeholder column for tiny inline preview (base64 data URI)
 DO $$
@@ -206,6 +208,17 @@ BEGIN
         WHERE table_name = 'photos' AND column_name = 'placeholder'
     ) THEN
         ALTER TABLE photos ADD COLUMN placeholder TEXT;
+    END IF;
+END $$;
+
+-- Migration: drop thumbnail BYTEA column (v4.0.0 — only placeholder is used now)
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'photos' AND column_name = 'thumbnail'
+    ) THEN
+        ALTER TABLE photos DROP COLUMN thumbnail;
     END IF;
 END $$;
 

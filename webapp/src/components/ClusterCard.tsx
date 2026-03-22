@@ -117,7 +117,7 @@ export function ClusterCard({ cluster, onRefresh }: ClusterCardProps) {
             {visibleFaces.map((face) => (
               <div key={face.id} class="cluster-face-item">
                 <FaceCrop
-                  thumbnailUrl={face.thumbnailUrl}
+                  photoId={face.photoId}
                   boundingBox={face.boundingBox}
                   photoWidth={face.photoWidth}
                   photoHeight={face.photoHeight}

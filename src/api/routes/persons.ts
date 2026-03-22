@@ -33,7 +33,6 @@ persons.get("/unassigned-faces", async (c) => {
       id: f.id,
       photoId: f.photo_id,
       boundingBox: f.bounding_box,
-      thumbnailUrl: `/api/v1/photos/${f.photo_id}/thumbnail`,
     })),
   });
 });
@@ -63,7 +62,6 @@ persons.get("/:id/photos", async (c) => {
     photos: photos.map((p) => ({
       id: p.id,
       s3Path: p.s3_path,
-      thumbnailUrl: `/api/v1/photos/${p.id}/thumbnail`,
       takenAt: p.taken_at,
     })),
   });

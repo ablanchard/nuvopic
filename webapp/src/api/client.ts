@@ -2,7 +2,6 @@ const API_BASE = '/api/v1';
 
 export interface Photo {
   id: string;
-  thumbnailUrl: string;
   fullImageUrl: string;
   placeholder: string | null;
   takenAt: string | null;
@@ -48,7 +47,6 @@ export interface Face {
     width: number;
     height: number;
   };
-  thumbnailUrl: string;
 }
 
 export interface PhotoFilters {
@@ -84,7 +82,6 @@ export interface Cluster {
     faceId: string;
     photoId: string;
     boundingBox: { x: number; y: number; width: number; height: number };
-    thumbnailUrl: string;
   } | null;
 }
 
@@ -92,7 +89,6 @@ export interface ClusterFace {
   id: string;
   photoId: string;
   boundingBox: { x: number; y: number; width: number; height: number };
-  thumbnailUrl: string;
   photoWidth: number | null;
   photoHeight: number | null;
 }
@@ -182,6 +178,42 @@ export type FacetsResponse =
   | { type: 'path'; facets: PathFacetEntry[] }
   | { type: 'date'; facets: DateFacetEntry[] }
   | { type: 'text'; facets: TextFacetEntry[] };
+
+export interface StorageFolderInfo {
+  prefix: string;
+  name: string;
+  imageCount: number;
+  importedCount: number;
+  missingCount: number;
+}
+
+export interface StorageBrowseResponse {
+  bucket: string;
+  prefix: string;
+  folders: StorageFolderInfo[];
+  imageCount: number;
+  importedCount: number;
+  missingCount: number;
+}
+
+export interface ImportOptions {
+  prefix: string;
+  limit?: number;
+  sort?: string;
+  gpuMode?: 'all' | 'caption-only' | 'faces-only' | 'skip';
+}
+
+export interface ImportResult {
+  bucket: string;
+  prefix: string;
+  totalImages: number;
+  alreadyImported: number;
+  processed: number;
+  failed: number;
+  remaining: number;
+  elapsedSeconds: number;
+  photosPerSecond: number;
+}
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
@@ -419,6 +451,48 @@ export const api = {
 
     facets: (field: string): Promise<FacetsResponse> => {
       return fetchJson<FacetsResponse>(`${API_BASE}/smart-tags/facets?field=${encodeURIComponent(field)}`);
+    },
+  },
+
+  storage: {
+    browse: (prefix: string = ''): Promise<StorageBrowseResponse> => {
+      const params = new URLSearchParams();
+      if (prefix) params.set('prefix', prefix);
+      const query = params.toString();
+      return fetchJson<StorageBrowseResponse>(`${API_BASE}/storage/browse${query ? `?${query}` : ''}`);
+    },
+
+    import: (options: ImportOptions): Promise<ImportResult> => {
+      return fetchJson<ImportResult>(`${API_BASE}/photos/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(options),
+      });
+    },
+
+    importPreview: (prefix: string = '', limit: number = 100): Promise<{
+      bucket: string;
+      prefix: string;
+      totalObjects: number;
+      totalImages: number;
+      alreadyImported: number;
+      toImport: number;
+      remainingAfterLimit: number;
+      estimatedTime: string;
+      keys: string[];
+    }> => {
+      const params = new URLSearchParams();
+      if (prefix) params.set('prefix', prefix);
+      params.set('limit', String(limit));
+      return fetchJson(`${API_BASE}/photos/import?${params.toString()}`);
+    },
+
+    reprocess: (options: { mode?: string; force?: boolean; gpuMode?: string }): Promise<unknown> => {
+      return fetchJson(`${API_BASE}/photos/reprocess`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(options),
+      });
     },
   },
 };

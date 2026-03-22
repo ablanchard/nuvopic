@@ -29,7 +29,6 @@ clusters.get("/", async (c) => {
             faceId: cl.representative_face_id,
             photoId: cl.representative_photo_id,
             boundingBox: cl.representative_bounding_box,
-            thumbnailUrl: `/api/v1/photos/${cl.representative_photo_id}/thumbnail`,
           }
         : null,
     })),
@@ -44,7 +43,6 @@ clusters.get("/unassigned", async (c) => {
       id: f.id,
       photoId: f.photo_id,
       boundingBox: f.bounding_box,
-      thumbnailUrl: `/api/v1/photos/${f.photo_id}/thumbnail`,
       photoWidth: f.photo_width,
       photoHeight: f.photo_height,
     })),
@@ -60,7 +58,6 @@ clusters.get("/:id/faces", async (c) => {
       id: f.id,
       photoId: f.photo_id,
       boundingBox: f.bounding_box,
-      thumbnailUrl: `/api/v1/photos/${f.photo_id}/thumbnail`,
       photoWidth: f.photo_width,
       photoHeight: f.photo_height,
     })),

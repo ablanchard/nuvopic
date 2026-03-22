@@ -33,14 +33,13 @@ export function PhotoCard({ photo, onClick }: PhotoCardProps) {
         };
         img.onerror = () => {
           if (!cancelled) {
-            setImageSrc(photo.thumbnailUrl);
+            // No fallback — keep showing placeholder or empty state
             setLoaded(true);
           }
         };
         img.src = url;
       }).catch(() => {
         if (!cancelled) {
-          setImageSrc(photo.thumbnailUrl);
           setLoaded(true);
         }
       });
@@ -51,7 +50,7 @@ export function PhotoCard({ photo, onClick }: PhotoCardProps) {
       clearTimeout(timer);
       loadingRef.current = false;
     };
-  }, [photo.id, photo.thumbnailUrl]);
+  }, [photo.id]);
 
   const placeholderSrc = photo.placeholder || undefined;
 

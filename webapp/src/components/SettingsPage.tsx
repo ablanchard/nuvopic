@@ -217,6 +217,7 @@ export function SettingsPage(_props: RoutableProps) {
           <a href="/settings" class="settings-nav-link settings-nav-link--active">General</a>
           <a href="/settings/gpu-logs" class="settings-nav-link">GPU Logs</a>
           <a href="/settings/smart-tags" class="settings-nav-link">Smart Tags</a>
+          <a href="/settings/storage" class="settings-nav-link">Storage</a>
         </nav>
       </aside>
 
