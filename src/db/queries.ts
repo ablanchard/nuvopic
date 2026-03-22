@@ -213,103 +213,177 @@ export async function getExistingS3Paths(
 }
 
 // ---------------------------------------------------------------------------
-// Photo Sources CRUD
+// Smart Tags CRUD
 // ---------------------------------------------------------------------------
 
-export interface PhotoSourceRecord {
+export interface SmartTagRecord {
   id: string;
   label: string;
-  path_prefixes: string[];
+  field: string;
+  values: string[];
+  rule: string; // 'any' | 'all' | 'none'
   sort_order: number;
   created_at: Date;
 }
 
-export async function listPhotoSources(): Promise<PhotoSourceRecord[]> {
-  const result = await query<PhotoSourceRecord>(
-    `SELECT * FROM photo_sources ORDER BY sort_order ASC, label ASC`
+export async function listSmartTags(): Promise<SmartTagRecord[]> {
+  const result = await query<SmartTagRecord>(
+    `SELECT * FROM smart_tags ORDER BY sort_order ASC, label ASC`
   );
   return result.rows;
 }
 
-export async function getPhotoSourceById(id: string): Promise<PhotoSourceRecord | null> {
-  const result = await query<PhotoSourceRecord>(
-    `SELECT * FROM photo_sources WHERE id = $1`,
+export async function getSmartTagById(id: string): Promise<SmartTagRecord | null> {
+  const result = await query<SmartTagRecord>(
+    `SELECT * FROM smart_tags WHERE id = $1`,
     [id]
   );
   return result.rows[0] ?? null;
 }
 
-export async function createPhotoSource(params: {
+export async function createSmartTag(params: {
   label: string;
-  pathPrefixes: string[];
+  field: string;
+  values: string[];
+  rule: string;
   sortOrder?: number;
-}): Promise<PhotoSourceRecord> {
-  const result = await query<PhotoSourceRecord>(
-    `INSERT INTO photo_sources (label, path_prefixes, sort_order)
-     VALUES ($1, $2, $3)
+}): Promise<SmartTagRecord> {
+  const result = await query<SmartTagRecord>(
+    `INSERT INTO smart_tags (label, field, values, rule, sort_order)
+     VALUES ($1, $2, $3, $4, $5)
      RETURNING *`,
-    [params.label, params.pathPrefixes, params.sortOrder ?? 0]
+    [params.label, params.field, params.values, params.rule, params.sortOrder ?? 0]
   );
   return result.rows[0];
 }
 
-export async function updatePhotoSource(
+export async function updateSmartTag(
   id: string,
-  params: { label?: string; pathPrefixes?: string[]; sortOrder?: number }
-): Promise<PhotoSourceRecord | null> {
+  params: { label?: string; field?: string; values?: string[]; rule?: string; sortOrder?: number }
+): Promise<SmartTagRecord | null> {
   const sets: string[] = [];
-  const values: unknown[] = [];
+  const vals: unknown[] = [];
   let idx = 1;
 
-  if (params.label !== undefined) {
-    sets.push(`label = $${idx++}`);
-    values.push(params.label);
-  }
-  if (params.pathPrefixes !== undefined) {
-    sets.push(`path_prefixes = $${idx++}`);
-    values.push(params.pathPrefixes);
-  }
-  if (params.sortOrder !== undefined) {
-    sets.push(`sort_order = $${idx++}`);
-    values.push(params.sortOrder);
-  }
+  if (params.label !== undefined) { sets.push(`label = $${idx++}`); vals.push(params.label); }
+  if (params.field !== undefined) { sets.push(`field = $${idx++}`); vals.push(params.field); }
+  if (params.values !== undefined) { sets.push(`values = $${idx++}`); vals.push(params.values); }
+  if (params.rule !== undefined) { sets.push(`rule = $${idx++}`); vals.push(params.rule); }
+  if (params.sortOrder !== undefined) { sets.push(`sort_order = $${idx++}`); vals.push(params.sortOrder); }
 
-  if (sets.length === 0) return getPhotoSourceById(id);
+  if (sets.length === 0) return getSmartTagById(id);
 
-  values.push(id);
-  const result = await query<PhotoSourceRecord>(
-    `UPDATE photo_sources SET ${sets.join(", ")} WHERE id = $${idx} RETURNING *`,
-    values
+  vals.push(id);
+  const result = await query<SmartTagRecord>(
+    `UPDATE smart_tags SET ${sets.join(", ")} WHERE id = $${idx} RETURNING *`,
+    vals
   );
   return result.rows[0] ?? null;
 }
 
-export async function deletePhotoSource(id: string): Promise<boolean> {
-  const result = await query(`DELETE FROM photo_sources WHERE id = $1`, [id]);
+export async function deleteSmartTag(id: string): Promise<boolean> {
+  const result = await query(`DELETE FROM smart_tags WHERE id = $1`, [id]);
   return (result.rowCount ?? 0) > 0;
 }
 
+// ---------------------------------------------------------------------------
+// Smart Tag matching — build WHERE clause for a tag's rules
+// ---------------------------------------------------------------------------
+
 /**
- * Count photos matching a source's path prefixes.
- * Each prefix is matched with `s3_path LIKE prefix || '%'`.
+ * Build a WHERE condition + params for a smart tag.
+ * Returns { condition, params } where condition is a SQL fragment.
+ * The paramIndex is the starting $N index for this tag's params.
  */
-export async function countPhotosForPrefixes(prefixes: string[]): Promise<number> {
-  if (prefixes.length === 0) return 0;
-  const likes = prefixes.map((_, i) => `p.s3_path LIKE $${i + 1}`).join(" OR ");
+export function buildSmartTagCondition(
+  tag: SmartTagRecord,
+  paramIndex: number
+): { condition: string; params: unknown[]; nextIndex: number } {
+  const { field, values, rule } = tag;
+  if (values.length === 0) return { condition: "TRUE", params: [], nextIndex: paramIndex };
+
+  const parts: string[] = [];
+  const params: unknown[] = [];
+  let idx = paramIndex;
+
+  for (const value of values) {
+    if (field === "s3_path") {
+      // Prefix match
+      parts.push(`p.s3_path LIKE $${idx}`);
+      params.push(value + "%");
+      idx++;
+    } else if (field === "taken_at") {
+      // Smart date range: "2023" = full year, "2023-06" = full month
+      if (/^\d{4}$/.test(value)) {
+        parts.push(`(p.taken_at >= $${idx} AND p.taken_at < $${idx + 1})`);
+        params.push(`${value}-01-01`, `${parseInt(value, 10) + 1}-01-01`);
+        idx += 2;
+      } else if (/^\d{4}-\d{2}$/.test(value)) {
+        const [y, m] = value.split("-").map(Number);
+        const nextMonth = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
+        parts.push(`(p.taken_at >= $${idx} AND p.taken_at < $${idx + 1})`);
+        params.push(`${value}-01`, nextMonth);
+        idx += 2;
+      }
+    } else {
+      // Text fields: substring/contains (case-insensitive)
+      parts.push(`p.${field} ILIKE $${idx}`);
+      params.push(`%${value}%`);
+      idx++;
+    }
+  }
+
+  if (parts.length === 0) return { condition: "TRUE", params: [], nextIndex: paramIndex };
+
+  let condition: string;
+  if (rule === "none") {
+    condition = `NOT (${parts.join(" OR ")})`;
+  } else if (rule === "all") {
+    condition = `(${parts.join(" AND ")})`;
+  } else {
+    // rule === "any" (default)
+    condition = `(${parts.join(" OR ")})`;
+  }
+
+  return { condition, params, nextIndex: idx };
+}
+
+/**
+ * Count photos matching a smart tag's rules.
+ */
+export async function countPhotosForSmartTag(tag: SmartTagRecord): Promise<number> {
+  const { condition, params } = buildSmartTagCondition(tag, 1);
   const result = await query<{ count: string }>(
-    `SELECT COUNT(*) AS count FROM photos p WHERE ${likes}`,
-    prefixes.map((pf) => pf + "%")
+    `SELECT COUNT(*) AS count FROM photos p WHERE ${condition}`,
+    params
   );
   return parseInt(result.rows[0].count, 10);
 }
 
+// ---------------------------------------------------------------------------
+// Field Facets — distinct values + counts for any photo column
+// ---------------------------------------------------------------------------
+
+/** Allowed fields users can create smart tags on. */
+const ALLOWED_FIELDS = new Set([
+  "s3_path",
+  "taken_at",
+  "description",
+  "location_name",
+]);
+
+export function isAllowedField(field: string): boolean {
+  return ALLOWED_FIELDS.has(field);
+}
+
+export function getAllowedFields(): string[] {
+  return Array.from(ALLOWED_FIELDS);
+}
+
 /**
- * Path breakdown: level-1, level-2, and level-3 prefix counts.
- * Returns rows like { level1: "Photos", level2: "Camera", level3: "2018", count: 5484 }.
- * The s3_path format is `s3://<bucket>/<key>` so we strip the bucket prefix first.
- * Level-3 entries are only included when their count > 1 to exclude individual filenames.
+ * s3_path facets: 3-level hierarchical path breakdown.
  */
-export async function getPathBreakdown(): Promise<
+export async function getPathFacets(): Promise<
   { level1: string; level2: string | null; level3: string | null; count: number }[]
 > {
   const result = await query<{ level1: string; level2: string | null; level3: string | null; count: string }>(
@@ -344,6 +418,53 @@ export async function getPathBreakdown(): Promise<
     level1: r.level1,
     level2: r.level2 || null,
     level3: r.level3 || null,
+    count: parseInt(r.count, 10),
+  }));
+}
+
+/**
+ * taken_at facets: year > month hierarchy with counts.
+ */
+export async function getDateFacets(): Promise<
+  { year: number; month: number | null; count: number }[]
+> {
+  const result = await query<{ year: string; month: string | null; count: string }>(
+    `SELECT
+       EXTRACT(YEAR FROM taken_at)::int AS year,
+       EXTRACT(MONTH FROM taken_at)::int AS month,
+       COUNT(*)::int AS count
+     FROM photos
+     WHERE taken_at IS NOT NULL
+     GROUP BY year, month
+     ORDER BY year DESC, month DESC`
+  );
+  return result.rows.map((r) => ({
+    year: parseInt(r.year, 10),
+    month: r.month ? parseInt(r.month, 10) : null,
+    count: parseInt(r.count, 10),
+  }));
+}
+
+/**
+ * Generic text field facets: top distinct values with counts.
+ */
+export async function getTextFacets(
+  field: string,
+  limit = 100
+): Promise<{ value: string; count: number }[]> {
+  if (!isAllowedField(field)) throw new Error(`Field "${field}" is not allowed`);
+  // Sanitize: only allow known column names (already validated above)
+  const result = await query<{ value: string; count: string }>(
+    `SELECT ${field} AS value, COUNT(*)::int AS count
+     FROM photos
+     WHERE ${field} IS NOT NULL AND ${field} != ''
+     GROUP BY ${field}
+     ORDER BY count DESC
+     LIMIT $1`,
+    [limit]
+  );
+  return result.rows.map((r) => ({
+    value: r.value,
     count: parseInt(r.count, 10),
   }));
 }

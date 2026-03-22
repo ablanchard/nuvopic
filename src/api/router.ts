@@ -7,7 +7,7 @@ import tags from "./routes/tags.js";
 import clusters from "./routes/clusters.js";
 import settings from "./routes/settings.js";
 import gpuLogs from "./routes/gpu-logs.js";
-import sources from "./routes/sources.js";
+import smartTags from "./routes/smart-tags.js";
 
 const api = new Hono();
 
@@ -27,6 +27,6 @@ api.route("/tags", tags);
 api.route("/clusters", clusters);
 api.route("/settings", settings);
 api.route("/gpu-logs", gpuLogs);
-api.route("/sources", sources);
+api.route("/smart-tags", smartTags);
 
 export default api;

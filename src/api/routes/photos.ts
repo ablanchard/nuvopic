@@ -20,7 +20,7 @@ photos.get("/", async (c) => {
   const personId = c.req.query("person");
   const from = c.req.query("from");
   const to = c.req.query("to");
-  const source = c.req.query("source");
+  const smartTag = c.req.query("smartTag");
   const page = parseInt(c.req.query("page") ?? "1", 10);
   const limit = parseInt(c.req.query("limit") ?? "20", 10);
 
@@ -28,7 +28,7 @@ photos.get("/", async (c) => {
     search: q || undefined,
     tagIds: tag ? [tag] : undefined,
     personId: personId || undefined,
-    sourceId: source || undefined,
+    smartTagId: smartTag || undefined,
     dateFrom: from ? new Date(from) : undefined,
     dateTo: to ? new Date(to) : undefined,
     limit: Math.min(limit, 100),
@@ -69,13 +69,13 @@ photos.get("/timeline", async (c) => {
   const personId = c.req.query("person");
   const from = c.req.query("from");
   const to = c.req.query("to");
-  const source = c.req.query("source");
+  const smartTag = c.req.query("smartTag");
 
   const filters = {
     search: q || undefined,
     tagIds: tag ? [tag] : undefined,
     personId: personId || undefined,
-    sourceId: source || undefined,
+    smartTagId: smartTag || undefined,
     dateFrom: from ? new Date(from) : undefined,
     dateTo: to ? new Date(to) : undefined,
   };

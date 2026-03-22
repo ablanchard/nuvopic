@@ -71,14 +71,14 @@ export function PhotoGrid({ onPhotoClick }: PhotoGridProps) {
       search: currentFilters.search || undefined,
       tag: currentFilters.tag || undefined,
       person: currentFilters.person || undefined,
-      source: currentFilters.source || undefined,
+      smartTag: currentFilters.smartTag || undefined,
     });
 
     api.photos.timeline({
       search: currentFilters.search || undefined,
       tag: currentFilters.tag || undefined,
       person: currentFilters.person || undefined,
-      source: currentFilters.source || undefined,
+      smartTag: currentFilters.smartTag || undefined,
       from: currentFilters.from || undefined,
       to: currentFilters.to || undefined,
     }).then((data) => {

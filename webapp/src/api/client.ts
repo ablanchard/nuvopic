@@ -55,7 +55,7 @@ export interface PhotoFilters {
   search?: string;
   tag?: string;
   person?: string;
-  source?: string;
+  smartTag?: string;
   from?: string;
   to?: string;
   page?: number;
@@ -149,21 +149,39 @@ export interface GpuLogFilters {
   limit?: number;
 }
 
-export interface PhotoSource {
+export interface SmartTag {
   id: string;
   label: string;
-  pathPrefixes: string[];
+  field: string;
+  values: string[];
+  rule: string; // 'any' | 'all' | 'none'
   sortOrder: number;
   photoCount: number;
   createdAt: string;
 }
 
-export interface PathBreakdownEntry {
+export interface PathFacetEntry {
   level1: string;
   level2: string | null;
   level3: string | null;
   count: number;
 }
+
+export interface DateFacetEntry {
+  year: number;
+  month: number | null;
+  count: number;
+}
+
+export interface TextFacetEntry {
+  value: string;
+  count: number;
+}
+
+export type FacetsResponse =
+  | { type: 'path'; facets: PathFacetEntry[] }
+  | { type: 'date'; facets: DateFacetEntry[] }
+  | { type: 'text'; facets: TextFacetEntry[] };
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
@@ -186,7 +204,7 @@ export const api = {
       if (filters.search) params.set('q', filters.search);
       if (filters.tag) params.set('tag', filters.tag);
       if (filters.person) params.set('person', filters.person);
-      if (filters.source) params.set('source', filters.source);
+      if (filters.smartTag) params.set('smartTag', filters.smartTag);
       if (filters.from) params.set('from', filters.from);
       if (filters.to) params.set('to', filters.to);
       if (filters.page) params.set('page', String(filters.page));
@@ -214,7 +232,7 @@ export const api = {
       if (filters.search) params.set('q', filters.search);
       if (filters.tag) params.set('tag', filters.tag);
       if (filters.person) params.set('person', filters.person);
-      if (filters.source) params.set('source', filters.source);
+      if (filters.smartTag) params.set('smartTag', filters.smartTag);
       if (filters.from) params.set('from', filters.from);
       if (filters.to) params.set('to', filters.to);
 
@@ -368,21 +386,21 @@ export const api = {
     },
   },
 
-  sources: {
-    list: (): Promise<{ sources: PhotoSource[] }> => {
-      return fetchJson<{ sources: PhotoSource[] }>(`${API_BASE}/sources`);
+  smartTags: {
+    list: (): Promise<{ smartTags: SmartTag[] }> => {
+      return fetchJson<{ smartTags: SmartTag[] }>(`${API_BASE}/smart-tags`);
     },
 
-    create: (data: { label: string; pathPrefixes: string[]; sortOrder?: number }): Promise<PhotoSource> => {
-      return fetchJson<PhotoSource>(`${API_BASE}/sources`, {
+    create: (data: { label: string; field: string; values: string[]; rule: string; sortOrder?: number }): Promise<SmartTag> => {
+      return fetchJson<SmartTag>(`${API_BASE}/smart-tags`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       });
     },
 
-    update: (id: string, data: { label?: string; pathPrefixes?: string[]; sortOrder?: number }): Promise<PhotoSource> => {
-      return fetchJson<PhotoSource>(`${API_BASE}/sources/${id}`, {
+    update: (id: string, data: { label?: string; field?: string; values?: string[]; rule?: string; sortOrder?: number }): Promise<SmartTag> => {
+      return fetchJson<SmartTag>(`${API_BASE}/smart-tags/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
@@ -390,13 +408,17 @@ export const api = {
     },
 
     delete: (id: string): Promise<{ ok: boolean }> => {
-      return fetchJson<{ ok: boolean }>(`${API_BASE}/sources/${id}`, {
+      return fetchJson<{ ok: boolean }>(`${API_BASE}/smart-tags/${id}`, {
         method: 'DELETE',
       });
     },
 
-    pathBreakdown: (): Promise<{ breakdown: PathBreakdownEntry[] }> => {
-      return fetchJson<{ breakdown: PathBreakdownEntry[] }>(`${API_BASE}/sources/path-breakdown`);
+    fields: (): Promise<{ fields: string[] }> => {
+      return fetchJson<{ fields: string[] }>(`${API_BASE}/smart-tags/fields`);
+    },
+
+    facets: (field: string): Promise<FacetsResponse> => {
+      return fetchJson<FacetsResponse>(`${API_BASE}/smart-tags/facets?field=${encodeURIComponent(field)}`);
     },
   },
 };

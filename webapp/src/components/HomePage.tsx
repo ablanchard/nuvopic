@@ -3,7 +3,7 @@ import { PhotoGrid } from './PhotoGrid';
 import { TagFilter } from './TagFilter';
 import { PersonList } from './PersonList';
 import { DateFilter } from './DateFilter';
-import { SourceFilter } from './SourceFilter';
+import { SmartTagFilter } from './SmartTagFilter';
 import { resetFilters } from '../state/filters';
 import { api } from '../api/client';
 import type { Photo } from '../api/client';
@@ -65,7 +65,7 @@ export function HomePage(_props: RoutableProps) {
           <button class="reset-filters" onClick={resetFilters}>
             Clear Filters
           </button>
-          <SourceFilter />
+          <SmartTagFilter />
           <PersonList />
           <TagFilter />
           <DateFilter />

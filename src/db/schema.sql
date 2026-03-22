@@ -238,11 +238,13 @@ CREATE TABLE IF NOT EXISTS gpu_logs (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
--- Photo sources: user-defined labels grouping S3 path prefixes
-CREATE TABLE IF NOT EXISTS photo_sources (
+-- Smart tags: user-defined rule-based tags evaluated at query time
+CREATE TABLE IF NOT EXISTS smart_tags (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     label TEXT NOT NULL UNIQUE,
-    path_prefixes TEXT[] NOT NULL DEFAULT '{}',
+    field TEXT NOT NULL,              -- column name: 's3_path', 'taken_at', 'description', 'location_name'
+    values TEXT[] NOT NULL DEFAULT '{}',
+    rule TEXT NOT NULL DEFAULT 'any', -- 'any' | 'all' | 'none'
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT NOW()
 );

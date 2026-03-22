@@ -1,12 +1,12 @@
 import { query } from "./client.js";
 import { getFaceQualitySettings, faceQualityFilter } from "./settings.js";
-import { getPhotoSourceById } from "./queries.js";
+import { getSmartTagById, buildSmartTagCondition } from "./queries.js";
 
 export interface PhotoFilters {
   search?: string;
   tagIds?: string[];
   personId?: string;
-  sourceId?: string;
+  smartTagId?: string;
   dateFrom?: Date;
   dateTo?: Date;
   limit?: number;
@@ -84,16 +84,14 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
     paramIndex++;
   }
 
-  // Source filter: resolve source's path_prefixes and match via LIKE
-  if (filters.sourceId) {
-    const source = await getPhotoSourceById(filters.sourceId);
-    if (source && source.path_prefixes.length > 0) {
-      const likes = source.path_prefixes.map((_, i) => `p.s3_path LIKE $${paramIndex + i}`);
-      conditions.push(`(${likes.join(" OR ")})`);
-      for (const prefix of source.path_prefixes) {
-        params.push(prefix + "%");
-        paramIndex++;
-      }
+  // Smart tag filter: resolve tag's rules and build WHERE clause
+  if (filters.smartTagId) {
+    const tag = await getSmartTagById(filters.smartTagId);
+    if (tag && tag.values.length > 0) {
+      const result = buildSmartTagCondition(tag, paramIndex);
+      conditions.push(result.condition);
+      params.push(...result.params);
+      paramIndex = result.nextIndex;
     }
   }
 
@@ -201,16 +199,14 @@ export async function getTimelineIndex(
     paramIndex++;
   }
 
-  // Source filter: resolve source's path_prefixes and match via LIKE
-  if (filters.sourceId) {
-    const source = await getPhotoSourceById(filters.sourceId);
-    if (source && source.path_prefixes.length > 0) {
-      const likes = source.path_prefixes.map((_, i) => `p.s3_path LIKE $${paramIndex + i}`);
-      conditions.push(`(${likes.join(" OR ")})`);
-      for (const prefix of source.path_prefixes) {
-        params.push(prefix + "%");
-        paramIndex++;
-      }
+  // Smart tag filter: resolve tag's rules and build WHERE clause
+  if (filters.smartTagId) {
+    const tag = await getSmartTagById(filters.smartTagId);
+    if (tag && tag.values.length > 0) {
+      const result = buildSmartTagCondition(tag, paramIndex);
+      conditions.push(result.condition);
+      params.push(...result.params);
+      paramIndex = result.nextIndex;
     }
   }
 

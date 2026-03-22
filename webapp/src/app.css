@@ -1399,10 +1399,10 @@ body {
 }
 
 /* =========================================================================
-   Source Filter (sidebar dropdown)
+   Smart Tag Filter (sidebar dropdown)
    ========================================================================= */
 
-.source-filter-select {
+.smart-tag-filter-select {
   width: 100%;
   padding: 0.4rem 0.6rem;
   border: 1px solid #ddd;
@@ -1412,14 +1412,14 @@ body {
   cursor: pointer;
 }
 
-.source-filter-select:focus {
+.smart-tag-filter-select:focus {
   border-color: #0066cc;
   outline: none;
   box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.15);
 }
 
 /* =========================================================================
-   Sources Settings Page
+   Smart Tags Settings Page
    ========================================================================= */
 
 /* Path breakdown tree */
@@ -1537,44 +1537,57 @@ body {
   background: #f0f0f0;
 }
 
-/* Source cards (existing sources list) */
-.sources-list {
+/* Smart tag cards (existing tags list) */
+.smart-tag-list {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
 }
 
-.source-card {
+.smart-tag-card {
   padding: 1rem 1.25rem;
 }
 
-.source-card-header {
+.smart-tag-card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
 }
 
-.source-label {
+.smart-tag-label {
   font-weight: 600;
   font-size: 1rem;
   color: #222;
 }
 
-.source-photo-count {
+.smart-tag-photo-count {
   font-size: 0.8rem;
   color: #888;
   white-space: nowrap;
 }
 
-.source-card-prefixes {
+.smart-tag-card-meta {
+  margin-top: 0.35rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  font-size: 0.8rem;
+  color: #666;
+}
+
+.smart-tag-meta-item strong {
+  color: #444;
+}
+
+.smart-tag-card-values {
   margin-top: 0.5rem;
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
 }
 
-.source-prefix {
+.smart-tag-value {
   display: inline-block;
   padding: 0.15rem 0.5rem;
   background: #f0f0f0;
@@ -1584,41 +1597,96 @@ body {
   font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
 }
 
-.source-prefix-heading {
-  width: 100%;
-  margin: 0 0 0.5rem;
-  font-size: 0.8rem;
-  color: #666;
-}
-
-.source-card-actions {
+.smart-tag-card-actions {
   margin-top: 0.75rem;
   display: flex;
   gap: 0.5rem;
 }
 
-.source-delete-btn {
+.smart-tag-delete-btn {
   color: #c33;
   border-color: #e0b0b0;
 }
 
-.source-delete-btn:hover {
+.smart-tag-delete-btn:hover {
   background: #fff0f0;
   color: #900;
 }
 
-.sources-empty {
+.smart-tag-empty {
   color: #888;
   font-size: 0.9rem;
   padding: 1rem 0;
   margin: 0;
 }
 
-.source-selected-summary {
+.smart-tag-selected-summary {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.35rem;
   font-size: 0.85rem;
   color: #555;
+}
+
+/* Smart tag form elements */
+.smart-tag-form-row {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.smart-tag-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 180px;
+}
+
+.smart-tag-select {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  background: #fff;
+  cursor: pointer;
+}
+
+.smart-tag-select:focus {
+  border-color: #0066cc;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.15);
+}
+
+.smart-tag-facets-section {
+  margin-top: 0.5rem;
+}
+
+.smart-tag-facets-loading {
+  font-size: 0.85rem;
+  color: #999;
+  padding: 0.5rem 0;
+  font-style: italic;
+}
+
+/* Text facets (flat list) */
+.smart-tag-text-facets {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  padding: 0.5rem;
+}
+
+.smart-tag-text-facet-item {
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+}
+
+.smart-tag-text-facet-item:hover {
+  background: #f5f5f5;
 }
