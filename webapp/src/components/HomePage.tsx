@@ -6,6 +6,7 @@ import { DateFilter } from './DateFilter';
 import { SmartTagFilter } from './SmartTagFilter';
 import { resetFilters } from '../state/filters';
 import { api } from '../api/client';
+import { getImageUrl } from '../lib/imageUrlCache';
 import type { Photo } from '../api/client';
 import type { RoutableProps } from 'preact-router';
 
@@ -27,6 +28,16 @@ export function HomePage(_props: RoutableProps) {
       return;
     }
 
+    // If the grid already loaded this image, its presigned URL is cached
+    // and the browser already has the bytes — use it immediately.
+    const cachedUrl = getImageUrl(selectedPhoto.id);
+    if (cachedUrl) {
+      setFullImageSrc(cachedUrl);
+      setFullImageLoaded(true);
+      return;
+    }
+
+    // Otherwise fall back to fetching a fresh presigned URL.
     let cancelled = false;
 
     api.photos.getFullImageUrl(selectedPhoto.id).then((url) => {

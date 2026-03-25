@@ -241,8 +241,11 @@ body {
   height: 100%;
   object-fit: cover;
   opacity: 0;
-  transition: opacity 0.3s ease;
+  transition: opacity 0.3s ease, transform 0.2s;
   z-index: 1;
+  /* Promote to own compositing layer so Firefox doesn't flash
+     the underlying background while decoding the image. */
+  will-change: opacity;
 }
 
 .photo-card-image--loaded {

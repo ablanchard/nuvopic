@@ -1,6 +1,7 @@
-import { useRef, useState, useEffect } from 'preact/hooks';
+import { useRef, useState, useEffect, useCallback } from 'preact/hooks';
 import { api } from '../api/client';
 import type { Photo } from '../api/client';
+import { setImageUrl } from '../lib/imageUrlCache';
 
 interface PhotoCardProps {
   photo: Photo;
@@ -10,7 +11,9 @@ interface PhotoCardProps {
 export function PhotoCard({ photo, onClick }: PhotoCardProps) {
   const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [placeholderVisible, setPlaceholderVisible] = useState(true);
   const loadingRef = useRef(false);
+  const imgRef = useRef<HTMLImageElement>(null);
 
   // Wait 500ms after mount before loading the full image from S3.
   // This prevents firing S3 requests for cards that are only briefly
@@ -24,24 +27,27 @@ export function PhotoCard({ photo, onClick }: PhotoCardProps) {
 
       api.photos.getFullImageUrl(photo.id).then((url) => {
         if (cancelled) return;
-        const img = new Image();
-        img.onload = () => {
-          if (!cancelled) {
-            setImageSrc(url);
-            setLoaded(true);
-          }
+        // Preload using a detached Image so the browser caches the bytes.
+        // We never set src on the visible <img> until the data is fully
+        // decoded, which avoids any partial-paint flash in Firefox.
+        const preload = new Image();
+        preload.onload = () => {
+          if (cancelled) return;
+          setImageUrl(photo.id, url);
+          setImageSrc(url);
+          // Use double-rAF: the first rAF runs after Preact commits the
+          // new src to the DOM, the second runs after the browser has
+          // actually painted that frame with opacity:0. Only then do we
+          // flip to opacity:1 so the CSS transition is guaranteed to fire.
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              if (!cancelled) setLoaded(true);
+            });
+          });
         };
-        img.onerror = () => {
-          if (!cancelled) {
-            // No fallback — keep showing placeholder or empty state
-            setLoaded(true);
-          }
-        };
-        img.src = url;
+        preload.src = url;
       }).catch(() => {
-        if (!cancelled) {
-          setLoaded(true);
-        }
+        // silently fail — keep showing placeholder
       });
     }, 500);
 
@@ -52,11 +58,18 @@ export function PhotoCard({ photo, onClick }: PhotoCardProps) {
     };
   }, [photo.id]);
 
+  // Remove the placeholder from the DOM once the opacity transition ends.
+  const handleTransitionEnd = useCallback((e: TransitionEvent) => {
+    if (e.propertyName === 'opacity') {
+      setPlaceholderVisible(false);
+    }
+  }, []);
+
   const placeholderSrc = photo.placeholder || undefined;
 
   return (
     <div class="photo-card" onClick={onClick}>
-      {placeholderSrc && !loaded && (
+      {placeholderSrc && placeholderVisible && (
         <img
           src={placeholderSrc}
           alt=""
@@ -66,9 +79,11 @@ export function PhotoCard({ photo, onClick }: PhotoCardProps) {
       )}
       {imageSrc && (
         <img
+          ref={imgRef}
           src={imageSrc}
           alt={photo.description || 'Photo'}
           class={`photo-card-image ${loaded ? 'photo-card-image--loaded' : ''}`}
+          onTransitionEnd={handleTransitionEnd}
         />
       )}
       {!placeholderSrc && !imageSrc && (
