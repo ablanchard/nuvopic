@@ -274,7 +274,46 @@ export function StorageBrowserPage(_props: RoutableProps) {
 
       <main class="main-content">
         {loading ? (
-          <div class="loading">Loading storage browser...</div>
+          <div class="settings-container">
+            {/* Skeleton: Import Options */}
+            <div class="settings-section">
+              <h2 class="settings-section-title">Import Options</h2>
+              <div class="settings-card">
+                <div class="storage-skeleton-toggles">
+                  <div class="storage-skeleton-toggle">
+                    <div class="skeleton-line storage-skeleton-checkbox" />
+                    <div class="skeleton-line" style="width: 130px" />
+                  </div>
+                  <div class="storage-skeleton-toggle">
+                    <div class="skeleton-line storage-skeleton-checkbox" />
+                    <div class="skeleton-line" style="width: 110px" />
+                  </div>
+                  <div class="storage-skeleton-toggle">
+                    <div class="skeleton-line storage-skeleton-checkbox" />
+                    <div class="skeleton-line" style="width: 100px" />
+                  </div>
+                </div>
+                <div>
+                  <div class="skeleton-line" style="width: 150px; height: 2rem; border-radius: 6px" />
+                </div>
+              </div>
+            </div>
+
+            {/* Skeleton: S3 Folders */}
+            <div class="settings-section">
+              <h2 class="settings-section-title">S3 Folders</h2>
+              <div class="settings-card">
+                {[0.6, 0.4, 0.5, 0.35, 0.55, 0.3].map((w, i) => (
+                  <div key={i} class="storage-skeleton-folder-row">
+                    <div class="skeleton-line storage-skeleton-caret" />
+                    <div class="skeleton-line storage-skeleton-checkbox" />
+                    <div class="skeleton-line storage-skeleton-name" style={`width: ${w * 100}%`} />
+                    <div class="skeleton-line storage-skeleton-count" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         ) : (
           <div class="settings-container">
             {/* Import controls */}
