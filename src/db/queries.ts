@@ -145,54 +145,151 @@ export async function getFacesByPhotoId(photoId: string): Promise<FaceRecord[]> 
 }
 
 export async function getPhotosToReprocess(
-  belowVersion: string
+  belowVersion: string,
+  pathPrefix?: string
 ): Promise<Pick<PhotoRecord, "id" | "s3_path" | "process_version">[]> {
+  const params: unknown[] = [belowVersion];
+  let pathClause = "";
+  if (pathPrefix) {
+    params.push(pathPrefix + "%");
+    pathClause = ` AND s3_path LIKE $${params.length}`;
+  }
   const result = await query<Pick<PhotoRecord, "id" | "s3_path" | "process_version">>(
     `SELECT id, s3_path, process_version FROM photos
-     WHERE process_version IS NULL OR process_version < $1
+     WHERE (process_version IS NULL OR process_version < $1)${pathClause}
      ORDER BY created_at ASC`,
-    [belowVersion]
+    params
   );
 
   return result.rows;
 }
 
 export async function getPhotosToReprocessCaption(
-  belowCaptionVersion: string
+  belowCaptionVersion: string,
+  pathPrefix?: string
 ): Promise<Pick<PhotoRecord, "id" | "s3_path" | "caption_version">[]> {
+  const params: unknown[] = [belowCaptionVersion];
+  let pathClause = "";
+  if (pathPrefix) {
+    params.push(pathPrefix + "%");
+    pathClause = ` AND s3_path LIKE $${params.length}`;
+  }
   const result = await query<Pick<PhotoRecord, "id" | "s3_path" | "caption_version">>(
     `SELECT id, s3_path, caption_version FROM photos
-     WHERE caption_version IS NULL OR caption_version < $1
+     WHERE (caption_version IS NULL OR caption_version < $1)${pathClause}
      ORDER BY created_at ASC`,
-    [belowCaptionVersion]
+    params
   );
 
   return result.rows;
 }
 
 export async function getPhotosToReprocessFaces(
-  belowFacesVersion: string
+  belowFacesVersion: string,
+  pathPrefix?: string
 ): Promise<Pick<PhotoRecord, "id" | "s3_path" | "faces_version">[]> {
+  const params: unknown[] = [belowFacesVersion];
+  let pathClause = "";
+  if (pathPrefix) {
+    params.push(pathPrefix + "%");
+    pathClause = ` AND s3_path LIKE $${params.length}`;
+  }
   const result = await query<Pick<PhotoRecord, "id" | "s3_path" | "faces_version">>(
     `SELECT id, s3_path, faces_version FROM photos
-     WHERE faces_version IS NULL OR faces_version < $1
+     WHERE (faces_version IS NULL OR faces_version < $1)${pathClause}
      ORDER BY created_at ASC`,
-    [belowFacesVersion]
+    params
   );
 
   return result.rows;
 }
 
-export async function getAllPhotosForReprocess(): Promise<
+export async function getAllPhotosForReprocess(
+  pathPrefix?: string
+): Promise<
   Pick<PhotoRecord, "id" | "s3_path" | "process_version">[]
 > {
+  const params: unknown[] = [];
+  let whereClause = "";
+  if (pathPrefix) {
+    params.push(pathPrefix + "%");
+    whereClause = ` WHERE s3_path LIKE $1`;
+  }
   const result = await query<
     Pick<PhotoRecord, "id" | "s3_path" | "process_version">
   >(
-    `SELECT id, s3_path, process_version FROM photos ORDER BY created_at ASC`
+    `SELECT id, s3_path, process_version FROM photos${whereClause} ORDER BY created_at ASC`,
+    params
   );
 
   return result.rows;
+}
+
+// ---------------------------------------------------------------------------
+// Version stats — aggregated version distribution for the reprocess dashboard
+// ---------------------------------------------------------------------------
+
+export interface VersionStats {
+  totalPhotos: number;
+  process: Record<string, number>;
+  caption: Record<string, number>;
+  faces: Record<string, number>;
+}
+
+/**
+ * Get aggregated version distribution counts for all three pipelines.
+ * Optionally filter by s3_path prefix (full URI like "s3://bucket/Photos/2024/").
+ */
+export async function getVersionStats(pathPrefix?: string): Promise<VersionStats> {
+  const params: unknown[] = [];
+  let whereClause = "";
+  if (pathPrefix) {
+    params.push(pathPrefix + "%");
+    whereClause = " WHERE s3_path LIKE $1";
+  }
+
+  const [totalResult, processResult, captionResult, facesResult] = await Promise.all([
+    query<{ count: string }>(
+      `SELECT COUNT(*)::int AS count FROM photos${whereClause}`,
+      params
+    ),
+    query<{ version: string | null; count: string }>(
+      `SELECT process_version AS version, COUNT(*)::int AS count
+       FROM photos${whereClause}
+       GROUP BY process_version
+       ORDER BY process_version NULLS FIRST`,
+      params
+    ),
+    query<{ version: string | null; count: string }>(
+      `SELECT caption_version AS version, COUNT(*)::int AS count
+       FROM photos${whereClause}
+       GROUP BY caption_version
+       ORDER BY caption_version NULLS FIRST`,
+      params
+    ),
+    query<{ version: string | null; count: string }>(
+      `SELECT faces_version AS version, COUNT(*)::int AS count
+       FROM photos${whereClause}
+       GROUP BY faces_version
+       ORDER BY faces_version NULLS FIRST`,
+      params
+    ),
+  ]);
+
+  function toMap(rows: { version: string | null; count: string }[]): Record<string, number> {
+    const map: Record<string, number> = {};
+    for (const row of rows) {
+      map[row.version ?? "null"] = parseInt(row.count, 10);
+    }
+    return map;
+  }
+
+  return {
+    totalPhotos: parseInt(totalResult.rows[0].count, 10),
+    process: toMap(processResult.rows),
+    caption: toMap(captionResult.rows),
+    faces: toMap(facesResult.rows),
+  };
 }
 
 export async function getExistingS3Paths(

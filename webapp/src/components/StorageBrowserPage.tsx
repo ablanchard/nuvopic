@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'preact/hooks';
 import { api } from '../api/client';
 import type { StorageFolderInfo } from '../api/client';
+import { SettingsSidebar } from './SettingsSidebar';
 import type { RoutableProps } from 'preact-router';
 
 /* =========================================================================
@@ -262,15 +263,7 @@ export function StorageBrowserPage(_props: RoutableProps) {
 
   return (
     <div class="app-content">
-      <aside class="sidebar">
-        <h3 class="sidebar-heading">Settings</h3>
-        <nav class="settings-nav">
-          <a href="/settings" class="settings-nav-link">General</a>
-          <a href="/settings/gpu-logs" class="settings-nav-link">GPU Logs</a>
-          <a href="/settings/smart-tags" class="settings-nav-link">Smart Tags</a>
-          <a href="/settings/storage" class="settings-nav-link settings-nav-link--active">Storage</a>
-        </nav>
-      </aside>
+      <SettingsSidebar activePath="/settings/storage" />
 
       <main class="main-content">
         {loading ? (

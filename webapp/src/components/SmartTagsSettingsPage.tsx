@@ -7,6 +7,7 @@ import type {
   TextFacetEntry,
   FacetsResponse,
 } from '../api/client';
+import { SettingsSidebar } from './SettingsSidebar';
 import type { RoutableProps } from 'preact-router';
 
 /* =========================================================================
@@ -533,15 +534,7 @@ export function SmartTagsSettingsPage(_props: RoutableProps) {
 
   return (
     <div class="app-content">
-      <aside class="sidebar">
-        <h3 class="sidebar-heading">Settings</h3>
-        <nav class="settings-nav">
-          <a href="/settings" class="settings-nav-link">General</a>
-          <a href="/settings/gpu-logs" class="settings-nav-link">GPU Logs</a>
-          <a href="/settings/smart-tags" class="settings-nav-link settings-nav-link--active">Smart Tags</a>
-          <a href="/settings/storage" class="settings-nav-link">Storage</a>
-        </nav>
-      </aside>
+      <SettingsSidebar activePath="/settings/smart-tags" />
 
       <main class="main-content">
         {loading ? (

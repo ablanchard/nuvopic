@@ -215,6 +215,49 @@ export interface ImportResult {
   photosPerSecond: number;
 }
 
+// ---------------------------------------------------------------------------
+// Reprocess stats types
+// ---------------------------------------------------------------------------
+
+export interface PipelineStats {
+  versions: Record<string, number>;
+  latestVersion: string;
+  outdated: number;
+  changelog: Record<string, string>;
+}
+
+export interface ReprocessStatsResponse {
+  totalPhotos: number;
+  pathPrefix: string | null;
+  process: PipelineStats;
+  caption: PipelineStats;
+  faces: PipelineStats;
+  estimates: {
+    gpuEnabled: boolean;
+    provider: string;
+    secsPerPhoto: number;
+    costPerHour: number;
+  };
+}
+
+export interface ReprocessTriggerResponse {
+  mode: string;
+  currentVersions: {
+    process: string;
+    caption: string;
+    faces: string;
+  };
+  reprocessed: number;
+  failed: number;
+  elapsedSeconds: number;
+  results: Array<{
+    id: string;
+    s3Path: string;
+    success: boolean;
+    error?: string;
+  }>;
+}
+
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
   if (response.status === 401) {
@@ -487,8 +530,25 @@ export const api = {
       return fetchJson(`${API_BASE}/photos/import?${params.toString()}`);
     },
 
-    reprocess: (options: { mode?: string; force?: boolean; gpuMode?: string }): Promise<unknown> => {
+    reprocess: (options: { mode?: string; force?: boolean; gpuMode?: string; pathPrefix?: string }): Promise<unknown> => {
       return fetchJson(`${API_BASE}/photos/reprocess`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(options),
+      });
+    },
+  },
+
+  reprocess: {
+    getStats: (pathPrefix?: string): Promise<ReprocessStatsResponse> => {
+      const params = new URLSearchParams();
+      if (pathPrefix) params.set('pathPrefix', pathPrefix);
+      const query = params.toString();
+      return fetchJson<ReprocessStatsResponse>(`${API_BASE}/photos/reprocess/stats${query ? `?${query}` : ''}`);
+    },
+
+    trigger: (options: { mode?: string; force?: boolean; pathPrefix?: string }): Promise<ReprocessTriggerResponse> => {
+      return fetchJson<ReprocessTriggerResponse>(`${API_BASE}/photos/reprocess`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(options),

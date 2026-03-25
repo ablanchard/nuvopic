@@ -1917,3 +1917,287 @@ body {
 .storage-skeleton-count {
   width: 3rem;
 }
+
+/* =========================================================================
+   Reprocess Page
+   ========================================================================= */
+
+/* Two-column layout */
+.reprocess-layout {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+}
+
+.reprocess-left-col {
+  width: 340px;
+  flex-shrink: 0;
+}
+
+.reprocess-right-col {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Header */
+.reprocess-header {
+  margin-bottom: 1.25rem;
+}
+
+.reprocess-header-title {
+  margin: 0 0 0.25rem;
+  font-size: 1.15rem;
+  color: #222;
+}
+
+.reprocess-header-path {
+  font-weight: 400;
+  font-size: 0.9rem;
+  color: #666;
+}
+
+.reprocess-header-provider {
+  font-size: 0.8rem;
+  color: #888;
+}
+
+/* Summary row inside pipeline card */
+.reprocess-summary-row {
+  display: flex;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.reprocess-stat {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.reprocess-stat-value {
+  font-size: 1.3rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.reprocess-stat-value--ok {
+  color: #1a7f37;
+}
+
+.reprocess-stat-value--warn {
+  color: #e67e22;
+}
+
+.reprocess-stat-label {
+  font-size: 0.75rem;
+  color: #888;
+}
+
+/* Version table */
+.reprocess-version-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.reprocess-version-table thead th {
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 2px solid #eee;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  color: #888;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.reprocess-version-table tbody td {
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid #f0f0f0;
+  vertical-align: middle;
+}
+
+.reprocess-version-cell code {
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 0.75rem;
+  background: #f0f0f0;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+}
+
+.reprocess-desc-cell {
+  max-width: 200px;
+  color: #555;
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reprocess-count-cell {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #333;
+}
+
+/* Badges */
+.reprocess-badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.reprocess-badge--latest {
+  background: #e6f9ed;
+  color: #1a7f37;
+}
+
+.reprocess-badge--outdated {
+  background: #fff8e0;
+  color: #8a6d00;
+}
+
+.reprocess-badge--missing {
+  background: #fff0f0;
+  color: #c33;
+}
+
+/* Estimates row */
+.reprocess-estimate {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0 0;
+  font-size: 0.8rem;
+}
+
+.reprocess-estimate-time {
+  font-weight: 600;
+  color: #333;
+}
+
+.reprocess-estimate-cost {
+  font-weight: 600;
+  color: #0066cc;
+}
+
+.reprocess-estimate-detail {
+  font-size: 0.75rem;
+  color: #999;
+}
+
+/* Action buttons area */
+.reprocess-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.reprocess-actions .btn {
+  text-align: center;
+}
+
+.reprocess-divider {
+  width: 100%;
+  border: none;
+  border-top: 1px solid #eee;
+  margin: 0.25rem 0;
+}
+
+.btn-danger {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+  background: #dc3545;
+  color: #fff;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #c82333;
+}
+
+.btn-danger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Hint text */
+.reprocess-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #888;
+  font-style: italic;
+}
+
+.reprocess-hint code {
+  background: #f0f0f0;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.72rem;
+}
+
+/* Logs link in status banner */
+.reprocess-logs-link {
+  color: inherit;
+  font-weight: 600;
+}
+
+/* Path filter */
+.reprocess-path-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.reprocess-path-option {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  padding: 0.25rem 0;
+}
+
+.reprocess-path-option input[type="radio"] {
+  cursor: pointer;
+}
+
+.reprocess-path-loading {
+  font-size: 0.8rem;
+  color: #999;
+  font-style: italic;
+  padding: 0.25rem 0;
+}
+
+.reprocess-path-tree {
+  max-height: 450px;
+  overflow-y: auto;
+}
+
+/* Radio buttons inside the path tree */
+.reprocess-path-tree input[type="radio"] {
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+/* Responsive: stack columns on narrow screens */
+@media (max-width: 1024px) {
+  .reprocess-layout {
+    flex-direction: column;
+  }
+
+  .reprocess-left-col {
+    width: 100%;
+  }
+}

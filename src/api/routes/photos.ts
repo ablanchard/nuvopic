@@ -1,11 +1,11 @@
 import { Hono } from "hono";
 import { searchPhotos, getPhotoWithDetails, getTimelineIndex } from "../../db/search.js";
-import { getPhotosToReprocess, getPhotosToReprocessCaption, getPhotosToReprocessFaces, getAllPhotosForReprocess, getExistingS3Paths } from "../../db/queries.js";
+import { getPhotosToReprocess, getPhotosToReprocessCaption, getPhotosToReprocessFaces, getAllPhotosForReprocess, getExistingS3Paths, getVersionStats } from "../../db/queries.js";
 import { getPhotoById } from "../../db/queries.js";
 import { getFacesByPhotoId } from "../../db/queries.js";
 import { processPhoto, processPhotoBatch, type GpuMode } from "../../processor.js";
 import { isGpuEnabled, getBatchGpuProvider } from "../../extractors/gpu-client.js";
-import { PROCESS_VERSION, CAPTION_VERSION, FACES_VERSION, PROCESS_CHANGELOG, CAPTION_CHANGELOG, FACES_CHANGELOG } from "../../version.js";
+import { PROCESS_VERSION, CAPTION_VERSION, FACES_VERSION, PROCESS_CHANGELOG, CAPTION_CHANGELOG, FACES_CHANGELOG, compareSemver } from "../../version.js";
 import { listAllObjects, getS3Path, getPresignedImageUrl, isSupportedImage } from "../../s3/client.js";
 import { logger } from "../../logger.js";
 import { clusterUnassignedFaces } from "../../db/clusters.js";
@@ -86,6 +86,60 @@ photos.get("/timeline", async (c) => {
   return c.json({ groups, total });
 });
 
+// Reprocess stats: aggregated version distribution for the reprocess dashboard
+photos.get("/reprocess/stats", async (c) => {
+  const pathPrefix = c.req.query("pathPrefix") || undefined;
+
+  const stats = await getVersionStats(pathPrefix);
+  const gpuEnabled = isGpuEnabled();
+  const provider = getBatchGpuProvider();
+  const secsPerPhoto = gpuEnabled ? 3 : 11;
+  const costPerHour = parseFloat(process.env.GPU_COST_PER_HOUR ?? "0");
+
+  // Compute outdated counts per pipeline
+  function computeOutdated(
+    versions: Record<string, number>,
+    latestVersion: string
+  ): number {
+    let outdated = 0;
+    for (const [version, count] of Object.entries(versions)) {
+      if (version === "null" || compareSemver(version, latestVersion) < 0) {
+        outdated += count;
+      }
+    }
+    return outdated;
+  }
+
+  return c.json({
+    totalPhotos: stats.totalPhotos,
+    pathPrefix: pathPrefix ?? null,
+    process: {
+      versions: stats.process,
+      latestVersion: PROCESS_VERSION,
+      outdated: computeOutdated(stats.process, PROCESS_VERSION),
+      changelog: PROCESS_CHANGELOG,
+    },
+    caption: {
+      versions: stats.caption,
+      latestVersion: CAPTION_VERSION,
+      outdated: computeOutdated(stats.caption, CAPTION_VERSION),
+      changelog: CAPTION_CHANGELOG,
+    },
+    faces: {
+      versions: stats.faces,
+      latestVersion: FACES_VERSION,
+      outdated: computeOutdated(stats.faces, FACES_VERSION),
+      changelog: FACES_CHANGELOG,
+    },
+    estimates: {
+      gpuEnabled,
+      provider,
+      secsPerPhoto,
+      costPerHour,
+    },
+  });
+});
+
 // Preview reprocessing: show what would be reprocessed and why
 photos.get("/reprocess", async (c) => {
   const mode = c.req.query("mode") ?? "all"; // "all" | "caption" | "faces"
@@ -131,17 +185,18 @@ photos.post("/reprocess", async (c) => {
   const force: boolean = body.force === true;
   const skipModal: boolean = body.skipModal === true;
   const mode: string = body.mode ?? "all";
+  const pathPrefix: string | undefined = body.pathPrefix || undefined;
 
   // Determine which photos need reprocessing
   let photosToProcess;
   if (force) {
-    photosToProcess = await getAllPhotosForReprocess();
+    photosToProcess = await getAllPhotosForReprocess(pathPrefix);
   } else if (mode === "caption") {
-    photosToProcess = await getPhotosToReprocessCaption(CAPTION_VERSION);
+    photosToProcess = await getPhotosToReprocessCaption(CAPTION_VERSION, pathPrefix);
   } else if (mode === "faces") {
-    photosToProcess = await getPhotosToReprocessFaces(FACES_VERSION);
+    photosToProcess = await getPhotosToReprocessFaces(FACES_VERSION, pathPrefix);
   } else {
-    photosToProcess = await getPhotosToReprocess(PROCESS_VERSION);
+    photosToProcess = await getPhotosToReprocess(PROCESS_VERSION, pathPrefix);
   }
 
   if (photosToProcess.length === 0) {

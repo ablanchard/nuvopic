@@ -6,6 +6,7 @@ import { SettingsPage } from './components/SettingsPage';
 import { GpuLogsPage } from './components/GpuLogsPage';
 import { SmartTagsSettingsPage } from './components/SmartTagsSettingsPage';
 import { StorageBrowserPage } from './components/StorageBrowserPage';
+import { ReprocessPage } from './components/ReprocessPage';
 import { photoSize } from './state/filters';
 import { getCurrentUrl } from 'preact-router';
 import { useState } from 'preact/hooks';
@@ -65,6 +66,7 @@ export function App() {
         <GpuLogsPage path="/settings/gpu-logs" />
         <SmartTagsSettingsPage path="/settings/smart-tags" />
         <StorageBrowserPage path="/settings/storage" />
+        <ReprocessPage path="/settings/reprocess" />
       </Router>
     </div>
   );

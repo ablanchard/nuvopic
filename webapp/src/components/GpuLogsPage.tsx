@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'preact/hooks';
 import { api } from '../api/client';
 import type { GpuLog, GpuLogFilters } from '../api/client';
+import { SettingsSidebar } from './SettingsSidebar';
 import type { RoutableProps } from 'preact-router';
 
 /** Format a duration in ms to a human-readable string. */
@@ -121,15 +122,7 @@ export function GpuLogsPage(_props: RoutableProps) {
 
    return (
     <div class="app-content">
-      <aside class="sidebar">
-        <h3 class="sidebar-heading">Settings</h3>
-        <nav class="settings-nav">
-          <a href="/settings" class="settings-nav-link">General</a>
-          <a href="/settings/gpu-logs" class="settings-nav-link settings-nav-link--active">GPU Logs</a>
-          <a href="/settings/smart-tags" class="settings-nav-link">Smart Tags</a>
-          <a href="/settings/storage" class="settings-nav-link">Storage</a>
-        </nav>
-
+      <SettingsSidebar activePath="/settings/gpu-logs">
         <h3 class="sidebar-heading" style="margin-top: 1.25rem;">Filters</h3>
         <div class="gpu-log-filters">
           <label class="gpu-log-filter-label">Type</label>
@@ -160,7 +153,7 @@ export function GpuLogsPage(_props: RoutableProps) {
             Refresh
           </button>
         </div>
-      </aside>
+      </SettingsSidebar>
 
       <main class="main-content">
         {loading ? (
