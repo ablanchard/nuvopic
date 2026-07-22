@@ -1,16 +1,26 @@
 import type { Context, Next } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { createToken, verifyToken } from "./jwt.js";
+import { verifyManagedJwt } from "./managed-jwt.js";
 import { logger } from "../logger.js";
+import {
+  getManagedProfilePath,
+  isManagedMode,
+  isStandaloneMode,
+} from "../config/runtime.js";
+import { runWithWorkspaceContext } from "../db/client.js";
 
 const COOKIE_NAME = "session";
 const LOGIN_PATH = "/login";
 const SESSION_DURATION = 86400 * 7; // 7 days
+const PUBLIC_API_PATHS = new Set(["/api/v1/runtime"]);
 
-/**
- * Public paths that don't require authentication.
- */
-const PUBLIC_PATHS = ["/health", LOGIN_PATH];
+export interface AuthInfo {
+  subject: string;
+  role: string;
+  workspaceId: string | null;
+  mode: "standalone" | "managed";
+}
 
 function getPassword(): string {
   const password = process.env.AUTH_PASSWORD;
@@ -20,53 +30,123 @@ function getPassword(): string {
   return password;
 }
 
-/**
- * Returns true if auth is enabled (AUTH_PASSWORD is set).
- */
-export function isAuthEnabled(): boolean {
-  return !!process.env.AUTH_PASSWORD;
+function getBearerToken(c: Context): string | null {
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader?.startsWith("Bearer ")) {
+    return null;
+  }
+  return authHeader.slice("Bearer ".length).trim() || null;
+}
+
+function setAuthInfo(c: Context, auth: AuthInfo): void {
+  c.set("auth", auth);
+}
+
+function buildDefaultStandaloneAuth(): AuthInfo {
+  return {
+    subject: "admin",
+    role: "owner",
+    workspaceId: null,
+    mode: "standalone",
+  };
+}
+
+function isProtectedApiPath(path: string): boolean {
+  return path.startsWith("/api/") || path === "/process";
 }
 
 /**
- * Auth middleware. Checks the session cookie for a valid JWT.
- * If AUTH_PASSWORD is not set, auth is disabled (pass-through).
+ * Returns true if standalone password auth is enabled.
  */
-export async function authMiddleware(c: Context, next: Next) {
-  // If auth is not configured, skip
-  if (!isAuthEnabled()) {
-    return next();
-  }
+export function isAuthEnabled(): boolean {
+  return isManagedMode() || !!process.env.AUTH_PASSWORD;
+}
 
+export function getAuthInfo(c: Context): AuthInfo {
+  return (c.get("auth") as AuthInfo | undefined) ?? buildDefaultStandaloneAuth();
+}
+
+async function managedAuthMiddleware(c: Context, next: Next) {
   const path = new URL(c.req.url).pathname;
 
-  // Allow public paths
-  if (PUBLIC_PATHS.some((p) => path === p)) {
+  if (PUBLIC_API_PATHS.has(path) || !isProtectedApiPath(path)) {
     return next();
   }
 
-  // Check session cookie
+  const token = getBearerToken(c);
+  if (!token) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const claims = await verifyManagedJwt(token);
+  if (!claims) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  try {
+    return await runWithWorkspaceContext(claims.workspace_id, async () => {
+      setAuthInfo(c, {
+        subject: claims.sub,
+        role: claims.role ?? "owner",
+        workspaceId: claims.workspace_id,
+        mode: "managed",
+      });
+      return next();
+    });
+  } catch (error) {
+    logger.error("Managed workspace resolution failed:", error);
+    return c.json({ error: "Workspace unavailable" }, 503);
+  }
+}
+
+async function standaloneAuthMiddleware(c: Context, next: Next) {
+  const path = new URL(c.req.url).pathname;
+
+  if (!process.env.AUTH_PASSWORD) {
+    setAuthInfo(c, buildDefaultStandaloneAuth());
+    return next();
+  }
+
+  if (path === "/health" || path === LOGIN_PATH || PUBLIC_API_PATHS.has(path)) {
+    return next();
+  }
+
   const token = getCookie(c, COOKIE_NAME);
   if (token) {
     const payload = verifyToken(token);
     if (payload) {
+      setAuthInfo(c, buildDefaultStandaloneAuth());
       return next();
     }
   }
 
-  // For API requests, return 401 JSON
-  if (path.startsWith("/api/")) {
+  if (path.startsWith("/api/") || path === "/process") {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
-  // For browser requests, redirect to login
   return c.redirect(LOGIN_PATH);
+}
+
+/**
+ * Auth middleware.
+ * - Standalone mode uses the built-in password + cookie flow.
+ * - Managed mode validates bearer JWTs only for API/process routes.
+ */
+export async function authMiddleware(c: Context, next: Next) {
+  if (isManagedMode()) {
+    return managedAuthMiddleware(c, next);
+  }
+  return standaloneAuthMiddleware(c, next);
 }
 
 /**
  * Handle GET /login - serve the login page.
  */
 export function handleLoginPage(c: Context) {
-  // If already authenticated, redirect to home
+  if (!isStandaloneMode()) {
+    return c.redirect(getManagedProfilePath());
+  }
+
   const token = getCookie(c, COOKIE_NAME);
   if (token && verifyToken(token)) {
     return c.redirect("/");
@@ -79,7 +159,7 @@ export function handleLoginPage(c: Context) {
  * Handle POST /login - validate password, set session cookie.
  */
 export async function handleLogin(c: Context) {
-  if (!isAuthEnabled()) {
+  if (!isStandaloneMode() || !process.env.AUTH_PASSWORD) {
     return c.redirect("/");
   }
 
@@ -109,6 +189,10 @@ export async function handleLogin(c: Context) {
  * Handle POST /logout - clear session cookie.
  */
 export function handleLogout(c: Context) {
+  if (!isStandaloneMode()) {
+    return c.redirect(getManagedProfilePath());
+  }
+
   deleteCookie(c, COOKIE_NAME, { path: "/" });
   return c.redirect(LOGIN_PATH);
 }

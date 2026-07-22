@@ -6,7 +6,17 @@ export const selectedPerson = signal<string | null>(null);
 export const selectedSmartTag = signal<string | null>(null);
 export const dateFrom = signal<string | null>(null);
 export const dateTo = signal<string | null>(null);
-export const photoSize = signal(200);
+
+export const DEFAULT_PHOTO_SIZE = 200;
+export const MOBILE_DEFAULT_PHOTO_SIZE = 100;
+
+const initialPhotoSize =
+  typeof window !== 'undefined' &&
+  window.matchMedia('(max-width: 768px)').matches
+    ? MOBILE_DEFAULT_PHOTO_SIZE
+    : DEFAULT_PHOTO_SIZE;
+
+export const photoSize = signal(initialPhotoSize);
 
 // Bumped whenever filters change, so PhotoGrid knows to reset accumulated photos
 export const filterVersion = signal(0);

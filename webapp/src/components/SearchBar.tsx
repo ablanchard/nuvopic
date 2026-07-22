@@ -1,8 +1,13 @@
+import { useSignalEffect } from '@preact/signals';
 import { useEffect, useState } from 'preact/hooks';
 import { searchQuery, filterVersion } from '../state/filters';
 
 export function SearchBar() {
   const [value, setValue] = useState(searchQuery.value);
+
+  useSignalEffect(() => {
+    setValue(searchQuery.value);
+  });
 
   // Debounce search
   useEffect(() => {

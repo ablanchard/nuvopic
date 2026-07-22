@@ -2,12 +2,14 @@ import {
   S3Client,
   GetObjectCommand,
   ListObjectsV2Command,
+  HeadBucketCommand,
   type GetObjectCommandOutput,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { getResolvedS3Config } from "../db/settings.js";
+import { getCurrentDatabaseCacheKey } from "../db/client.js";
 
-let s3Client: S3Client | null = null;
+const s3Clients = new Map<string, S3Client>();
 
 export interface S3Config {
   endpoint?: string;
@@ -18,7 +20,7 @@ export interface S3Config {
 }
 
 /**
- * Build S3Config by resolving DB settings over env vars.
+ * Build S3Config from DB settings only.
  * Throws if required fields (region, accessKeyId, secretAccessKey) are missing.
  */
 async function buildS3Config(): Promise<S3Config> {
@@ -27,8 +29,7 @@ async function buildS3Config(): Promise<S3Config> {
   if (!resolved.region || !resolved.accessKeyId || !resolved.secretAccessKey) {
     throw new Error(
       "S3 region, access key ID, and secret access key are required. " +
-        "Configure them via S3_REGION / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY env vars " +
-        "or set s3_region / s3_access_key_id / s3_secret_access_key in Settings."
+        "Configure them in NuvoPic Settings."
     );
   }
 
@@ -42,6 +43,9 @@ async function buildS3Config(): Promise<S3Config> {
 }
 
 export async function getS3Client(): Promise<S3Client> {
+  const cacheKey = getCurrentDatabaseCacheKey();
+  let s3Client = s3Clients.get(cacheKey);
+
   if (!s3Client) {
     const config = await buildS3Config();
 
@@ -54,6 +58,7 @@ export async function getS3Client(): Promise<S3Client> {
       },
       forcePathStyle: config.forcePathStyle,
     });
+    s3Clients.set(cacheKey, s3Client);
   }
 
   return s3Client;
@@ -61,14 +66,23 @@ export async function getS3Client(): Promise<S3Client> {
 
 /**
  * Invalidate the cached S3 client so the next call to getS3Client()
- * rebuilds it from current DB settings + env vars.
+ * rebuilds it from current DB settings.
  * Call this after S3-related settings are changed.
  */
 export function invalidateS3Client(): void {
+  const cacheKey = getCurrentDatabaseCacheKey();
+  const s3Client = s3Clients.get(cacheKey);
   if (s3Client) {
     s3Client.destroy();
+    s3Clients.delete(cacheKey);
   }
-  s3Client = null;
+}
+
+export function invalidateAllS3Clients(): void {
+  for (const client of s3Clients.values()) {
+    client.destroy();
+  }
+  s3Clients.clear();
 }
 
 export async function getObject(
@@ -249,6 +263,35 @@ export async function browseFolder(
     imageCount: imageKeys.length,
     imageKeys,
   };
+}
+
+export async function validateS3Connection(
+  config: S3Config,
+  bucket: string,
+  prefix?: string
+): Promise<void> {
+  const client = new S3Client({
+    endpoint: config.endpoint,
+    region: config.region,
+    credentials: {
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey,
+    },
+    forcePathStyle: config.forcePathStyle,
+  });
+
+  try {
+    await client.send(new HeadBucketCommand({ Bucket: bucket }));
+    await client.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix || undefined,
+        MaxKeys: 1,
+      })
+    );
+  } finally {
+    client.destroy();
+  }
 }
 
 /**

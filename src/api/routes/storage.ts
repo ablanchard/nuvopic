@@ -18,7 +18,7 @@ storage.get("/browse", async (c) => {
   const bucket = await getS3Bucket();
   if (!bucket) {
     return c.json(
-      { error: "S3 bucket not configured. Set S3_BUCKET env var or configure it in Settings." },
+      { error: "S3 bucket not configured. Complete storage setup in Settings." },
       500
     );
   }

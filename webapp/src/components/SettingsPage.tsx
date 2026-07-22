@@ -1,16 +1,13 @@
 import { useState, useEffect, useCallback } from 'preact/hooks';
-import { api } from '../api/client';
+import { api, type RuntimeSession } from '../api/client';
 import { SettingsSidebar } from './SettingsSidebar';
 import type { RoutableProps } from 'preact-router';
 
-/** Sentinel value the backend uses for masked secrets. */
 const MASKED_VALUE = '__MASKED__';
-
-/** Keys whose values are secrets (password fields). */
 const SECRET_KEYS = new Set(['s3_secret_access_key']);
+const STORAGE_SECTION = 'S3 Storage';
 
-/** Known setting keys with display metadata. */
-const SETTING_DEFS: Record<string, {
+type SettingDef = {
   label: string;
   description: string;
   section: string;
@@ -19,54 +16,49 @@ const SETTING_DEFS: Record<string, {
   max?: number;
   step?: number;
   placeholder?: string;
-  envVar?: string;
-}> = {
+};
+
+const SETTING_DEFS: Record<string, SettingDef> = {
   s3_bucket: {
     label: 'S3 Bucket',
-    description: 'The S3 bucket name to use for photo storage.',
-    section: 'S3 Storage',
+    description: 'The bucket name NuvoPic should read and process in place.',
+    section: STORAGE_SECTION,
     type: 'text',
     placeholder: 'e.g. my-photos',
-    envVar: 'S3_BUCKET',
   },
   s3_region: {
     label: 'S3 Region',
-    description: 'AWS region or provider region.',
-    section: 'S3 Storage',
+    description: 'AWS region or the equivalent provider region.',
+    section: STORAGE_SECTION,
     type: 'text',
     placeholder: 'e.g. us-east-1',
-    envVar: 'S3_REGION',
   },
   s3_endpoint: {
     label: 'S3 Endpoint',
-    description: 'Custom endpoint for non-AWS providers (MinIO, Scaleway, R2, etc.). Leave empty for AWS.',
-    section: 'S3 Storage',
+    description: 'Optional custom endpoint for MinIO, R2, B2, Scaleway, and other S3-compatible providers.',
+    section: STORAGE_SECTION,
     type: 'text',
     placeholder: 'e.g. https://s3.provider.com',
-    envVar: 'S3_ENDPOINT',
   },
   s3_access_key_id: {
     label: 'Access Key ID',
-    description: 'S3 access key ID.',
-    section: 'S3 Storage',
+    description: 'Access key ID with read/list permissions on the bucket.',
+    section: STORAGE_SECTION,
     type: 'text',
     placeholder: 'e.g. AKIAIOSFODNN7EXAMPLE',
-    envVar: 'S3_ACCESS_KEY_ID',
   },
   s3_secret_access_key: {
     label: 'Secret Access Key',
-    description: 'S3 secret access key. Stored encrypted-at-rest in the database.',
-    section: 'S3 Storage',
+    description: 'Secret access key. Stored encrypted at rest in the workspace database.',
+    section: STORAGE_SECTION,
     type: 'password',
     placeholder: 'Enter new secret key',
-    envVar: 'S3_SECRET_ACCESS_KEY',
   },
   s3_force_path_style: {
     label: 'Force Path Style',
-    description: 'Use path-style URLs (required for MinIO and some S3-compatible providers).',
-    section: 'S3 Storage',
+    description: 'Enable this for providers such as MinIO that require path-style URLs.',
+    section: STORAGE_SECTION,
     type: 'boolean',
-    envVar: 'S3_FORCE_PATH_STYLE',
   },
   face_min_confidence: {
     label: 'Minimum confidence',
@@ -78,8 +70,8 @@ const SETTING_DEFS: Record<string, {
     step: 0.05,
   },
   face_min_size: {
-    label: 'Minimum face size (px\u00B2)',
-    description: 'Minimum bounding box area in pixels. A 50\u00D750 face = 2500. Smaller faces are hidden.',
+    label: 'Minimum face size (px²)',
+    description: 'Minimum bounding box area in pixels. A 50×50 face = 2500.',
     section: 'Face Quality',
     type: 'number',
     min: 0,
@@ -88,7 +80,6 @@ const SETTING_DEFS: Record<string, {
   },
 };
 
-/** Group settings by section. */
 function groupBySection(keys: string[]): Record<string, string[]> {
   const groups: Record<string, string[]> = {};
   for (const key of keys) {
@@ -99,7 +90,14 @@ function groupBySection(keys: string[]): Record<string, string[]> {
   return groups;
 }
 
-export function SettingsPage(_props: RoutableProps) {
+interface SettingsPageProps extends RoutableProps {
+  onboarding?: boolean;
+  session?: RuntimeSession | null;
+  onStorageConfigured?: () => void | Promise<void>;
+}
+
+export function SettingsPage(props: SettingsPageProps) {
+  const onboarding = props.onboarding === true;
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [s3Config, setS3Config] = useState<Record<string, { envValue: string | null; effectiveValue: string | null; effectiveSource: 'db' | 'env' | null }>>({});
@@ -115,8 +113,7 @@ export function SettingsPage(_props: RoutableProps) {
         api.settings.getS3Config(),
       ]);
       setSettings(data);
-      // For password/secret fields, clear the masked sentinel from the draft
-      // so the input shows empty (with a placeholder) instead of "__MASKED__"
+
       const draftData = { ...data };
       for (const key of SECRET_KEYS) {
         if (draftData[key] === MASKED_VALUE) {
@@ -126,7 +123,10 @@ export function SettingsPage(_props: RoutableProps) {
       setDraft(draftData);
       setS3Config(s3);
     } catch (err) {
-      console.error('Failed to load settings:', err);
+      setStatus({
+        type: 'error',
+        message: `Failed to load settings: ${err instanceof Error ? err.message : 'Unknown error'}`,
+      });
     } finally {
       setLoading(false);
     }
@@ -141,23 +141,21 @@ export function SettingsPage(_props: RoutableProps) {
     setStatus(null);
   };
 
-  const hasChanges = Object.keys(draft).some((k) => {
-    // For secret fields: only "changed" if user typed a non-empty value
-    if (SECRET_KEYS.has(k)) {
-      return draft[k] !== '' && draft[k] !== MASKED_VALUE;
+  const hasChanges = Object.keys(draft).some((key) => {
+    if (SECRET_KEYS.has(key)) {
+      return draft[key] !== '' && draft[key] !== MASKED_VALUE;
     }
-    return draft[k] !== settings[k];
+    return draft[key] !== settings[key];
   });
 
   const handleSave = async () => {
     setSaving(true);
     setStatus(null);
+
     try {
-      // Only send changed values; skip empty secret fields (means "no change")
       const changed: Record<string, string> = {};
       for (const [key, value] of Object.entries(draft)) {
         if (SECRET_KEYS.has(key)) {
-          // Only send if the user typed a non-empty new value
           if (value && value !== MASKED_VALUE) {
             changed[key] = value;
           }
@@ -167,24 +165,30 @@ export function SettingsPage(_props: RoutableProps) {
       }
 
       if (Object.keys(changed).length === 0) {
-        setStatus({ type: 'success', message: 'No changes to save' });
-        setSaving(false);
+        setStatus({ type: 'success', message: onboarding ? 'Storage is already configured' : 'No changes to save' });
         return;
       }
 
       const updated = await api.settings.update(changed);
-      const s3 = await api.settings.getS3Config();
-      setSettings(updated);
-      // Clear secret fields from draft
-      const draftData = { ...updated };
+      const nextS3 = await api.settings.getS3Config();
+      const nextDraft = { ...updated };
       for (const key of SECRET_KEYS) {
-        if (draftData[key] === MASKED_VALUE) {
-          draftData[key] = '';
+        if (nextDraft[key] === MASKED_VALUE) {
+          nextDraft[key] = '';
         }
       }
-      setDraft(draftData);
-      setS3Config(s3);
-      setStatus({ type: 'success', message: 'Settings saved' });
+
+      setSettings(updated);
+      setDraft(nextDraft);
+      setS3Config(nextS3);
+      setStatus({
+        type: 'success',
+        message: onboarding ? 'Storage connected' : 'Settings saved',
+      });
+
+      if (onboarding && props.onStorageConfigured) {
+        await props.onStorageConfigured();
+      }
     } catch (err) {
       setStatus({
         type: 'error',
@@ -196,30 +200,48 @@ export function SettingsPage(_props: RoutableProps) {
   };
 
   const handleReset = () => {
-    const draftData = { ...settings };
+    const nextDraft = { ...settings };
     for (const key of SECRET_KEYS) {
-      if (draftData[key] === MASKED_VALUE) {
-        draftData[key] = '';
+      if (nextDraft[key] === MASKED_VALUE) {
+        nextDraft[key] = '';
       }
     }
-    setDraft(draftData);
+    setDraft(nextDraft);
     setStatus(null);
   };
 
-  // Compute sections from known keys present in settings + any unknown keys
   const allKeys = Array.from(new Set([...Object.keys(SETTING_DEFS), ...Object.keys(draft)]));
-  const sections = groupBySection(allKeys);
+  const groupedSections = groupBySection(allKeys);
+  const sections = onboarding
+    ? Object.entries(groupedSections).filter(([section]) => section === STORAGE_SECTION)
+    : Object.entries(groupedSections);
+  const storageConfigured = Boolean(s3Config.s3_bucket?.effectiveValue);
 
   return (
     <div class="app-content">
-      <SettingsSidebar activePath="/settings" />
+      {!onboarding && <SettingsSidebar activePath="/settings" />}
 
       <main class="main-content">
         {loading ? (
           <div class="loading">Loading settings...</div>
         ) : (
           <div class="settings-container">
-            {Object.entries(sections).map(([section, keys]) => (
+            {onboarding && (
+              <div class="settings-section">
+                <h2 class="settings-section-title">Connect Your Bucket</h2>
+                <div class="settings-card">
+                  <p>
+                    NuvoPic is ready, but it needs access to your S3-compatible bucket before it can
+                    browse or process photos.
+                  </p>
+                  <p>
+                    Provide bucket credentials with read/list access. NuvoPic validates them before saving.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {sections.map(([section, keys]) => (
               <div key={section} class="settings-section" id={`settings-${section.toLowerCase().replace(/\s+/g, '-')}`}>
                 <h2 class="settings-section-title">{section}</h2>
                 <div class="settings-card">
@@ -228,7 +250,6 @@ export function SettingsPage(_props: RoutableProps) {
                     const value = draft[key] ?? '';
 
                     if (!def) {
-                      // Unknown setting — render as simple text input
                       return (
                         <div key={key} class="setting-row">
                           <div class="setting-info">
@@ -250,12 +271,8 @@ export function SettingsPage(_props: RoutableProps) {
                         <div class="setting-info">
                           <label class="setting-label">{def.label}</label>
                           <p class="setting-description">{def.description}</p>
-                          {def.envVar && s3Config[key]?.envValue && (
-                            <p class="setting-hint">
-                              Env var <code>{def.envVar}</code>:{' '}
-                              <strong>{def.type === 'password' ? '••••' + s3Config[key].envValue!.slice(-4) : s3Config[key].envValue}</strong>
-                              {s3Config[key].effectiveSource === 'db' ? ' (overridden by setting below)' : ' (active)'}
-                            </p>
+                          {key === 's3_secret_access_key' && s3Config[key]?.effectiveValue && (
+                            <p class="setting-hint">Current secret: <strong>{s3Config[key].effectiveValue}</strong></p>
                           )}
                         </div>
                         <div class="setting-control">
@@ -269,7 +286,7 @@ export function SettingsPage(_props: RoutableProps) {
                                 value={parseFloat(value) || 0}
                                 onInput={(e) => handleChange(key, (e.target as HTMLInputElement).value)}
                               />
-                              <span class="control-value">{parseFloat(value).toFixed(2)}</span>
+                              <span class="control-value">{parseFloat(value || '0').toFixed(2)}</span>
                             </div>
                           ) : def.type === 'text' ? (
                             <input
@@ -316,21 +333,39 @@ export function SettingsPage(_props: RoutableProps) {
               </div>
             ))}
 
+            {!onboarding && !storageConfigured && (
+              <div class="settings-section">
+                <div class="settings-card">
+                  <p>Storage is not configured yet. Complete the S3 section before using import and browsing features.</p>
+                </div>
+              </div>
+            )}
+
+            {props.session?.deployMode === 'managed' && onboarding && (
+              <div class="settings-section">
+                <div class="settings-card">
+                  <p>Your bucket credentials stay inside NuvoPic and are stored only in the workspace database.</p>
+                </div>
+              </div>
+            )}
+
             <div class="settings-actions">
               <button
                 class="btn btn-primary"
                 onClick={handleSave}
                 disabled={saving || !hasChanges}
               >
-                {saving ? 'Saving...' : 'Save Settings'}
+                {saving ? 'Saving...' : onboarding ? 'Connect Bucket' : 'Save Settings'}
               </button>
-              <button
-                class="btn btn-secondary"
-                onClick={handleReset}
-                disabled={saving || !hasChanges}
-              >
-                Reset
-              </button>
+              {!onboarding && (
+                <button
+                  class="btn btn-secondary"
+                  onClick={handleReset}
+                  disabled={saving || !hasChanges}
+                >
+                  Reset
+                </button>
+              )}
             </div>
 
             {status && (

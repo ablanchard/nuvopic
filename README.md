@@ -91,7 +91,15 @@ cp .env.local .env
 npm run init-db
 ```
 
-### 5. Run the server
+### 5. Import S3 settings into the database
+
+```bash
+npm run migrate-s3-settings
+```
+
+NuvoPic now reads bucket credentials from its settings table. The `S3_*` env vars are used only as a one-time migration source.
+
+### 6. Run the server
 
 ```bash
 # Backend (port 8080)
@@ -343,6 +351,7 @@ docker build -f deploy/docker/Dockerfile -t nuvopic .
 
 # Run with environment variables
 docker run -p 8080:8080 \
+  -e SETTINGS_KEK='replace-with-a-random-secret' \
   -e DATABASE_URL='postgres://user:pass@host:5432/db' \
   -e DATABASE_SSL='true' \
   -e S3_BUCKET='my-photos' \
@@ -357,6 +366,8 @@ docker run -p 8080:8080 \
   -e JWT_SECRET='your-secret' \
   nuvopic
 ```
+
+Then run `docker exec` (or the same image with `npm run migrate-s3-settings`) once to import the `S3_*` values into the database before serving traffic.
 
 ### Provider-Specific Guides
 
@@ -388,14 +399,16 @@ Any S3-compatible object storage works:
 
 | Variable | Required | Description | Default |
 |----------|----------|-------------|---------|
+| `DEPLOY_MODE` | No | `"standalone"` or `"managed"` | `standalone` |
 | `DATABASE_URL` | Yes | PostgreSQL connection string | |
 | `DATABASE_SSL` | No | Enable SSL for database connections | `false` |
-| `S3_BUCKET` | Yes | S3 bucket name | |
-| `S3_ACCESS_KEY_ID` | Yes | S3 access key | |
-| `S3_SECRET_ACCESS_KEY` | Yes | S3 secret key | |
-| `S3_REGION` | Yes | S3 region | |
-| `S3_ENDPOINT` | No | Custom S3 endpoint (non-AWS providers) | AWS default |
-| `S3_FORCE_PATH_STYLE` | No | Use path-style S3 URLs (MinIO) | `false` |
+| `SETTINGS_KEK` | Yes | Encryption key for secret settings stored in the DB | |
+| `S3_BUCKET` | Migration only | One-time import source for the DB-backed bucket name | |
+| `S3_ACCESS_KEY_ID` | Migration only | One-time import source for the DB-backed S3 access key | |
+| `S3_SECRET_ACCESS_KEY` | Migration only | One-time import source for the DB-backed S3 secret key | |
+| `S3_REGION` | Migration only | One-time import source for the DB-backed S3 region | |
+| `S3_ENDPOINT` | Migration only | One-time import source for the DB-backed endpoint | AWS default |
+| `S3_FORCE_PATH_STYLE` | Migration only | One-time import source for path-style mode | `false` |
 | `PROCESSING_MODE` | No | `"modal"`, `"vastai"`, or `"local"` | Auto-detect |
 | `BATCH_GPU_PROVIDER` | No | GPU provider for batch ops: `"modal"`, `"vastai"`, or `"local"` | Same as PROCESSING_MODE |
 | `MODAL_ENDPOINT_URL` | No* | Modal inference endpoint URL | |
@@ -412,6 +425,13 @@ Any S3-compatible object storage works:
 | `VAST_MAX_REPROVISIONS` | No | Max re-provisions per batch on eviction | `3` |
 | `AUTH_PASSWORD` | No | Password for app access | Disabled |
 | `JWT_SECRET` | No*** | Secret for session tokens | Required if AUTH_PASSWORD is set |
+| `MANAGED_JWKS_JSON` / `MANAGED_JWKS_FILE` / `MANAGED_JWKS_URL` | Managed only | Public keys used to validate SaaS-issued JWTs | |
+| `MANAGED_JWT_ISSUER` | Managed only | Expected JWT issuer | |
+| `MANAGED_WORKSPACE_DIRECTORY_JSON` / `MANAGED_WORKSPACE_DIRECTORY_URL` | Managed only | Workspace-to-database routing source | |
+| `MANAGED_WORKSPACE_DIRECTORY_TOKEN` | Managed only | Bearer token for remote workspace directory lookups | |
+| `MANAGED_TOKEN_ENDPOINT` | Managed only | Same-origin endpoint the SPA uses to fetch a short-lived workspace token | `/managed/session/token` |
+| `MANAGED_PROFILE_PATH` | Managed only | Profile/account path served by the SaaS app | `/profile` |
+| `MANAGED_ADMIN_PATH` | Managed only | Admin dashboard path served by the SaaS app | `/admin` |
 | `PORT` | No | HTTP server port | `8080` |
 | `LOG_LEVEL` | No | Logging level | `info` |
 

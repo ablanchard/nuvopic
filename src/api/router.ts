@@ -9,6 +9,7 @@ import settings from "./routes/settings.js";
 import gpuLogs from "./routes/gpu-logs.js";
 import smartTags from "./routes/smart-tags.js";
 import storage from "./routes/storage.js";
+import runtime from "./routes/runtime.js";
 
 const api = new Hono();
 
@@ -26,6 +27,7 @@ api.route("/photos", photos);
 api.route("/persons", persons);
 api.route("/tags", tags);
 api.route("/clusters", clusters);
+api.route("/runtime", runtime);
 api.route("/settings", settings);
 api.route("/gpu-logs", gpuLogs);
 api.route("/smart-tags", smartTags);

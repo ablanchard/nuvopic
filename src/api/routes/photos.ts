@@ -1,4 +1,9 @@
 import { Hono } from "hono";
+import crypto from "node:crypto";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import sharp from "sharp";
 import { searchPhotos, getPhotoWithDetails, getTimelineIndex } from "../../db/search.js";
 import { getPhotosToReprocess, getPhotosToReprocessCaption, getPhotosToReprocessFaces, getAllPhotosForReprocess, getExistingS3Paths, getVersionStats } from "../../db/queries.js";
 import { getPhotoById } from "../../db/queries.js";
@@ -6,13 +11,64 @@ import { getFacesByPhotoId } from "../../db/queries.js";
 import { processPhoto, processPhotoBatch, type GpuMode } from "../../processor.js";
 import { isGpuEnabled, getBatchGpuProvider } from "../../extractors/gpu-client.js";
 import { PROCESS_VERSION, CAPTION_VERSION, FACES_VERSION, PROCESS_CHANGELOG, CAPTION_CHANGELOG, FACES_CHANGELOG, compareSemver } from "../../version.js";
-import { listAllObjects, getS3Path, getPresignedImageUrl, isSupportedImage } from "../../s3/client.js";
+import { listAllObjects, getS3Path, getPresignedImageUrl, getObjectAsBuffer, isSupportedImage } from "../../s3/client.js";
 import { logger } from "../../logger.js";
 import { clusterUnassignedFaces } from "../../db/clusters.js";
 import { getS3Bucket } from "../../db/settings.js";
 import { safeCreateGpuLog, safeCompleteGpuLog, safeFailGpuLog } from "../../db/gpu-logs.js";
 
 const photos = new Hono();
+const THUMBNAIL_CACHE_DIR = path.join(os.tmpdir(), "nuvopic-thumbnails");
+
+function clampThumbnailSize(raw: string | undefined): number {
+  const parsed = parseInt(raw ?? "512", 10);
+  if (!Number.isFinite(parsed)) return 512;
+  return Math.min(Math.max(parsed, 128), 1024);
+}
+
+function parseDateFilter(value: string | undefined): Date | undefined {
+  if (!value) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function parseS3Path(s3Path: string): { bucket: string; key: string } | null {
+  const match = s3Path.match(/^s3:\/\/([^/]+)\/(.+)$/);
+  if (!match) return null;
+  return { bucket: match[1], key: match[2] };
+}
+
+function getThumbnailCachePath(photoId: string, s3Path: string, size: number): string {
+  const key = crypto
+    .createHash("sha1")
+    .update(`${photoId}:${s3Path}:${size}:webp:v1`)
+    .digest("hex");
+  return path.join(THUMBNAIL_CACHE_DIR, `${key}.webp`);
+}
+
+async function readCachedThumbnail(cachePath: string): Promise<Buffer | null> {
+  try {
+    return await fs.readFile(cachePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function writeCachedThumbnail(cachePath: string, buffer: Buffer): Promise<void> {
+  await fs.mkdir(path.dirname(cachePath), { recursive: true });
+  await fs.writeFile(cachePath, buffer);
+}
+
+function thumbnailResponse(buffer: Buffer, cacheStatus: "HIT" | "MISS"): Response {
+  return new Response(buffer, {
+    headers: {
+      "content-type": "image/webp",
+      "cache-control": "public, max-age=86400",
+      "x-nuvopic-thumbnail-cache": cacheStatus,
+    },
+  });
+}
 
 // List photos with pagination and filters
 photos.get("/", async (c) => {
@@ -30,8 +86,8 @@ photos.get("/", async (c) => {
     tagIds: tag ? [tag] : undefined,
     personId: personId || undefined,
     smartTagId: smartTag || undefined,
-    dateFrom: from ? new Date(from) : undefined,
-    dateTo: to ? new Date(to) : undefined,
+    dateFrom: parseDateFilter(from),
+    dateTo: parseDateFilter(to),
     limit: Math.min(limit, 100),
     offset: (page - 1) * limit,
   };
@@ -42,6 +98,7 @@ photos.get("/", async (c) => {
     photos: photoList.map((p) => ({
       id: p.id,
       fullImageUrl: `/api/v1/photos/${p.id}/image`,
+      thumbnailUrl: `/api/v1/photos/${p.id}/thumbnail?size=512`,
       placeholder: p.placeholder,
       takenAt: p.taken_at,
       description: p.description,
@@ -76,8 +133,8 @@ photos.get("/timeline", async (c) => {
     tagIds: tag ? [tag] : undefined,
     personId: personId || undefined,
     smartTagId: smartTag || undefined,
-    dateFrom: from ? new Date(from) : undefined,
-    dateTo: to ? new Date(to) : undefined,
+    dateFrom: parseDateFilter(from),
+    dateTo: parseDateFilter(to),
   };
 
   const groups = await getTimelineIndex(filters);
@@ -304,7 +361,7 @@ photos.post("/reprocess", async (c) => {
 photos.get("/import", async (c) => {
   const bucket = await getS3Bucket();
   if (!bucket) {
-    return c.json({ error: "S3 bucket not configured. Set S3_BUCKET env var or configure it in Settings." }, 500);
+    return c.json({ error: "S3 bucket not configured. Complete storage setup in Settings." }, 500);
   }
 
   const prefix = c.req.query("prefix") ?? "";
@@ -350,7 +407,7 @@ photos.get("/import", async (c) => {
 photos.post("/import", async (c) => {
   const bucket = await getS3Bucket();
   if (!bucket) {
-    return c.json({ error: "S3 bucket not configured. Set S3_BUCKET env var or configure it in Settings." }, 500);
+    return c.json({ error: "S3 bucket not configured. Complete storage setup in Settings." }, 500);
   }
 
   const body = await c.req.json().catch(() => ({}));
@@ -461,6 +518,7 @@ photos.get("/:id", async (c) => {
     id: photo.id,
     s3Path: photo.s3_path,
     fullImageUrl: `/api/v1/photos/${photo.id}/image`,
+    thumbnailUrl: `/api/v1/photos/${photo.id}/thumbnail?size=512`,
     placeholder: photo.placeholder,
     takenAt: photo.taken_at,
     description: photo.description,
@@ -492,6 +550,38 @@ photos.get("/:id/image", async (c) => {
   const url = await getPresignedImageUrl(bucket, key);
 
   return c.json({ url });
+});
+
+// Get a grid-sized thumbnail generated from the source object and cached locally.
+photos.get("/:id/thumbnail", async (c) => {
+  const id = c.req.param("id");
+  const size = clampThumbnailSize(c.req.query("size"));
+  const photo = await getPhotoById(id);
+
+  if (!photo) {
+    return c.json({ error: "Photo not found" }, 404);
+  }
+
+  const parsed = parseS3Path(photo.s3_path);
+  if (!parsed) {
+    return c.json({ error: "Invalid s3_path format" }, 500);
+  }
+
+  const cachePath = getThumbnailCachePath(photo.id, photo.s3_path, size);
+  const cached = await readCachedThumbnail(cachePath);
+  if (cached) {
+    return thumbnailResponse(cached, "HIT");
+  }
+
+  const source = await getObjectAsBuffer(parsed.bucket, parsed.key);
+  const thumbnail = await sharp(source, { failOn: "none" })
+    .rotate()
+    .resize(size, size, { fit: "cover", withoutEnlargement: true })
+    .webp({ quality: 74, effort: 4 })
+    .toBuffer();
+
+  await writeCachedThumbnail(cachePath, thumbnail);
+  return thumbnailResponse(thumbnail, "MISS");
 });
 
 // Get faces for a photo

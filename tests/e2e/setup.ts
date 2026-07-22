@@ -2,6 +2,7 @@ import { execSync } from "child_process";
 import pg from "pg";
 import * as fs from "fs";
 import * as path from "path";
+import { upsertSettings } from "../../src/db/settings.js";
 
 const { Pool } = pg;
 
@@ -13,6 +14,7 @@ process.env.S3_ACCESS_KEY_ID = "minioadmin";
 process.env.S3_SECRET_ACCESS_KEY = "minioadmin";
 process.env.S3_REGION = "us-east-1";
 process.env.S3_FORCE_PATH_STYLE = "true";
+process.env.SETTINGS_KEK = "test-settings-kek";
 
 async function waitForPostgres(maxAttempts = 30): Promise<void> {
   const pool = new Pool({
@@ -75,6 +77,18 @@ async function cleanDatabase(): Promise<void> {
   console.log("Database cleaned");
 }
 
+async function seedS3Settings(): Promise<void> {
+  await upsertSettings({
+    s3_bucket: process.env.S3_BUCKET!,
+    s3_region: process.env.S3_REGION!,
+    s3_endpoint: process.env.S3_ENDPOINT!,
+    s3_access_key_id: process.env.S3_ACCESS_KEY_ID!,
+    s3_secret_access_key: process.env.S3_SECRET_ACCESS_KEY!,
+    s3_force_path_style: process.env.S3_FORCE_PATH_STYLE!,
+  });
+  console.log("S3 settings seeded into database");
+}
+
 export async function setup(): Promise<void> {
   console.log("\n=== E2E Test Setup ===\n");
 
@@ -91,6 +105,7 @@ export async function setup(): Promise<void> {
 
   await initializeDatabase();
   await cleanDatabase();
+  await seedS3Settings();
 
   console.log("\n=== Setup Complete ===\n");
 }

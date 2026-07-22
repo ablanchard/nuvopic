@@ -1,8 +1,30 @@
 const API_BASE = '/api/v1';
 
+export type DeployMode = 'standalone' | 'managed';
+
+export interface RuntimeConfig {
+  deployMode: DeployMode;
+  managedTokenEndpoint: string | null;
+  profilePath: string | null;
+  adminPath: string | null;
+  storageSetupPath: string;
+}
+
+export interface RuntimeSession {
+  deployMode: DeployMode;
+  role: string;
+  subject: string;
+  workspaceId: string | null;
+  storageConfigured: boolean;
+  storageSetupPath: string;
+  profilePath: string | null;
+  adminPath: string | null;
+}
+
 export interface Photo {
   id: string;
   fullImageUrl: string;
+  thumbnailUrl: string;
   placeholder: string | null;
   takenAt: string | null;
   description: string | null;
@@ -150,7 +172,7 @@ export interface SmartTag {
   label: string;
   field: string;
   values: string[];
-  rule: string; // 'any' | 'all' | 'none'
+  rule: string;
   sortOrder: number;
   photoCount: number;
   createdAt: string;
@@ -215,10 +237,6 @@ export interface ImportResult {
   photosPerSecond: number;
 }
 
-// ---------------------------------------------------------------------------
-// Reprocess stats types
-// ---------------------------------------------------------------------------
-
 export interface PipelineStats {
   versions: Record<string, number>;
   latestVersion: string;
@@ -258,21 +276,147 @@ export interface ReprocessTriggerResponse {
   }>;
 }
 
-async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
+type S3ConfigResponse = Record<
+  string,
+  { envValue: string | null; effectiveValue: string | null; effectiveSource: 'db' | 'env' | null }
+>;
+
+interface ManagedTokenResponse {
+  token?: string;
+  accessToken?: string;
+}
+
+let runtimeConfig: RuntimeConfig = {
+  deployMode: 'standalone',
+  managedTokenEndpoint: null,
+  profilePath: null,
+  adminPath: null,
+  storageSetupPath: '/setup/storage',
+};
+let managedToken: string | null = null;
+let managedTokenPromise: Promise<string> | null = null;
+
+export function configureApiRuntime(config: RuntimeConfig) {
+  runtimeConfig = config;
+  managedToken = null;
+  managedTokenPromise = null;
+}
+
+function redirectToAuthSurface() {
+  window.location.href =
+    runtimeConfig.deployMode === 'managed'
+      ? (runtimeConfig.profilePath ?? '/profile')
+      : '/login';
+}
+
+async function parseError(response: Response): Promise<Error> {
+  const error = await response.json().catch(() => ({ error: 'Request failed' }));
+  return new Error(error.error || 'Request failed');
+}
+
+async function fetchPublicJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
   if (response.status === 401) {
-    // Session expired or not authenticated - redirect to login
-    window.location.href = '/login';
+    redirectToAuthSurface();
     throw new Error('Unauthorized');
   }
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(error.error || 'Request failed');
+    throw await parseError(response);
   }
   return response.json();
 }
 
+async function getManagedToken(forceRefresh = false): Promise<string> {
+  if (runtimeConfig.deployMode !== 'managed' || !runtimeConfig.managedTokenEndpoint) {
+    throw new Error('Managed token endpoint is not configured');
+  }
+
+  if (!forceRefresh && managedToken) {
+    return managedToken;
+  }
+
+  if (!forceRefresh && managedTokenPromise) {
+    return managedTokenPromise;
+  }
+
+  managedTokenPromise = (async () => {
+    const response = await fetch(runtimeConfig.managedTokenEndpoint!, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        Accept: 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      throw await parseError(response);
+    }
+
+    const payload = (await response.json()) as ManagedTokenResponse;
+    const token = payload.token ?? payload.accessToken;
+    if (!token) {
+      throw new Error('Managed session token missing from response');
+    }
+
+    managedToken = token;
+    return token;
+  })();
+
+  try {
+    return await managedTokenPromise;
+  } finally {
+    managedTokenPromise = null;
+  }
+}
+
+async function fetchApiJson<T>(
+  url: string,
+  options?: RequestInit,
+  attempt = 0
+): Promise<T> {
+  const headers = new Headers(options?.headers);
+
+  if (runtimeConfig.deployMode === 'managed') {
+    const token = await getManagedToken(attempt > 0);
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+
+  const response = await fetch(url, {
+    ...options,
+    headers,
+    credentials: runtimeConfig.deployMode === 'managed'
+      ? 'include'
+      : options?.credentials,
+  });
+
+  if (response.status === 401 && runtimeConfig.deployMode === 'managed' && attempt === 0) {
+    managedToken = null;
+    return fetchApiJson<T>(url, options, 1);
+  }
+
+  if (response.status === 401) {
+    redirectToAuthSurface();
+    throw new Error('Unauthorized');
+  }
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  return response.json();
+}
+
 export const api = {
+  runtime: {
+    getPublicConfig: (): Promise<RuntimeConfig> => {
+      return fetchPublicJson<RuntimeConfig>(`${API_BASE}/runtime`);
+    },
+
+    getSession: (): Promise<RuntimeSession> => {
+      return fetchApiJson<RuntimeSession>(`${API_BASE}/runtime/session`);
+    },
+  },
+
   photos: {
     list: (filters: PhotoFilters = {}): Promise<PhotoListResponse> => {
       const params = new URLSearchParams();
@@ -286,19 +430,19 @@ export const api = {
       if (filters.limit) params.set('limit', String(filters.limit));
 
       const query = params.toString();
-      return fetchJson<PhotoListResponse>(`${API_BASE}/photos${query ? `?${query}` : ''}`);
+      return fetchApiJson<PhotoListResponse>(`${API_BASE}/photos${query ? `?${query}` : ''}`);
     },
 
     get: (id: string): Promise<Photo> => {
-      return fetchJson<Photo>(`${API_BASE}/photos/${id}`);
+      return fetchApiJson<Photo>(`${API_BASE}/photos/${id}`);
     },
 
     getFaces: (id: string): Promise<{ faces: Face[] }> => {
-      return fetchJson<{ faces: Face[] }>(`${API_BASE}/photos/${id}/faces`);
+      return fetchApiJson<{ faces: Face[] }>(`${API_BASE}/photos/${id}/faces`);
     },
 
     getFullImageUrl: async (id: string): Promise<string> => {
-      const result = await fetchJson<{ url: string }>(`${API_BASE}/photos/${id}/image`);
+      const result = await fetchApiJson<{ url: string }>(`${API_BASE}/photos/${id}/image`);
       return result.url;
     },
 
@@ -312,25 +456,25 @@ export const api = {
       if (filters.to) params.set('to', filters.to);
 
       const query = params.toString();
-      return fetchJson<TimelineResponse>(`${API_BASE}/photos/timeline${query ? `?${query}` : ''}`);
+      return fetchApiJson<TimelineResponse>(`${API_BASE}/photos/timeline${query ? `?${query}` : ''}`);
     },
   },
 
   persons: {
     list: (): Promise<{ persons: Person[] }> => {
-      return fetchJson<{ persons: Person[] }>(`${API_BASE}/persons`);
+      return fetchApiJson<{ persons: Person[] }>(`${API_BASE}/persons`);
     },
 
     get: (id: string): Promise<Person> => {
-      return fetchJson<Person>(`${API_BASE}/persons/${id}`);
+      return fetchApiJson<Person>(`${API_BASE}/persons/${id}`);
     },
 
     getPhotos: (id: string): Promise<{ photos: Photo[] }> => {
-      return fetchJson<{ photos: Photo[] }>(`${API_BASE}/persons/${id}/photos`);
+      return fetchApiJson<{ photos: Photo[] }>(`${API_BASE}/persons/${id}/photos`);
     },
 
     create: (name: string): Promise<{ id: string; name: string }> => {
-      return fetchJson<{ id: string; name: string }>(`${API_BASE}/persons`, {
+      return fetchApiJson<{ id: string; name: string }>(`${API_BASE}/persons`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
@@ -338,11 +482,11 @@ export const api = {
     },
 
     getUnassignedFaces: (limit = 50): Promise<{ faces: Face[] }> => {
-      return fetchJson<{ faces: Face[] }>(`${API_BASE}/persons/unassigned-faces?limit=${limit}`);
+      return fetchApiJson<{ faces: Face[] }>(`${API_BASE}/persons/unassigned-faces?limit=${limit}`);
     },
 
     assignFace: (faceId: string, personId: string | null): Promise<void> => {
-      return fetchJson<void>(`${API_BASE}/persons/faces/${faceId}/assign`, {
+      return fetchApiJson<void>(`${API_BASE}/persons/faces/${faceId}/assign`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ personId }),
@@ -352,25 +496,25 @@ export const api = {
 
   tags: {
     list: (): Promise<{ tags: Tag[] }> => {
-      return fetchJson<{ tags: Tag[] }>(`${API_BASE}/tags`);
+      return fetchApiJson<{ tags: Tag[] }>(`${API_BASE}/tags`);
     },
   },
 
   clusters: {
     list: (): Promise<{ clusters: Cluster[] }> => {
-      return fetchJson<{ clusters: Cluster[] }>(`${API_BASE}/clusters`);
+      return fetchApiJson<{ clusters: Cluster[] }>(`${API_BASE}/clusters`);
     },
 
     getUnassigned: (): Promise<{ faces: ClusterFace[] }> => {
-      return fetchJson<{ faces: ClusterFace[] }>(`${API_BASE}/clusters/unassigned`);
+      return fetchApiJson<{ faces: ClusterFace[] }>(`${API_BASE}/clusters/unassigned`);
     },
 
     getFaces: (clusterId: string): Promise<{ faces: ClusterFace[] }> => {
-      return fetchJson<{ faces: ClusterFace[] }>(`${API_BASE}/clusters/${clusterId}/faces`);
+      return fetchApiJson<{ faces: ClusterFace[] }>(`${API_BASE}/clusters/${clusterId}/faces`);
     },
 
     create: (faceId: string): Promise<{ id: string; faceCount: number }> => {
-      return fetchJson<{ id: string; faceCount: number }>(`${API_BASE}/clusters`, {
+      return fetchApiJson<{ id: string; faceCount: number }>(`${API_BASE}/clusters`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ faceId }),
@@ -378,7 +522,7 @@ export const api = {
     },
 
     run: (opts?: { threshold?: number; strategy?: ClusterStrategy }): Promise<ClusteringResult> => {
-      return fetchJson<ClusteringResult>(`${API_BASE}/clusters/run`, {
+      return fetchApiJson<ClusteringResult>(`${API_BASE}/clusters/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(opts ?? {}),
@@ -386,7 +530,7 @@ export const api = {
     },
 
     recluster: (opts: { threshold: number; strategy: ClusterStrategy }): Promise<ReclusterResult> => {
-      return fetchJson<ReclusterResult>(`${API_BASE}/clusters/recluster`, {
+      return fetchApiJson<ReclusterResult>(`${API_BASE}/clusters/recluster`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(opts),
@@ -394,7 +538,7 @@ export const api = {
     },
 
     name: (clusterId: string, name: string): Promise<{ personId: string }> => {
-      return fetchJson<{ personId: string }>(`${API_BASE}/clusters/${clusterId}/name`, {
+      return fetchApiJson<{ personId: string }>(`${API_BASE}/clusters/${clusterId}/name`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
@@ -402,7 +546,7 @@ export const api = {
     },
 
     rename: (clusterId: string, name: string): Promise<void> => {
-      return fetchJson<void>(`${API_BASE}/clusters/${clusterId}/name`, {
+      return fetchApiJson<void>(`${API_BASE}/clusters/${clusterId}/name`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
@@ -410,13 +554,13 @@ export const api = {
     },
 
     assignFace: (clusterId: string, faceId: string): Promise<void> => {
-      return fetchJson<void>(`${API_BASE}/clusters/${clusterId}/faces/${faceId}`, {
+      return fetchApiJson<void>(`${API_BASE}/clusters/${clusterId}/faces/${faceId}`, {
         method: 'POST',
       });
     },
 
     removeFace: (clusterId: string, faceId: string): Promise<void> => {
-      return fetchJson<void>(`${API_BASE}/clusters/${clusterId}/faces/${faceId}`, {
+      return fetchApiJson<void>(`${API_BASE}/clusters/${clusterId}/faces/${faceId}`, {
         method: 'DELETE',
       });
     },
@@ -424,19 +568,19 @@ export const api = {
 
   settings: {
     get: (): Promise<Record<string, string>> => {
-      return fetchJson<Record<string, string>>(`${API_BASE}/settings`);
+      return fetchApiJson<Record<string, string>>(`${API_BASE}/settings`);
     },
 
     update: (settings: Record<string, string>): Promise<Record<string, string>> => {
-      return fetchJson<Record<string, string>>(`${API_BASE}/settings`, {
+      return fetchApiJson<Record<string, string>>(`${API_BASE}/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings),
       });
     },
 
-    getS3Config: (): Promise<Record<string, { envValue: string | null; effectiveValue: string | null; effectiveSource: 'db' | 'env' | null }>> => {
-      return fetchJson<Record<string, { envValue: string | null; effectiveValue: string | null; effectiveSource: 'db' | 'env' | null }>>(`${API_BASE}/settings/s3`);
+    getS3Config: (): Promise<S3ConfigResponse> => {
+      return fetchApiJson<S3ConfigResponse>(`${API_BASE}/settings/s3`);
     },
   },
 
@@ -449,25 +593,25 @@ export const api = {
       if (filters.limit) params.set('limit', String(filters.limit));
 
       const query = params.toString();
-      return fetchJson<GpuLogListResponse>(`${API_BASE}/gpu-logs${query ? `?${query}` : ''}`);
+      return fetchApiJson<GpuLogListResponse>(`${API_BASE}/gpu-logs${query ? `?${query}` : ''}`);
     },
 
     get: (id: string): Promise<GpuLogDetailResponse> => {
-      return fetchJson<GpuLogDetailResponse>(`${API_BASE}/gpu-logs/${id}`);
+      return fetchApiJson<GpuLogDetailResponse>(`${API_BASE}/gpu-logs/${id}`);
     },
 
     getChildren: (id: string): Promise<{ children: GpuLog[] }> => {
-      return fetchJson<{ children: GpuLog[] }>(`${API_BASE}/gpu-logs/${id}/children`);
+      return fetchApiJson<{ children: GpuLog[] }>(`${API_BASE}/gpu-logs/${id}/children`);
     },
   },
 
   smartTags: {
     list: (): Promise<{ smartTags: SmartTag[] }> => {
-      return fetchJson<{ smartTags: SmartTag[] }>(`${API_BASE}/smart-tags`);
+      return fetchApiJson<{ smartTags: SmartTag[] }>(`${API_BASE}/smart-tags`);
     },
 
     create: (data: { label: string; field: string; values: string[]; rule: string; sortOrder?: number }): Promise<SmartTag> => {
-      return fetchJson<SmartTag>(`${API_BASE}/smart-tags`, {
+      return fetchApiJson<SmartTag>(`${API_BASE}/smart-tags`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
@@ -475,7 +619,7 @@ export const api = {
     },
 
     update: (id: string, data: { label?: string; field?: string; values?: string[]; rule?: string; sortOrder?: number }): Promise<SmartTag> => {
-      return fetchJson<SmartTag>(`${API_BASE}/smart-tags/${id}`, {
+      return fetchApiJson<SmartTag>(`${API_BASE}/smart-tags/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
@@ -483,17 +627,17 @@ export const api = {
     },
 
     delete: (id: string): Promise<{ ok: boolean }> => {
-      return fetchJson<{ ok: boolean }>(`${API_BASE}/smart-tags/${id}`, {
+      return fetchApiJson<{ ok: boolean }>(`${API_BASE}/smart-tags/${id}`, {
         method: 'DELETE',
       });
     },
 
     fields: (): Promise<{ fields: string[] }> => {
-      return fetchJson<{ fields: string[] }>(`${API_BASE}/smart-tags/fields`);
+      return fetchApiJson<{ fields: string[] }>(`${API_BASE}/smart-tags/fields`);
     },
 
     facets: (field: string): Promise<FacetsResponse> => {
-      return fetchJson<FacetsResponse>(`${API_BASE}/smart-tags/facets?field=${encodeURIComponent(field)}`);
+      return fetchApiJson<FacetsResponse>(`${API_BASE}/smart-tags/facets?field=${encodeURIComponent(field)}`);
     },
   },
 
@@ -502,11 +646,11 @@ export const api = {
       const params = new URLSearchParams();
       if (prefix) params.set('prefix', prefix);
       const query = params.toString();
-      return fetchJson<StorageBrowseResponse>(`${API_BASE}/storage/browse${query ? `?${query}` : ''}`);
+      return fetchApiJson<StorageBrowseResponse>(`${API_BASE}/storage/browse${query ? `?${query}` : ''}`);
     },
 
     import: (options: ImportOptions): Promise<ImportResult> => {
-      return fetchJson<ImportResult>(`${API_BASE}/photos/import`, {
+      return fetchApiJson<ImportResult>(`${API_BASE}/photos/import`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(options),
@@ -527,11 +671,11 @@ export const api = {
       const params = new URLSearchParams();
       if (prefix) params.set('prefix', prefix);
       params.set('limit', String(limit));
-      return fetchJson(`${API_BASE}/photos/import?${params.toString()}`);
+      return fetchApiJson(`${API_BASE}/photos/import?${params.toString()}`);
     },
 
     reprocess: (options: { mode?: string; force?: boolean; gpuMode?: string; pathPrefix?: string }): Promise<unknown> => {
-      return fetchJson(`${API_BASE}/photos/reprocess`, {
+      return fetchApiJson(`${API_BASE}/photos/reprocess`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(options),
@@ -544,11 +688,11 @@ export const api = {
       const params = new URLSearchParams();
       if (pathPrefix) params.set('pathPrefix', pathPrefix);
       const query = params.toString();
-      return fetchJson<ReprocessStatsResponse>(`${API_BASE}/photos/reprocess/stats${query ? `?${query}` : ''}`);
+      return fetchApiJson<ReprocessStatsResponse>(`${API_BASE}/photos/reprocess/stats${query ? `?${query}` : ''}`);
     },
 
     trigger: (options: { mode?: string; force?: boolean; pathPrefix?: string }): Promise<ReprocessTriggerResponse> => {
-      return fetchJson<ReprocessTriggerResponse>(`${API_BASE}/photos/reprocess`, {
+      return fetchApiJson<ReprocessTriggerResponse>(`${API_BASE}/photos/reprocess`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(options),

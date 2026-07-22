@@ -1,10 +1,17 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
 import { PhotoGrid } from './PhotoGrid';
+import { SearchBar } from './SearchBar';
+import { SizeSlider } from './SizeSlider';
 import { TagFilter } from './TagFilter';
 import { PersonList } from './PersonList';
 import { DateFilter } from './DateFilter';
 import { SmartTagFilter } from './SmartTagFilter';
-import { resetFilters } from '../state/filters';
+import {
+  DEFAULT_PHOTO_SIZE,
+  MOBILE_DEFAULT_PHOTO_SIZE,
+  photoSize,
+  resetFilters,
+} from '../state/filters';
 import { api } from '../api/client';
 import { getImageUrl } from '../lib/imageUrlCache';
 import type { Photo } from '../api/client';
@@ -15,6 +22,39 @@ export function HomePage(_props: RoutableProps) {
   const [fullImageSrc, setFullImageSrc] = useState<string | null>(null);
   const [fullImageLoaded, setFullImageLoaded] = useState(false);
   const preloadRef = useRef<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    document.documentElement.classList.add('home-route-active');
+
+    return () => {
+      document.documentElement.classList.remove('home-route-active');
+    };
+  }, []);
+
+  useEffect(() => {
+    const mobileQuery = window.matchMedia('(max-width: 768px)');
+
+    const applyMobileDefault = () => {
+      if (
+        mobileQuery.matches &&
+        (
+          photoSize.value === DEFAULT_PHOTO_SIZE ||
+          photoSize.value === 150 ||
+          photoSize.value === 125 ||
+          photoSize.value === 75
+        )
+      ) {
+        photoSize.value = MOBILE_DEFAULT_PHOTO_SIZE;
+      }
+    };
+
+    applyMobileDefault();
+    mobileQuery.addEventListener('change', applyMobileDefault);
+
+    return () => {
+      mobileQuery.removeEventListener('change', applyMobileDefault);
+    };
+  }, []);
 
   // Load full-res image when modal opens
   useEffect(() => {
@@ -69,17 +109,38 @@ export function HomePage(_props: RoutableProps) {
     };
   }, [selectedPhoto]);
 
+  const renderFilterControls = (includePrimaryControls = false) => (
+    <>
+      {includePrimaryControls && (
+        <div class="mobile-primary-controls">
+          <SearchBar />
+          <SizeSlider />
+        </div>
+      )}
+      <button class="reset-filters" onClick={resetFilters}>
+        Clear Filters
+      </button>
+      <SmartTagFilter />
+      <PersonList />
+      <TagFilter />
+      <DateFilter />
+    </>
+  );
+
   return (
     <div class="home-page">
       <div class="app-content">
-        <aside class="sidebar">
-          <button class="reset-filters" onClick={resetFilters}>
-            Clear Filters
-          </button>
-          <SmartTagFilter />
-          <PersonList />
-          <TagFilter />
-          <DateFilter />
+        <details class="mobile-filter-drawer">
+          <summary class="mobile-filter-summary">
+            <span>Filters & Search</span>
+          </summary>
+          <div class="mobile-filter-panel">
+            {renderFilterControls(true)}
+          </div>
+        </details>
+
+        <aside class="sidebar desktop-filters-sidebar">
+          {renderFilterControls(false)}
         </aside>
 
         <main class="main-content">

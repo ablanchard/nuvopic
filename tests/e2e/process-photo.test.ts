@@ -107,7 +107,6 @@ describe("Photo Processing E2E", () => {
     const result = body.results[0];
     expect(result.s3Path).toBe(`s3://${process.env.S3_BUCKET}/${testKey}`);
     expect(result.photoId).toBeDefined();
-    expect(result.thumbnailSize).toBeGreaterThan(0);
 
     // Should detect at least one face
     expect(result.facesDetected).toBeGreaterThanOrEqual(1);
@@ -127,7 +126,7 @@ describe("Photo Processing E2E", () => {
 
     expect(photoResult.rows).toHaveLength(1);
     const photo = photoResult.rows[0];
-    expect(photo.thumbnail).not.toBeNull();
+    expect(photo.placeholder).not.toBeNull();
     // Description may be null if caption model fails
     if (!photo.description) {
       console.warn("Photo description is null in database");
@@ -147,7 +146,7 @@ describe("Photo Processing E2E", () => {
     console.log(`Processed ${photoName}:`);
     console.log(`  Description: ${result.description}`);
     console.log(`  Faces detected: ${result.facesDetected}`);
-    console.log(`  Thumbnail size: ${result.thumbnailSize} bytes`);
+    console.log(`  Placeholder present: ${photo.placeholder ? 'yes' : 'no'}`);
   }, 120000);
 
   it("should process multiple photos via S3 events", async () => {

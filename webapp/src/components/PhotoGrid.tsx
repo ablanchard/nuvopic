@@ -36,7 +36,6 @@ export function PhotoGrid({ onPhotoClick }: PhotoGridProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const photoCacheRef = useRef(new PhotoCache());
   const rafRef = useRef<number>(0);
-  const fetchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Compute column count from container width and photo size
   const columnCount = useMemo(() => {
@@ -128,45 +127,36 @@ export function PhotoGrid({ onPhotoClick }: PhotoGridProps) {
   );
 
   // Trigger fetches for visible sections + prefetch neighbors.
-  // Debounced by 500ms so we only fetch after scrolling settles.
   useEffect(() => {
-    if (fetchDebounceRef.current) {
-      clearTimeout(fetchDebounceRef.current);
+    const cache = photoCacheRef.current;
+    const visibleKeys = new Set<string>();
+
+    for (const { section } of visibleRange.sections) {
+      visibleKeys.add(section.key);
+
+      // Ensure this section's data is loading/loaded.
+      if (!cache.get(section.key) && !cache.isPending(section.key)) {
+        cache.ensure(section.key, section.photoCount)
+          .then(() => {
+            setCacheVersion((v) => v + 1);
+          })
+          .catch(() => {
+            // Keep the skeleton visible; the next range update can retry.
+          });
+      }
     }
 
-    fetchDebounceRef.current = setTimeout(() => {
-      const cache = photoCacheRef.current;
-      const visibleKeys = new Set<string>();
-
-      for (const { section } of visibleRange.sections) {
-        visibleKeys.add(section.key);
-
-        // Ensure this section's data is loading/loaded
-        if (!cache.get(section.key) && !cache.isPending(section.key)) {
-          cache.ensure(section.key, section.photoCount).then(() => {
-            setCacheVersion((v) => v + 1);
-          });
+    // Prefetch adjacent sections.
+    const allKeys = layout.sections.map((s) => s.key);
+    for (const { section } of visibleRange.sections) {
+      const idx = allKeys.indexOf(section.key);
+      for (const offset of [-1, 1]) {
+        const neighbor = layout.sections[idx + offset];
+        if (neighbor && !visibleKeys.has(neighbor.key)) {
+          cache.prefetch(neighbor.key, neighbor.photoCount);
         }
       }
-
-      // Prefetch adjacent sections
-      const allKeys = layout.sections.map((s) => s.key);
-      for (const { section } of visibleRange.sections) {
-        const idx = allKeys.indexOf(section.key);
-        for (const offset of [-1, 1]) {
-          const neighbor = layout.sections[idx + offset];
-          if (neighbor && !visibleKeys.has(neighbor.key)) {
-            cache.prefetch(neighbor.key, neighbor.photoCount);
-          }
-        }
-      }
-    }, 500);
-
-    return () => {
-      if (fetchDebounceRef.current) {
-        clearTimeout(fetchDebounceRef.current);
-      }
-    };
+    }
   }, [visibleRange, layout]);
 
   // Handle scrollbar jump
