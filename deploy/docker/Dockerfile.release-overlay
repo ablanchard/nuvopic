@@ -1,0 +1,13 @@
+# syntax=docker/dockerfile:1
+
+# Fast release image for source-only changes when package-lock.json is unchanged.
+# BASE_IMAGE must be an already verified NuvoPic data-plane runtime image.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+USER root
+
+COPY --chown=appuser:appuser dist/api/routes/runtime.js ./dist/api/routes/runtime.js
+COPY --chown=appuser:appuser webapp/dist ./webapp/dist
+
+USER appuser

@@ -1,0 +1,29 @@
+{$NUVOPIC_SITE_ADDRESS:nuvopic.app} {
+	encode zstd gzip
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	@internal path /internal /internal/*
+	handle @internal {
+		respond "Not found" 404
+	}
+
+	@control path / /marketing/* /api/auth/* /login /signup /logout /profile /profile/* /admin /admin/* /managed/* /.well-known/jwks.json
+	handle @control {
+		reverse_proxy control-plane:8787
+	}
+
+	handle {
+		reverse_proxy data-plane:8080
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

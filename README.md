@@ -111,6 +111,26 @@ npm run webapp:dev
 
 By default, without `MODAL_ENDPOINT_URL` set, processing falls back to local mode (CPU-based). See [Modal Setup](#modal-setup-real-time-gpu-processing) for real-time GPU processing or [Vast.ai Setup](#vastai-setup-batch-gpu-processing) for cheaper batch processing.
 
+## Container Images
+
+Build the production data-plane image, including the compiled backend and web
+application:
+
+```bash
+docker build -f deploy/docker/Dockerfile --target runtime -t nuvopic-data-plane .
+```
+
+Build the one-shot workspace migration image:
+
+```bash
+docker build -f deploy/docker/Dockerfile --target migration -t nuvopic-migration .
+```
+
+The `runtime` target runs `node dist/server.js` as a non-root user and exposes
+the `/health` endpoint on port 8080. The `migration` target contains
+`scripts/init-db.ts`, `src/db/schema.sql`, and `tsx`; it runs `npm run init-db`
+and requires `DATABASE_URL`.
+
 ## Modal Setup (Real-time GPU Processing)
 
 Modal provides serverless GPU inference with scale-to-zero — ideal for real-time processing triggered by S3 webhooks.
@@ -394,6 +414,9 @@ Any S3-compatible object storage works:
 - [AWS S3](https://aws.amazon.com/s3/)
 - [Cloudflare R2](https://developers.cloudflare.com/r2/)
 - [MinIO](https://min.io/) (self-hosted)
+
+For the current managed integration and its target multi-tenant design, see
+[NuvoPic Control Plane Architecture](docs/control-plane-architecture.md).
 
 ## Configuration
 

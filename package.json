@@ -2,6 +2,7 @@
   "name": "nuvopic",
   "version": "1.0.0",
   "description": "Visualize and organize your photos stored on cloud storage",
+  "license": "MIT",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
@@ -9,6 +10,7 @@
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "init-db": "tsx scripts/init-db.ts",
+    "provision-workspaces": "tsx scripts/provision-workspaces.ts",
     "migrate-s3-settings": "tsx scripts/migrate-s3-settings.ts",
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down",

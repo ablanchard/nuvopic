@@ -1,0 +1,9 @@
+export const APP_PATH = '/app';
+export const PHOTOS_PATH = `${APP_PATH}/photos`;
+export const FACES_PATH = `${APP_PATH}/faces`;
+export const SETTINGS_PATH = `${APP_PATH}/settings`;
+export const STORAGE_SETUP_PATH = `${APP_PATH}/setup/storage`;
+export const GPU_LOGS_PATH = `${SETTINGS_PATH}/gpu-logs`;
+export const SMART_TAGS_PATH = `${SETTINGS_PATH}/smart-tags`;
+export const STORAGE_PATH = `${SETTINGS_PATH}/storage`;
+export const REPROCESS_PATH = `${SETTINGS_PATH}/reprocess`;

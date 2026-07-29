@@ -3,6 +3,7 @@ import { api } from '../api/client';
 import type { StorageFolderInfo } from '../api/client';
 import { SettingsSidebar } from './SettingsSidebar';
 import type { RoutableProps } from 'preact-router';
+import { STORAGE_PATH } from '../routes';
 
 /* =========================================================================
    Types for the folder tree state
@@ -263,7 +264,7 @@ export function StorageBrowserPage(_props: RoutableProps) {
 
   return (
     <div class="app-content">
-      <SettingsSidebar activePath="/settings/storage" />
+      <SettingsSidebar activePath={STORAGE_PATH} />
 
       <main class="main-content">
         {loading ? (

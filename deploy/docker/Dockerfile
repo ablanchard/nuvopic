@@ -1,13 +1,14 @@
-# Multi-stage build for smaller image
-# This Dockerfile is provider-agnostic and works on any container platform.
+# syntax=docker/dockerfile:1
+
+# Multi-stage, provider-agnostic build for the NuvoPic data plane.
 
 # ---- Build stage: backend ----
-FROM node:20-slim AS backend-builder
+FROM node:20-bookworm-slim AS backend-builder
 
 WORKDIR /app
 
-# Install build dependencies for native modules (sharp, canvas)
-RUN apt-get update && apt-get install -y \
+# Install build dependencies for native modules.
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     make \
     g++ \
@@ -31,8 +32,13 @@ COPY src ./src
 # Build TypeScript
 RUN npm run build
 
+# Keep a production-only dependency tree for the runtime image.
+FROM backend-builder AS production-dependencies
+
+RUN npm prune --omit=dev && npm cache clean --force
+
 # ---- Build stage: webapp ----
-FROM node:20-slim AS webapp-builder
+FROM node:20-bookworm-slim AS webapp-builder
 
 WORKDIR /app/webapp
 
@@ -46,18 +52,19 @@ RUN npm ci
 COPY webapp/tsconfig*.json ./
 COPY webapp/vite.config.ts ./
 COPY webapp/index.html ./
+COPY webapp/public ./public
 COPY webapp/src ./src
 
 # Build webapp
 RUN npm run build
 
-# ---- Production stage ----
-FROM node:20-slim
+# ---- Production runtime stage ----
+FROM node:20-bookworm-slim AS runtime
 
 WORKDIR /app
 
 # Install runtime dependencies for native modules
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 \
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
@@ -66,34 +73,39 @@ RUN apt-get update && apt-get install -y \
     librsvg2-2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy package files
+# Copy the production dependency tree and built application.
 COPY package*.json ./
-
-# Install production dependencies only
-RUN npm ci --omit=dev
-
-# Copy built backend from builder
+COPY --from=production-dependencies /app/node_modules ./node_modules
 COPY --from=backend-builder /app/dist ./dist
-
-# Copy built webapp from builder
 COPY --from=webapp-builder /app/webapp/dist ./webapp/dist
 
-# Copy models
-COPY models ./models
-
 # Create non-root user
-RUN useradd -m -u 1001 appuser
+RUN useradd --create-home --uid 10001 appuser
 USER appuser
 
-# Set environment variables
 ENV NODE_ENV=production
 
-# Expose port for HTTP invocation
 EXPOSE 8080
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s \
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD node -e "require('http').get('http://localhost:8080/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"
 
-# Start the server
 CMD ["node", "dist/server.js"]
+
+# ---- One-shot workspace migration stage ----
+FROM node:20-bookworm-slim AS migration
+
+WORKDIR /app
+
+COPY package*.json ./
+COPY --from=backend-builder /app/node_modules ./node_modules
+COPY scripts/init-db.ts ./scripts/init-db.ts
+COPY scripts/provision-workspaces.ts ./scripts/provision-workspaces.ts
+COPY src/db/schema.sql ./src/db/schema.sql
+
+RUN useradd --create-home --uid 10001 appuser
+USER appuser
+
+ENV NODE_ENV=production
+
+CMD ["npm", "run", "init-db"]

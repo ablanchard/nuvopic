@@ -5,10 +5,13 @@ import * as path from "path";
 import { upsertSettings } from "../../src/db/settings.js";
 
 const { Pool } = pg;
+const TEST_COMPOSE_COMMAND =
+  "POSTGRES_PORT=55432 MINIO_API_PORT=59000 MINIO_CONSOLE_PORT=59001 " +
+  "docker compose -p nuvopic-test -f docker-compose.yml";
 
 // Set test environment variables
-process.env.DATABASE_URL = "postgres://nuvopic:nuvopic@localhost:5432/nuvopic";
-process.env.S3_ENDPOINT = "http://localhost:9000";
+process.env.DATABASE_URL = "postgres://nuvopic:nuvopic@localhost:55432/nuvopic";
+process.env.S3_ENDPOINT = "http://localhost:59000";
 process.env.S3_BUCKET = "photos";
 process.env.S3_ACCESS_KEY_ID = "minioadmin";
 process.env.S3_SECRET_ACCESS_KEY = "minioadmin";
@@ -40,7 +43,7 @@ async function waitForPostgres(maxAttempts = 30): Promise<void> {
 async function waitForMinio(maxAttempts = 30): Promise<void> {
   for (let i = 0; i < maxAttempts; i++) {
     try {
-      const response = await fetch("http://localhost:9000/minio/health/live");
+      const response = await fetch("http://localhost:59000/minio/health/live");
       if (response.ok) {
         console.log("MinIO is ready");
         return;
@@ -97,8 +100,8 @@ export async function setup(): Promise<void> {
     await waitForPostgres(5);
     await waitForMinio(5);
   } catch {
-    console.log("Services not running, starting docker-compose...");
-    execSync("docker-compose up -d", { stdio: "inherit" });
+    console.log("Services not running, starting test containers...");
+    execSync(`${TEST_COMPOSE_COMMAND} up -d`, { stdio: "inherit" });
     await waitForPostgres();
     await waitForMinio();
   }
@@ -112,7 +115,7 @@ export async function setup(): Promise<void> {
 
 export async function teardown(): Promise<void> {
   // Optionally stop services
-  // execSync("docker-compose down", { stdio: "inherit" });
+  // execSync(`${TEST_COMPOSE_COMMAND} down`, { stdio: "inherit" });
 }
 
 // Run setup before all tests

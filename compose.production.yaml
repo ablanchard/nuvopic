@@ -1,0 +1,86 @@
+services:
+  postgres:
+    deploy:
+      resources:
+        limits:
+          cpus: "${POSTGRES_CPU_LIMIT:-2.0}"
+          memory: ${POSTGRES_MEMORY_LIMIT:-3G}
+        reservations:
+          memory: ${POSTGRES_MEMORY_RESERVATION:-512M}
+
+  control-plane:
+    build: !reset null
+    image: ${CONTROL_PLANE_IMAGE:?Set CONTROL_PLANE_IMAGE to an immutable image reference}
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "${CONTROL_PLANE_CPU_LIMIT:-1.0}"
+          memory: ${CONTROL_PLANE_MEMORY_LIMIT:-512M}
+
+  data-plane:
+    build: !reset null
+    image: ${DATA_PLANE_IMAGE:?Set DATA_PLANE_IMAGE to an immutable image reference}
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "${DATA_PLANE_CPU_LIMIT:-2.0}"
+          memory: ${DATA_PLANE_MEMORY_LIMIT:-2G}
+
+  workspace-provisioner:
+    build: !reset null
+    image: ${DATA_PLANE_MIGRATION_IMAGE:?Set DATA_PLANE_MIGRATION_IMAGE to an immutable migration-target image}
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "${PROVISIONER_CPU_LIMIT:-0.25}"
+          memory: ${PROVISIONER_MEMORY_LIMIT:-192M}
+
+  caddy:
+    deploy:
+      resources:
+        limits:
+          cpus: "${CADDY_CPU_LIMIT:-0.5}"
+          memory: ${CADDY_MEMORY_LIMIT:-256M}
+
+  control-plane-migrate:
+    build: !reset null
+    image: ${CONTROL_PLANE_MIGRATION_IMAGE:?Set CONTROL_PLANE_MIGRATION_IMAGE to an immutable migration-target image}
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  data-plane-migrate:
+    build: !reset null
+    image: ${DATA_PLANE_MIGRATION_IMAGE:?Set DATA_PLANE_MIGRATION_IMAGE to an immutable migration-target image}
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

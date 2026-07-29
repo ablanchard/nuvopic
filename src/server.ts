@@ -15,9 +15,15 @@ import {
 } from "./auth/handlers.js";
 import { getDeployMode, isManagedMode } from "./config/runtime.js";
 import { getSetting } from "./db/settings.js";
-import { runWithWorkspaceContext } from "./db/client.js";
+import { closePool, runWithWorkspaceContext } from "./db/client.js";
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
+const SHUTDOWN_TIMEOUT_MS = parseInt(
+  process.env.SHUTDOWN_TIMEOUT_MS || "30000",
+  10
+);
+const activeBackgroundJobs = new Set<Promise<void>>();
+let isShuttingDown = false;
 
 interface NormalizedS3EventRecord {
   s3: {
@@ -69,7 +75,7 @@ async function processWebhookEvent(
 ): Promise<Response> {
   const s3Event = normalizeS3Event(event);
 
-  handler(s3Event)
+  const job = handler(s3Event)
     .then((result) => {
       const body = JSON.parse(result.body);
       logger.info(`Webhook processing complete: ${body.processed} photos processed`);
@@ -77,13 +83,23 @@ async function processWebhookEvent(
     .catch((error) => {
       logger.error("Webhook processing error:", error);
     });
+  activeBackgroundJobs.add(job);
+  void job.finally(() => activeBackgroundJobs.delete(job));
 
   return c.json({ status: "accepted" }, 202);
 }
 
 const app = new Hono();
 
-app.get("/health", (c) => c.json({ status: "ok", mode: getDeployMode() }));
+app.get("/health", (c) =>
+  c.json(
+    {
+      status: isShuttingDown ? "shutting_down" : "ok",
+      mode: getDeployMode(),
+    },
+    isShuttingDown ? 503 : 200
+  )
+);
 
 app.get("/login", handleLoginPage);
 app.post("/login", handleLogin);
@@ -162,7 +178,7 @@ app.post("/process", async (c) => {
 app.use("/*", serveStatic({ root: "./webapp/dist" }));
 app.get("*", serveStatic({ path: "./webapp/dist/index.html" }));
 
-serve({ fetch: app.fetch, port: PORT }, () => {
+const server = serve({ fetch: app.fetch, port: PORT }, () => {
   logger.info(`Server listening on port ${PORT}`);
   logger.info(`Deploy mode: ${getDeployMode()}`);
   logger.info(
@@ -177,4 +193,61 @@ serve({ fetch: app.fetch, port: PORT }, () => {
   logger.info(`Health check: http://localhost:${PORT}/health`);
   logger.info(`API: http://localhost:${PORT}/api/v1`);
   logger.info(`Process endpoint: http://localhost:${PORT}/process`);
+});
+
+function closeServer(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error?: Error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function shutdown(signal: NodeJS.Signals): Promise<void> {
+  if (isShuttingDown) {
+    logger.warn(`Received ${signal} while shutdown is already in progress`);
+    return;
+  }
+
+  isShuttingDown = true;
+  logger.info(`Received ${signal}; beginning graceful shutdown`);
+
+  const forceExitTimer = setTimeout(() => {
+    logger.error(
+      `Graceful shutdown exceeded ${SHUTDOWN_TIMEOUT_MS}ms; forcing exit`
+    );
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
+  forceExitTimer.unref();
+
+  try {
+    await closeServer();
+
+    if (activeBackgroundJobs.size > 0) {
+      logger.info(
+        `Waiting for ${activeBackgroundJobs.size} background job(s) to finish`
+      );
+      await Promise.allSettled([...activeBackgroundJobs]);
+    }
+
+    await closePool();
+    clearTimeout(forceExitTimer);
+    logger.info("Graceful shutdown complete");
+    process.exit(0);
+  } catch (error) {
+    clearTimeout(forceExitTimer);
+    logger.error("Graceful shutdown failed:", error);
+    process.exit(1);
+  }
+}
+
+process.once("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});
+process.once("SIGINT", () => {
+  void shutdown("SIGINT");
 });

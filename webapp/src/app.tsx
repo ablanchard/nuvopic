@@ -10,6 +10,17 @@ import { StorageBrowserPage } from './components/StorageBrowserPage';
 import { ReprocessPage } from './components/ReprocessPage';
 import { useEffect, useState } from 'preact/hooks';
 import { api, configureApiRuntime, type RuntimeConfig, type RuntimeSession } from './api/client';
+import {
+  APP_PATH,
+  FACES_PATH,
+  GPU_LOGS_PATH,
+  PHOTOS_PATH,
+  REPROCESS_PATH,
+  SETTINGS_PATH,
+  SMART_TAGS_PATH,
+  STORAGE_PATH,
+  STORAGE_SETUP_PATH,
+} from './routes';
 import './app.css';
 
 export function App() {
@@ -36,10 +47,14 @@ export function App() {
 
         setSession(sessionInfo);
 
-        if (!sessionInfo.storageConfigured && getCurrentUrl() !== sessionInfo.storageSetupPath) {
+        const currentUrl = getCurrentUrl();
+        if (!sessionInfo.storageConfigured && currentUrl !== sessionInfo.storageSetupPath) {
           route(sessionInfo.storageSetupPath, true);
-        } else if (sessionInfo.storageConfigured && getCurrentUrl() === sessionInfo.storageSetupPath) {
-          route('/', true);
+        } else if (
+          sessionInfo.storageConfigured &&
+          (currentUrl === sessionInfo.storageSetupPath || currentUrl === '/' || currentUrl === APP_PATH)
+        ) {
+          route(PHOTOS_PATH, true);
         }
       } catch (error) {
         if (!cancelled) {
@@ -83,7 +98,7 @@ export function App() {
   const handleStorageConfigured = async () => {
     const sessionInfo = await api.runtime.getSession();
     setSession(sessionInfo);
-    route('/', true);
+    route(PHOTOS_PATH, true);
   };
 
   if (loading) {
@@ -120,22 +135,22 @@ export function App() {
           {storageConfigured && (
             <>
               <a
-                href="/"
-                class={`nav-link ${currentPath === '/' ? 'nav-link--active' : ''}`}
+                href={PHOTOS_PATH}
+                class={`nav-link ${currentPath === PHOTOS_PATH ? 'nav-link--active' : ''}`}
               >
                 Photos
               </a>
               <a
-                href="/faces"
-                class={`nav-link ${currentPath === '/faces' ? 'nav-link--active' : ''}`}
+                href={FACES_PATH}
+                class={`nav-link ${currentPath === FACES_PATH ? 'nav-link--active' : ''}`}
               >
                 Faces
               </a>
             </>
           )}
           <a
-            href={storageConfigured ? '/settings' : (session?.storageSetupPath ?? '/setup/storage')}
-            class={`nav-link ${currentPath.startsWith('/settings') || currentPath.startsWith('/setup') ? 'nav-link--active' : ''}`}
+            href={storageConfigured ? SETTINGS_PATH : (session?.storageSetupPath ?? STORAGE_SETUP_PATH)}
+            class={`nav-link ${currentPath.startsWith(SETTINGS_PATH) || currentPath.startsWith(`${APP_PATH}/setup`) ? 'nav-link--active' : ''}`}
           >
             {storageConfigured ? 'Settings' : 'Setup'}
           </a>
@@ -150,7 +165,7 @@ export function App() {
             </a>
           )}
         </nav>
-        {currentPath === '/' && storageConfigured && (
+        {currentPath === PHOTOS_PATH && storageConfigured && (
           <div class="desktop-header-controls">
             <SearchBar />
             <SizeSlider />
@@ -159,19 +174,19 @@ export function App() {
       </header>
 
       <Router onChange={(e) => setCurrentPath(e.url)}>
-        <HomePage path="/" />
-        <FacesPage path="/faces" />
-        <SettingsPage path="/settings" session={session} />
+        <HomePage path={PHOTOS_PATH} />
+        <FacesPage path={FACES_PATH} />
+        <SettingsPage path={SETTINGS_PATH} session={session} />
         <SettingsPage
-          path="/setup/storage"
+          path={STORAGE_SETUP_PATH}
           onboarding
           session={session}
           onStorageConfigured={handleStorageConfigured}
         />
-        <GpuLogsPage path="/settings/gpu-logs" />
-        <SmartTagsSettingsPage path="/settings/smart-tags" />
-        <StorageBrowserPage path="/settings/storage" />
-        <ReprocessPage path="/settings/reprocess" />
+        <GpuLogsPage path={GPU_LOGS_PATH} />
+        <SmartTagsSettingsPage path={SMART_TAGS_PATH} />
+        <StorageBrowserPage path={STORAGE_PATH} />
+        <ReprocessPage path={REPROCESS_PATH} />
       </Router>
     </div>
   );

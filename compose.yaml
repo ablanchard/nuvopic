@@ -1,0 +1,221 @@
+name: nuvopic
+
+x-service-policy: &service-policy
+  restart: unless-stopped
+  init: true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-app-healthcheck: &app-healthcheck
+  interval: 10s
+  timeout: 5s
+  retries: 12
+  start_period: 20s
+
+services:
+  postgres:
+    <<: *service-policy
+    image: pgvector/pgvector:0.8.0-pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-nuvopic_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD in .env}
+      POSTGRES_DB: ${CONTROL_DATABASE_NAME:-nuvopic_control}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  control-plane:
+    <<: *service-policy
+    build:
+      context: ../nuvopic-saas
+      dockerfile: Dockerfile
+      target: runtime
+    environment:
+      NODE_ENV: production
+      PORT: "8787"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      BETTER_AUTH_URL: ${PUBLIC_ORIGIN:-https://nuvopic.app}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in .env}
+      BETTER_AUTH_TRUSTED_ORIGINS: ${PUBLIC_ORIGIN:-https://nuvopic.app}
+      DATABASE_URL: postgres://${CONTROL_DATABASE_USER:-nuvopic_control}:${CONTROL_DATABASE_PASSWORD:?Set CONTROL_DATABASE_PASSWORD in .env}@postgres:5432/${CONTROL_DATABASE_NAME:-nuvopic_control}
+      DATABASE_SSL: "false"
+      MANAGED_JWT_ISSUER: ${PUBLIC_ORIGIN:-https://nuvopic.app}
+      MANAGED_JWT_AUDIENCE: ${MANAGED_JWT_AUDIENCE:-nuvopic}
+      MANAGED_JWT_KEY_ID: ${MANAGED_JWT_KEY_ID:?Set MANAGED_JWT_KEY_ID in .env}
+      MANAGED_JWT_TTL_SECONDS: ${MANAGED_JWT_TTL_SECONDS:-300}
+      MANAGED_JWT_PRIVATE_KEY_PEM: ${MANAGED_JWT_PRIVATE_KEY_PEM:?Set MANAGED_JWT_PRIVATE_KEY_PEM in .env}
+      MANAGED_WORKSPACE_DIRECTORY_TOKEN: ${MANAGED_WORKSPACE_DIRECTORY_TOKEN:?Set MANAGED_WORKSPACE_DIRECTORY_TOKEN in .env}
+      NUVOPIC_BASE_URL: ${PUBLIC_ORIGIN:-https://nuvopic.app}/app/photos
+      PLATFORM_ADMIN_EMAILS: ${PLATFORM_ADMIN_EMAILS:?Set PLATFORM_ADMIN_EMAILS in .env}
+      PRIVATE_ALPHA_ALLOWED_EMAILS: ${PRIVATE_ALPHA_ALLOWED_EMAILS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - edge
+      - backend
+    healthcheck:
+      <<: *app-healthcheck
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:8787/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+
+  data-plane:
+    <<: *service-policy
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      target: runtime
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DEPLOY_MODE: managed
+      SETTINGS_KEK: ${SETTINGS_KEK:?Set SETTINGS_KEK in .env}
+      MANAGED_JWT_ISSUER: ${PUBLIC_ORIGIN:-https://nuvopic.app}
+      MANAGED_JWT_AUDIENCE: ${MANAGED_JWT_AUDIENCE:-nuvopic}
+      MANAGED_JWKS_URL: http://control-plane:8787/.well-known/jwks.json
+      MANAGED_WORKSPACE_DIRECTORY_URL: http://control-plane:8787/internal/workspaces/resolve
+      MANAGED_WORKSPACE_DIRECTORY_TOKEN: ${MANAGED_WORKSPACE_DIRECTORY_TOKEN:?Set MANAGED_WORKSPACE_DIRECTORY_TOKEN in .env}
+      MANAGED_TOKEN_ENDPOINT: /managed/session/token
+      MANAGED_PROFILE_PATH: /profile
+      MANAGED_ADMIN_PATH: /admin
+      PROCESSING_MODE: ${PROCESSING_MODE:-modal}
+      BATCH_GPU_PROVIDER: ${BATCH_GPU_PROVIDER:-vastai}
+      MODAL_ENDPOINT_URL: ${MODAL_ENDPOINT_URL:-}
+      MODAL_PROXY_KEY: ${MODAL_PROXY_KEY:-}
+      MODAL_PROXY_SECRET: ${MODAL_PROXY_SECRET:-}
+      VAST_API_KEY: ${VAST_API_KEY:-}
+      VAST_DOCKER_IMAGE: ${VAST_DOCKER_IMAGE:-}
+      VAST_INFERENCE_API_KEY: ${VAST_INFERENCE_API_KEY:-}
+      VAST_GPU_TYPE: ${VAST_GPU_TYPE:-RTX 3090}
+      VAST_MAX_PRICE_PER_HOUR: ${VAST_MAX_PRICE_PER_HOUR:-0.30}
+      VAST_DISK_GB: ${VAST_DISK_GB:-20}
+      VAST_USE_INTERRUPTIBLE: ${VAST_USE_INTERRUPTIBLE:-true}
+      VAST_BID_PRICE: ${VAST_BID_PRICE:-0.10}
+      VAST_MAX_REPROVISIONS: ${VAST_MAX_REPROVISIONS:-3}
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    networks:
+      - edge
+      - backend
+    healthcheck:
+      <<: *app-healthcheck
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+
+  workspace-provisioner:
+    <<: *service-policy
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      target: migration
+    command: ["npm", "run", "provision-workspaces"]
+    environment:
+      NODE_ENV: production
+      CONTROL_DATABASE_ADMIN_URL: postgres://${POSTGRES_ADMIN_USER:-nuvopic_admin}:${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD in .env}@postgres:5432/${CONTROL_DATABASE_NAME:-nuvopic_control}
+      WORKSPACE_DATABASE_SSL: "false"
+      PROVISIONER_POLL_INTERVAL_SECONDS: ${PROVISIONER_POLL_INTERVAL_SECONDS:-3}
+      PROVISIONER_BATCH_SIZE: ${PROVISIONER_BATCH_SIZE:-10}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+
+  caddy:
+    <<: *service-policy
+    image: caddy:2.10.0-alpine
+    environment:
+      NUVOPIC_SITE_ADDRESS: ${NUVOPIC_SITE_ADDRESS:-nuvopic.app}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      data-plane:
+        condition: service_healthy
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD", "caddy", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  control-plane-migrate:
+    build:
+      context: ../nuvopic-saas
+      dockerfile: Dockerfile
+      target: migration
+    environment:
+      NODE_ENV: production
+      BETTER_AUTH_URL: ${PUBLIC_ORIGIN:-https://nuvopic.app}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in .env}
+      DATABASE_URL: postgres://${CONTROL_DATABASE_USER:-nuvopic_control}:${CONTROL_DATABASE_PASSWORD:?Set CONTROL_DATABASE_PASSWORD in .env}@postgres:5432/${CONTROL_DATABASE_NAME:-nuvopic_control}
+      DATABASE_SSL: "false"
+      MANAGED_JWT_ISSUER: ${PUBLIC_ORIGIN:-https://nuvopic.app}
+      MANAGED_JWT_AUDIENCE: ${MANAGED_JWT_AUDIENCE:-nuvopic}
+      MANAGED_JWT_KEY_ID: ${MANAGED_JWT_KEY_ID:?Set MANAGED_JWT_KEY_ID in .env}
+      MANAGED_JWT_PRIVATE_KEY_PEM: ${MANAGED_JWT_PRIVATE_KEY_PEM:?Set MANAGED_JWT_PRIVATE_KEY_PEM in .env}
+      MANAGED_WORKSPACE_DIRECTORY_TOKEN: ${MANAGED_WORKSPACE_DIRECTORY_TOKEN:?Set MANAGED_WORKSPACE_DIRECTORY_TOKEN in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+    profiles:
+      - migration
+    restart: "no"
+
+  data-plane-migrate:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      target: migration
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${WORKSPACE_DATABASE_URL:-}
+      DATABASE_SSL: ${WORKSPACE_DATABASE_SSL:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+    profiles:
+      - migration
+    restart: "no"
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  edge:
+  backend:
+    internal: true

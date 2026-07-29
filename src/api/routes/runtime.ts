@@ -19,7 +19,7 @@ runtime.get("/", (c) => {
     managedTokenEndpoint: isManagedMode() ? getManagedTokenEndpoint() : null,
     profilePath: isManagedMode() ? getManagedProfilePath() : null,
     adminPath: isManagedMode() ? getManagedAdminPath() : null,
-    storageSetupPath: "/setup/storage",
+    storageSetupPath: "/app/setup/storage",
   });
 });
 
@@ -33,7 +33,7 @@ runtime.get("/session", async (c) => {
     subject: auth.subject,
     workspaceId: auth.workspaceId,
     storageConfigured,
-    storageSetupPath: "/setup/storage",
+    storageSetupPath: "/app/setup/storage",
     profilePath: isManagedMode() ? getManagedProfilePath() : null,
     adminPath: isManagedMode() ? getManagedAdminPath() : null,
   });

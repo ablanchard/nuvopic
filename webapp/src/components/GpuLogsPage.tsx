@@ -3,6 +3,7 @@ import { api } from '../api/client';
 import type { GpuLog, GpuLogFilters } from '../api/client';
 import { SettingsSidebar } from './SettingsSidebar';
 import type { RoutableProps } from 'preact-router';
+import { GPU_LOGS_PATH } from '../routes';
 
 /** Format a duration in ms to a human-readable string. */
 function formatDuration(ms: number | null): string {
@@ -122,7 +123,7 @@ export function GpuLogsPage(_props: RoutableProps) {
 
    return (
     <div class="app-content">
-      <SettingsSidebar activePath="/settings/gpu-logs">
+      <SettingsSidebar activePath={GPU_LOGS_PATH}>
         <h3 class="sidebar-heading" style="margin-top: 1.25rem;">Filters</h3>
         <div class="gpu-log-filters">
           <label class="gpu-log-filter-label">Type</label>

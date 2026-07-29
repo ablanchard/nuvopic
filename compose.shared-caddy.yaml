@@ -1,0 +1,49 @@
+services:
+  caddy:
+    profiles:
+      - bundled-caddy
+
+  postgres:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 640M
+        reservations:
+          memory: 256M
+
+  control-plane:
+    networks:
+      edge:
+        aliases:
+          - nuvopic-control-plane
+      backend: {}
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+  data-plane:
+    networks:
+      edge:
+        aliases:
+          - nuvopic-data-plane
+      backend: {}
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 768M
+
+  workspace-provisioner:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.20"
+          memory: 160M
+
+networks:
+  edge:
+    external: true
+    name: web

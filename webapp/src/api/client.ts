@@ -291,7 +291,7 @@ let runtimeConfig: RuntimeConfig = {
   managedTokenEndpoint: null,
   profilePath: null,
   adminPath: null,
-  storageSetupPath: '/setup/storage',
+  storageSetupPath: '/app/setup/storage',
 };
 let managedToken: string | null = null;
 let managedTokenPromise: Promise<string> | null = null;
@@ -406,6 +406,43 @@ async function fetchApiJson<T>(
   return response.json();
 }
 
+async function fetchApiBlob(
+  url: string,
+  options?: RequestInit,
+  attempt = 0
+): Promise<Blob> {
+  const headers = new Headers(options?.headers);
+
+  if (runtimeConfig.deployMode === 'managed') {
+    const token = await getManagedToken(attempt > 0);
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+
+  const response = await fetch(url, {
+    ...options,
+    headers,
+    credentials: runtimeConfig.deployMode === 'managed'
+      ? 'include'
+      : options?.credentials,
+  });
+
+  if (response.status === 401 && runtimeConfig.deployMode === 'managed' && attempt === 0) {
+    managedToken = null;
+    return fetchApiBlob(url, options, 1);
+  }
+
+  if (response.status === 401) {
+    redirectToAuthSurface();
+    throw new Error('Unauthorized');
+  }
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  return response.blob();
+}
+
 export const api = {
   runtime: {
     getPublicConfig: (): Promise<RuntimeConfig> => {
@@ -444,6 +481,10 @@ export const api = {
     getFullImageUrl: async (id: string): Promise<string> => {
       const result = await fetchApiJson<{ url: string }>(`${API_BASE}/photos/${id}/image`);
       return result.url;
+    },
+
+    getThumbnail: (id: string, size = 512): Promise<Blob> => {
+      return fetchApiBlob(`${API_BASE}/photos/${id}/thumbnail?size=${size}`);
     },
 
     timeline: (filters: Omit<PhotoFilters, 'page' | 'limit'> = {}): Promise<TimelineResponse> => {

@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: nuvopic
       POSTGRES_DB: nuvopic
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -27,8 +27,8 @@ services:
       MINIO_NOTIFY_WEBHOOK_ENABLE_PRIMARY: "on"
       MINIO_NOTIFY_WEBHOOK_ENDPOINT_PRIMARY: "http://host.docker.internal:8080/webhook/s3"
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio_data:/data
     extra_hosts:

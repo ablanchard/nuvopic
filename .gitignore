@@ -7,3 +7,5 @@ models/face-api/
 models/transformers/
 *.log
 .DS_Store
+backups/*
+!backups/README.md

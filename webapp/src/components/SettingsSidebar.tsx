@@ -1,4 +1,11 @@
 import type { ComponentChildren } from 'preact';
+import {
+  GPU_LOGS_PATH,
+  REPROCESS_PATH,
+  SETTINGS_PATH,
+  SMART_TAGS_PATH,
+  STORAGE_PATH,
+} from '../routes';
 
 interface SettingsSidebarProps {
   activePath: string;
@@ -6,11 +13,11 @@ interface SettingsSidebarProps {
 }
 
 const NAV_LINKS = [
-  { href: '/settings', label: 'General' },
-  { href: '/settings/gpu-logs', label: 'GPU Logs' },
-  { href: '/settings/smart-tags', label: 'Smart Tags' },
-  { href: '/settings/storage', label: 'Storage' },
-  { href: '/settings/reprocess', label: 'Reprocess' },
+  { href: SETTINGS_PATH, label: 'General' },
+  { href: GPU_LOGS_PATH, label: 'GPU Logs' },
+  { href: SMART_TAGS_PATH, label: 'Smart Tags' },
+  { href: STORAGE_PATH, label: 'Storage' },
+  { href: REPROCESS_PATH, label: 'Reprocess' },
 ];
 
 export function SettingsSidebar({ activePath, children }: SettingsSidebarProps) {

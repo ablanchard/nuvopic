@@ -3,6 +3,7 @@ import { api } from '../api/client';
 import type { ReprocessStatsResponse, PipelineStats, PathFacetEntry } from '../api/client';
 import { SettingsSidebar } from './SettingsSidebar';
 import type { RoutableProps } from 'preact-router';
+import { GPU_LOGS_PATH, REPROCESS_PATH } from '../routes';
 
 /* =========================================================================
    Path tree helpers (shared pattern from SmartTagsSettingsPage)
@@ -321,7 +322,7 @@ export function ReprocessPage(_props: RoutableProps) {
 
   return (
     <div class="app-content">
-      <SettingsSidebar activePath="/settings/reprocess" />
+      <SettingsSidebar activePath={REPROCESS_PATH} />
 
       <main class="main-content">
         {loading ? (
@@ -409,7 +410,7 @@ export function ReprocessPage(_props: RoutableProps) {
                 <div class={`settings-status settings-status--${status.type}`}>
                   {status.message}
                   {' '}
-                  <a href="/settings/gpu-logs" class="reprocess-logs-link">View GPU Logs</a>
+                  <a href={GPU_LOGS_PATH} class="reprocess-logs-link">View GPU Logs</a>
                 </div>
               )}
 

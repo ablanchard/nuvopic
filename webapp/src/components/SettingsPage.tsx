@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'preact/hooks';
 import { api, type RuntimeSession } from '../api/client';
 import { SettingsSidebar } from './SettingsSidebar';
 import type { RoutableProps } from 'preact-router';
+import { SETTINGS_PATH } from '../routes';
 
 const MASKED_VALUE = '__MASKED__';
 const SECRET_KEYS = new Set(['s3_secret_access_key']);
@@ -219,7 +220,7 @@ export function SettingsPage(props: SettingsPageProps) {
 
   return (
     <div class="app-content">
-      {!onboarding && <SettingsSidebar activePath="/settings" />}
+      {!onboarding && <SettingsSidebar activePath={SETTINGS_PATH} />}
 
       <main class="main-content">
         {loading ? (

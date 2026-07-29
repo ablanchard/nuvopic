@@ -9,6 +9,7 @@ import type {
 } from '../api/client';
 import { SettingsSidebar } from './SettingsSidebar';
 import type { RoutableProps } from 'preact-router';
+import { SMART_TAGS_PATH } from '../routes';
 
 /* =========================================================================
    Path facet tree helpers (3-level hierarchy)
@@ -534,7 +535,7 @@ export function SmartTagsSettingsPage(_props: RoutableProps) {
 
   return (
     <div class="app-content">
-      <SettingsSidebar activePath="/settings/smart-tags" />
+      <SettingsSidebar activePath={SMART_TAGS_PATH} />
 
       <main class="main-content">
         {loading ? (
