@@ -324,6 +324,37 @@ export async function countImportedByKeys(
   return parseInt(result.rows[0].count, 10);
 }
 
+/**
+ * Count imported photos recursively for each requested S3 URI prefix.
+ *
+ * Prefixes are escaped before being used as LIKE patterns so valid S3 folder
+ * names containing "%", "_" or "\" retain their literal meaning.
+ */
+export async function countImportedByPrefixes(
+  s3Prefixes: string[]
+): Promise<Map<string, number>> {
+  if (s3Prefixes.length === 0) return new Map();
+
+  const patterns = s3Prefixes.map(
+    (prefix) => `${prefix.replace(/[\\%_]/g, "\\$&")}%`
+  );
+  const result = await query<{ prefix: string; count: string }>(
+    `WITH requested(prefix, pattern) AS (
+       SELECT * FROM unnest($1::text[], $2::text[])
+     )
+     SELECT requested.prefix, COUNT(photos.id) AS count
+     FROM requested
+     LEFT JOIN photos
+       ON photos.s3_path LIKE requested.pattern ESCAPE '\\'
+     GROUP BY requested.prefix`,
+    [s3Prefixes, patterns]
+  );
+
+  return new Map(
+    result.rows.map((row) => [row.prefix, parseInt(row.count, 10)])
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Smart Tags CRUD
 // ---------------------------------------------------------------------------

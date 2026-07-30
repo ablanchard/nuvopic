@@ -216,17 +216,24 @@ export function StorageBrowserPage(_props: RoutableProps) {
             />
             <span class="path-tree-name">{folder.name}/</span>
             <span class="storage-tree-counts">
-              <span class="storage-tree-count-total" title="Total images in this folder (recursive)">
-                {folder.imageCount}
-              </span>
-              {folder.missingCount > 0 && (
-                <span class="storage-tree-count-missing" title="Images not yet imported">
+              {folder.imageCount !== null && (
+                <span class="storage-tree-count-total" title="Images at this level">
+                  {folder.imageCount}
+                </span>
+              )}
+              {folder.missingCount !== null && folder.missingCount > 0 && (
+                <span class="storage-tree-count-missing" title="Images not yet imported at this level">
                   +{folder.missingCount} new
                 </span>
               )}
-              {folder.missingCount === 0 && folder.imageCount > 0 && (
+              {folder.missingCount === 0 && folder.imageCount !== null && folder.imageCount > 0 && (
                 <span class="storage-tree-count-ok" title="All images imported">
                   all imported
+                </span>
+              )}
+              {folder.imageCount === null && folder.importedCount > 0 && (
+                <span class="storage-tree-count-total" title="Images already imported from this folder and its subfolders">
+                  {folder.importedCount} imported
                 </span>
               )}
             </span>

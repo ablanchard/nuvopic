@@ -204,9 +204,9 @@ export type FacetsResponse =
 export interface StorageFolderInfo {
   prefix: string;
   name: string;
-  imageCount: number;
+  imageCount: number | null;
   importedCount: number;
-  missingCount: number;
+  missingCount: number | null;
 }
 
 export interface StorageBrowseResponse {

@@ -180,7 +180,6 @@ export function isSupportedImage(key: string): boolean {
 export interface FolderEntry {
   prefix: string;       // Full prefix (e.g. "Photos/2024/")
   name: string;         // Just the folder name (e.g. "2024")
-  imageCount: number;   // Number of supported image files directly in this folder (not recursive)
 }
 
 export interface BrowseFolderResult {
@@ -194,8 +193,9 @@ export interface BrowseFolderResult {
  * Returns immediate subfolders (CommonPrefixes) and a count of supported
  * image files at the current level.
  *
- * For each subfolder, we issue a separate recursive listing to count images.
- * This is intentionally lazy — only called when the user expands a folder.
+ * Deliberately does not recursively list each subfolder. Recursive listings
+ * make the latency and S3 request count proportional to the size of the
+ * entire bucket, even though the UI only needs one tree level at a time.
  */
 export async function browseFolder(
   bucket: string,
@@ -224,7 +224,7 @@ export async function browseFolder(
         if (cp.Prefix) {
           const name = cp.Prefix.slice(prefix.length).replace(/\/$/, "");
           if (name) {
-            folders.push({ prefix: cp.Prefix, name, imageCount: 0 });
+            folders.push({ prefix: cp.Prefix, name });
           }
         }
       }
@@ -241,22 +241,6 @@ export async function browseFolder(
 
     continuationToken = response.NextContinuationToken;
   } while (continuationToken);
-
-  // For each subfolder, count images recursively (full listing without delimiter)
-  // We do this in parallel with a concurrency limit
-  const CONCURRENCY = 5;
-  for (let i = 0; i < folders.length; i += CONCURRENCY) {
-    const batch = folders.slice(i, i + CONCURRENCY);
-    const counts = await Promise.all(
-      batch.map(async (folder) => {
-        const allKeys = await listAllObjects(bucket, folder.prefix);
-        return allKeys.filter(isSupportedImage).length;
-      })
-    );
-    for (let j = 0; j < batch.length; j++) {
-      batch[j].imageCount = counts[j];
-    }
-  }
 
   return {
     folders,

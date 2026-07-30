@@ -265,6 +265,7 @@ CREATE TABLE IF NOT EXISTS smart_tags (
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_photos_taken_at ON photos(taken_at);
 CREATE INDEX IF NOT EXISTS idx_photos_s3_path ON photos(s3_path);
+CREATE INDEX IF NOT EXISTS idx_photos_s3_path_pattern ON photos(s3_path text_pattern_ops);
 CREATE INDEX IF NOT EXISTS idx_photos_process_version ON photos(process_version);
 CREATE INDEX IF NOT EXISTS idx_photos_caption_version ON photos(caption_version);
 CREATE INDEX IF NOT EXISTS idx_photos_faces_version ON photos(faces_version);
