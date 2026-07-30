@@ -254,11 +254,12 @@ export function SettingsPage(props: SettingsPageProps) {
                       return (
                         <div key={key} class="setting-row">
                           <div class="setting-info">
-                            <label class="setting-label">{key}</label>
+                            <label class="setting-label" htmlFor={`setting-${key}`}>{key}</label>
                           </div>
                           <div class="setting-control">
                             <input
                               type="text"
+                              id={`setting-${key}`}
                               value={value}
                               onInput={(e) => handleChange(key, (e.target as HTMLInputElement).value)}
                             />
@@ -270,7 +271,7 @@ export function SettingsPage(props: SettingsPageProps) {
                     return (
                       <div key={key} class="setting-row">
                         <div class="setting-info">
-                          <label class="setting-label">{def.label}</label>
+                          <label class="setting-label" htmlFor={`setting-${key}`}>{def.label}</label>
                           <p class="setting-description">{def.description}</p>
                           {key === 's3_secret_access_key' && s3Config[key]?.effectiveValue && (
                             <p class="setting-hint">Current secret: <strong>{s3Config[key].effectiveValue}</strong></p>
@@ -281,6 +282,7 @@ export function SettingsPage(props: SettingsPageProps) {
                             <div class="control-with-value">
                               <input
                                 type="range"
+                                id={`setting-${key}`}
                                 min={def.min}
                                 max={def.max}
                                 step={def.step}
@@ -292,6 +294,7 @@ export function SettingsPage(props: SettingsPageProps) {
                           ) : def.type === 'text' ? (
                             <input
                               type="text"
+                              id={`setting-${key}`}
                               value={value}
                               placeholder={def.placeholder}
                               onInput={(e) => handleChange(key, (e.target as HTMLInputElement).value)}
@@ -300,6 +303,7 @@ export function SettingsPage(props: SettingsPageProps) {
                           ) : def.type === 'password' ? (
                             <input
                               type="password"
+                              id={`setting-${key}`}
                               value={value}
                               placeholder={settings[key] === MASKED_VALUE ? 'Secret is set (enter to change)' : def.placeholder}
                               onInput={(e) => handleChange(key, (e.target as HTMLInputElement).value)}
@@ -307,9 +311,10 @@ export function SettingsPage(props: SettingsPageProps) {
                               autoComplete="off"
                             />
                           ) : def.type === 'boolean' ? (
-                            <label class="setting-toggle">
+                            <label class="setting-toggle" htmlFor={`setting-${key}`}>
                               <input
                                 type="checkbox"
+                                id={`setting-${key}`}
                                 checked={value === 'true'}
                                 onChange={(e) => handleChange(key, (e.target as HTMLInputElement).checked ? 'true' : 'false')}
                               />
@@ -318,6 +323,7 @@ export function SettingsPage(props: SettingsPageProps) {
                           ) : (
                             <input
                               type="number"
+                              id={`setting-${key}`}
                               min={def.min}
                               max={def.max}
                               step={def.step}

@@ -49,12 +49,14 @@ export function App() {
 
         const currentUrl = getCurrentUrl();
         if (!sessionInfo.storageConfigured && currentUrl !== sessionInfo.storageSetupPath) {
-          route(sessionInfo.storageSetupPath, true);
+          window.history.replaceState(null, '', sessionInfo.storageSetupPath);
+          setCurrentPath(sessionInfo.storageSetupPath);
         } else if (
           sessionInfo.storageConfigured &&
           (currentUrl === sessionInfo.storageSetupPath || currentUrl === '/' || currentUrl === APP_PATH)
         ) {
-          route(PHOTOS_PATH, true);
+          window.history.replaceState(null, '', PHOTOS_PATH);
+          setCurrentPath(PHOTOS_PATH);
         }
       } catch (error) {
         if (!cancelled) {
