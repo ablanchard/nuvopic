@@ -1,5 +1,9 @@
 import { Hono } from "hono";
-import { browseFolder, getS3Path } from "../../s3/client.js";
+import {
+  browseFolder,
+  getFolderImageCounts,
+  getS3Path,
+} from "../../s3/client.js";
 import {
   countImportedByKeys,
   countImportedByPrefixes,
@@ -60,6 +64,28 @@ storage.get("/browse", async (c) => {
     importedCount: currentLevelImported,
     missingCount: result.imageCount - currentLevelImported,
   });
+});
+
+/**
+ * GET /api/v1/storage/browse-counts?prefix=...&refresh=1
+ *
+ * Resolve exact recursive image totals after the fast folder tree is visible.
+ * Results are cached for one hour; refresh=1 forces a new S3 scan.
+ */
+storage.get("/browse-counts", async (c) => {
+  const bucket = await getS3Bucket();
+  if (!bucket) {
+    return c.json(
+      { error: "S3 bucket not configured. Complete storage setup in Settings." },
+      500
+    );
+  }
+
+  const prefix = c.req.query("prefix") ?? "";
+  const forceRefresh = c.req.query("refresh") === "1";
+  const result = await getFolderImageCounts(bucket, prefix, forceRefresh);
+
+  return c.json(result);
 });
 
 export default storage;

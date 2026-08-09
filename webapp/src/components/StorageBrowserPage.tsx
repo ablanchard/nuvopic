@@ -48,22 +48,62 @@ export function StorageBrowserPage(_props: RoutableProps) {
   const [childrenImageCounts, setChildrenImageCounts] = useState<Map<string, { imageCount: number; importedCount: number }>>(new Map());
   const [loadingPrefixes, setLoadingPrefixes] = useState<Set<string>>(new Set());
 
-  const refresh = useCallback(async () => {
+  const hydrateFolderCounts = useCallback(async (prefix: string, forceRefresh: boolean = false) => {
+    try {
+      const data = await api.storage.browseCounts(prefix, forceRefresh);
+      const imageCounts = new Map(data.folders.map((folder) => [folder.prefix, folder.imageCount]));
+      const applyCounts = (folders: FolderNode[]): FolderNode[] =>
+        folders.map((folder) => {
+          const imageCount = imageCounts.get(folder.prefix) ?? 0;
+          return {
+            ...folder,
+            imageCount,
+            missingCount: Math.max(0, imageCount - folder.importedCount),
+          };
+        });
+
+      if (prefix === '') {
+        setRootFolders(applyCounts);
+      } else {
+        setChildrenCache((previous) => {
+          const children = previous.get(prefix);
+          if (!children) return previous;
+          return new Map(previous).set(prefix, applyCounts(children));
+        });
+      }
+    } catch (error) {
+      console.warn(`Failed to load image counts for ${prefix || '(root)'}:`, error);
+    }
+  }, []);
+
+  const refresh = useCallback(async (forceCountRefresh: boolean = false) => {
     setLoading(true);
     try {
       const data = await api.storage.browse('');
-      setRootFolders(
-        data.folders.map((f) => ({
-          ...f,
-          children: null,
-          loading: false,
-        }))
-      );
+      setRootFolders((previousFolders) => {
+        const previousByPrefix = new Map(
+          previousFolders.map((folder) => [folder.prefix, folder])
+        );
+        return data.folders.map((folder) => {
+          const previous = previousByPrefix.get(folder.prefix);
+          if (!previous || previous.imageCount === null) {
+            return { ...folder, children: null, loading: false };
+          }
+          return {
+            ...folder,
+            imageCount: previous.imageCount,
+            missingCount: Math.max(0, previous.imageCount - folder.importedCount),
+            children: null,
+            loading: false,
+          };
+        });
+      });
       setRootImageCount(data.imageCount);
       setRootImportedCount(data.importedCount);
       // Clear caches on refresh
       setChildrenCache(new Map());
       setChildrenImageCounts(new Map());
+      void hydrateFolderCounts('', forceCountRefresh);
     } catch (err) {
       setStatus({
         type: 'error',
@@ -72,10 +112,10 @@ export function StorageBrowserPage(_props: RoutableProps) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [hydrateFolderCounts]);
 
   useEffect(() => {
-    refresh();
+    void refresh();
   }, [refresh]);
 
   // Load children for a folder prefix
@@ -97,6 +137,7 @@ export function StorageBrowserPage(_props: RoutableProps) {
           importedCount: data.importedCount,
         })
       );
+      void hydrateFolderCounts(prefix);
     } catch (err) {
       console.error(`Failed to browse ${prefix}:`, err);
     } finally {
@@ -106,7 +147,7 @@ export function StorageBrowserPage(_props: RoutableProps) {
         return next;
       });
     }
-  }, [childrenCache, loadingPrefixes]);
+  }, [childrenCache, hydrateFolderCounts, loadingPrefixes]);
 
   // Toggle expand
   const toggleExpand = useCallback((prefix: string) => {
@@ -217,12 +258,12 @@ export function StorageBrowserPage(_props: RoutableProps) {
             <span class="path-tree-name">{folder.name}/</span>
             <span class="storage-tree-counts">
               {folder.imageCount !== null && (
-                <span class="storage-tree-count-total" title="Images at this level">
+                <span class="storage-tree-count-total" title="Total images in this folder and its subfolders">
                   {folder.imageCount}
                 </span>
               )}
               {folder.missingCount !== null && folder.missingCount > 0 && (
-                <span class="storage-tree-count-missing" title="Images not yet imported at this level">
+                <span class="storage-tree-count-missing" title="Images not yet imported from this folder and its subfolders">
                   +{folder.missingCount} new
                 </span>
               )}
@@ -231,9 +272,9 @@ export function StorageBrowserPage(_props: RoutableProps) {
                   all imported
                 </span>
               )}
-              {folder.imageCount === null && folder.importedCount > 0 && (
-                <span class="storage-tree-count-total" title="Images already imported from this folder and its subfolders">
-                  {folder.importedCount} imported
+              {folder.imageCount === null && (
+                <span class="storage-tree-count-total" title="Counting images in the background">
+                  {folder.importedCount > 0 ? `${folder.importedCount} imported · ` : ''}counting…
                 </span>
               )}
             </span>
@@ -395,7 +436,7 @@ export function StorageBrowserPage(_props: RoutableProps) {
                 <h2 class="settings-section-title">S3 Folders</h2>
                 <button
                   class="storage-refresh-btn"
-                  onClick={refresh}
+                  onClick={() => refresh(true)}
                   disabled={importing}
                   title="Refresh folder listing"
                 >

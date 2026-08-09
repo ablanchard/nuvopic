@@ -218,6 +218,15 @@ export interface StorageBrowseResponse {
   missingCount: number;
 }
 
+export interface StorageBrowseCountsResponse {
+  prefix: string;
+  imageCount: number;
+  folders: Array<{
+    prefix: string;
+    imageCount: number;
+  }>;
+}
+
 export interface ImportOptions {
   prefix: string;
   limit?: number;
@@ -688,6 +697,14 @@ export const api = {
       if (prefix) params.set('prefix', prefix);
       const query = params.toString();
       return fetchApiJson<StorageBrowseResponse>(`${API_BASE}/storage/browse${query ? `?${query}` : ''}`);
+    },
+
+    browseCounts: (prefix: string = '', refresh: boolean = false): Promise<StorageBrowseCountsResponse> => {
+      const params = new URLSearchParams();
+      if (prefix) params.set('prefix', prefix);
+      if (refresh) params.set('refresh', '1');
+      const query = params.toString();
+      return fetchApiJson<StorageBrowseCountsResponse>(`${API_BASE}/storage/browse-counts${query ? `?${query}` : ''}`);
     },
 
     import: (options: ImportOptions): Promise<ImportResult> => {

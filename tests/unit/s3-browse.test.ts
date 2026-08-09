@@ -33,6 +33,7 @@ vi.mock("../../src/db/client.js", () => ({
 
 import {
   browseFolder,
+  getFolderImageCounts,
   invalidateAllS3Clients,
 } from "../../src/s3/client.js";
 
@@ -94,5 +95,54 @@ describe("browseFolder", () => {
       Delimiter: "/",
       ContinuationToken: "next-page",
     });
+  });
+
+  it("counts each immediate folder recursively in one paginated scan", async () => {
+    sendMock
+      .mockResolvedValueOnce({
+        Contents: [
+          { Key: "Photos/cover.jpg" },
+          { Key: "Photos/2025/january/one.jpg" },
+          { Key: "Photos/2025/february/two.webp" },
+          { Key: "Photos/notes.txt" },
+        ],
+        NextContinuationToken: "count-page-2",
+      })
+      .mockResolvedValueOnce({
+        Contents: [
+          { Key: "Photos/2025/march/three.heic" },
+          { Key: "Photos/2026/four.png" },
+        ],
+      });
+
+    const result = await getFolderImageCounts("test-bucket", "Photos/");
+
+    expect(result).toEqual({
+      prefix: "Photos/",
+      imageCount: 1,
+      folders: [
+        { prefix: "Photos/2025/", imageCount: 3 },
+        { prefix: "Photos/2026/", imageCount: 1 },
+      ],
+    });
+    expect(sendMock).toHaveBeenCalledTimes(2);
+    expect(sendMock.mock.calls[0][0].input.Delimiter).toBeUndefined();
+    expect(sendMock.mock.calls[1][0].input).toMatchObject({
+      Prefix: "Photos/",
+      ContinuationToken: "count-page-2",
+    });
+  });
+
+  it("reuses an in-flight count scan unless refresh is requested", async () => {
+    sendMock.mockResolvedValue({ Contents: [{ Key: "Photos/2026/one.jpg" }] });
+
+    const first = getFolderImageCounts("test-bucket", "Photos/");
+    const second = getFolderImageCounts("test-bucket", "Photos/");
+    await Promise.all([first, second]);
+
+    expect(sendMock).toHaveBeenCalledTimes(1);
+
+    await getFolderImageCounts("test-bucket", "Photos/", true);
+    expect(sendMock).toHaveBeenCalledTimes(2);
   });
 });

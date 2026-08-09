@@ -11,6 +11,18 @@ import { getCurrentDatabaseCacheKey } from "../db/client.js";
 
 const s3Clients = new Map<string, S3Client>();
 
+const FOLDER_IMAGE_COUNT_CACHE_TTL_MS = 60 * 60 * 1000;
+const MAX_FOLDER_IMAGE_COUNT_CACHE_ENTRIES = 500;
+
+interface FolderImageCountCacheEntry {
+  cacheKey: string;
+  expiresAt: number;
+  settled: boolean;
+  promise: Promise<FolderImageCountsResult>;
+}
+
+const folderImageCountCache = new Map<string, FolderImageCountCacheEntry>();
+
 export interface S3Config {
   endpoint?: string;
   region: string;
@@ -76,6 +88,7 @@ export function invalidateS3Client(): void {
     s3Client.destroy();
     s3Clients.delete(cacheKey);
   }
+  invalidateFolderImageCountCache(cacheKey);
 }
 
 export function invalidateAllS3Clients(): void {
@@ -83,6 +96,15 @@ export function invalidateAllS3Clients(): void {
     client.destroy();
   }
   s3Clients.clear();
+  folderImageCountCache.clear();
+}
+
+function invalidateFolderImageCountCache(cacheKey: string): void {
+  for (const [key, entry] of folderImageCountCache) {
+    if (entry.cacheKey === cacheKey) {
+      folderImageCountCache.delete(key);
+    }
+  }
 }
 
 export async function getObject(
@@ -188,6 +210,17 @@ export interface BrowseFolderResult {
   imageKeys: string[];   // The actual keys of images at this level
 }
 
+export interface FolderImageCount {
+  prefix: string;
+  imageCount: number;
+}
+
+export interface FolderImageCountsResult {
+  prefix: string;
+  imageCount: number;
+  folders: FolderImageCount[];
+}
+
 /**
  * Browse a "folder" in S3 using delimiter-based listing.
  * Returns immediate subfolders (CommonPrefixes) and a count of supported
@@ -246,6 +279,118 @@ export async function browseFolder(
     folders,
     imageCount: imageKeys.length,
     imageKeys,
+  };
+}
+
+/**
+ * Count supported images recursively for each immediate child folder.
+ *
+ * This intentionally runs separately from browseFolder so the tree can render
+ * after its cheap delimiter listing. A single recursive scan supplies every
+ * child count, and the result is cached for subsequent visits and expansions.
+ */
+export async function getFolderImageCounts(
+  bucket: string,
+  prefix: string = "",
+  forceRefresh: boolean = false,
+): Promise<FolderImageCountsResult> {
+  const cacheKey = getCurrentDatabaseCacheKey();
+  const key = `${cacheKey}\n${bucket}\n${prefix}`;
+  const now = Date.now();
+  const cached = folderImageCountCache.get(key);
+
+  // A forced refresh must not fan out duplicate scans when users click the
+  // refresh button repeatedly while the first scan is still running.
+  if (cached && !cached.settled) {
+    return cached.promise;
+  }
+  if (!forceRefresh && cached && cached.expiresAt > now) {
+    return cached.promise;
+  }
+  if (cached) {
+    folderImageCountCache.delete(key);
+  }
+
+  for (const [existingKey, entry] of folderImageCountCache) {
+    if (entry.expiresAt <= now) {
+      folderImageCountCache.delete(existingKey);
+    }
+  }
+  if (folderImageCountCache.size >= MAX_FOLDER_IMAGE_COUNT_CACHE_ENTRIES) {
+    const oldestKey = folderImageCountCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      folderImageCountCache.delete(oldestKey);
+    }
+  }
+
+  const entry: FolderImageCountCacheEntry = {
+    cacheKey,
+    expiresAt: now + FOLDER_IMAGE_COUNT_CACHE_TTL_MS,
+    settled: false,
+    promise: scanFolderImageCounts(bucket, prefix),
+  };
+  folderImageCountCache.set(key, entry);
+
+  entry.promise = entry.promise
+    .then((result) => {
+      entry.settled = true;
+      entry.expiresAt = Date.now() + FOLDER_IMAGE_COUNT_CACHE_TTL_MS;
+      return result;
+    })
+    .catch((error) => {
+      if (folderImageCountCache.get(key) === entry) {
+        folderImageCountCache.delete(key);
+      }
+      throw error;
+    });
+
+  return entry.promise;
+}
+
+async function scanFolderImageCounts(
+  bucket: string,
+  prefix: string,
+): Promise<FolderImageCountsResult> {
+  const client = await getS3Client();
+  const folderCounts = new Map<string, number>();
+  let imageCount = 0;
+  let continuationToken: string | undefined;
+
+  do {
+    const response = await client.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix || undefined,
+        MaxKeys: 1000,
+        ContinuationToken: continuationToken,
+      })
+    );
+
+    for (const object of response.Contents ?? []) {
+      const key = object.Key;
+      if (!key || !isSupportedImage(key)) continue;
+
+      const relativeKey = key.slice(prefix.length);
+      const separatorIndex = relativeKey.indexOf("/");
+      if (separatorIndex === -1) {
+        imageCount += 1;
+        continue;
+      }
+
+      const folderPrefix = `${prefix}${relativeKey.slice(0, separatorIndex + 1)}`;
+      folderCounts.set(folderPrefix, (folderCounts.get(folderPrefix) ?? 0) + 1);
+    }
+
+    continuationToken = response.NextContinuationToken;
+  } while (continuationToken);
+
+  return {
+    prefix,
+    imageCount,
+    folders: [...folderCounts.entries()].map(([folderPrefix, count]) => ({
+      prefix: folderPrefix,
+      imageCount: count,
+    })),
   };
 }
 
