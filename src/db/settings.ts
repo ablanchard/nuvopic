@@ -260,10 +260,16 @@ export async function deleteSetting(key: string): Promise<void> {
 /** Get face quality thresholds (parsed and with defaults). */
 export async function getFaceQualitySettings(): Promise<FaceQualitySettings> {
   const all = await getAllSettings();
+  const minConfidence = parseFloat(all["face_min_confidence"] ?? "");
+  const minSize = parseInt(all["face_min_size"] ?? "", 10);
+
   return {
     minConfidence:
-      parseFloat(all["face_min_confidence"] ?? "") || DEFAULTS.minConfidence,
-    minSize: parseInt(all["face_min_size"] ?? "", 10) || DEFAULTS.minSize,
+      Number.isFinite(minConfidence) && minConfidence >= 0 && minConfidence <= 1
+        ? minConfidence
+        : DEFAULTS.minConfidence,
+    minSize:
+      Number.isFinite(minSize) && minSize >= 0 ? minSize : DEFAULTS.minSize,
   };
 }
 

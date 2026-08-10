@@ -812,6 +812,25 @@ body {
   letter-spacing: 0.03em;
 }
 
+.control-hint {
+  font-size: 0.72rem;
+  color: #999;
+}
+
+.face-quality-number-input {
+  width: 160px;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.face-quality-number-input:focus {
+  border-color: #0066cc;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.15);
+}
+
 .control-with-value {
   display: flex;
   align-items: center;
@@ -1000,7 +1019,7 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-  align-items: center;
+  align-items: flex-start;
 }
 
 .cluster-loading {
@@ -1011,6 +1030,10 @@ body {
 
 .cluster-face-item {
   position: relative;
+  width: 72px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
 }
 
 .cluster-face-item:hover .face-remove-btn {
@@ -1050,7 +1073,7 @@ body {
   font-size: 0.75rem;
   color: #666;
   cursor: pointer;
-  height: 72px;
+  height: 102px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1072,6 +1095,18 @@ body {
   background: transparent;
 }
 
+.face-metrics {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  color: #777;
+  font-size: 0.65rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
 /* Unassigned Faces (sidebar) */
 .unassigned-grid {
   display: flex;
@@ -1085,6 +1120,7 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 0.25rem;
+  width: 64px;
 }
 
 /* Assign Popover */

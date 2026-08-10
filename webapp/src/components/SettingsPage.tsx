@@ -6,6 +6,7 @@ import { SETTINGS_PATH } from '../routes';
 
 const MASKED_VALUE = '__MASKED__';
 const SECRET_KEYS = new Set(['s3_secret_access_key']);
+const FACE_PAGE_SETTING_KEYS = new Set(['face_min_confidence', 'face_min_size']);
 const STORAGE_SECTION = 'S3 Storage';
 
 type SettingDef = {
@@ -60,24 +61,6 @@ const SETTING_DEFS: Record<string, SettingDef> = {
     description: 'Enable this for providers such as MinIO that require path-style URLs.',
     section: STORAGE_SECTION,
     type: 'boolean',
-  },
-  face_min_confidence: {
-    label: 'Minimum confidence',
-    description: 'InsightFace detection score threshold (0-1). Faces below this score are hidden everywhere.',
-    section: 'Face Quality',
-    type: 'range',
-    min: 0,
-    max: 1,
-    step: 0.05,
-  },
-  face_min_size: {
-    label: 'Minimum face size (px²)',
-    description: 'Minimum bounding box area in pixels. A 50×50 face = 2500.',
-    section: 'Face Quality',
-    type: 'number',
-    min: 0,
-    max: 50000,
-    step: 100,
   },
 };
 
@@ -211,7 +194,8 @@ export function SettingsPage(props: SettingsPageProps) {
     setStatus(null);
   };
 
-  const allKeys = Array.from(new Set([...Object.keys(SETTING_DEFS), ...Object.keys(draft)]));
+  const allKeys = Array.from(new Set([...Object.keys(SETTING_DEFS), ...Object.keys(draft)]))
+    .filter((key) => !FACE_PAGE_SETTING_KEYS.has(key));
   const groupedSections = groupBySection(allKeys);
   const sections = onboarding
     ? Object.entries(groupedSections).filter(([section]) => section === STORAGE_SECTION)

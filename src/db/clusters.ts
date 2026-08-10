@@ -34,6 +34,8 @@ export interface ClusterFaceRecord {
   };
   photo_width: number | null;
   photo_height: number | null;
+  confidence: number | null;
+  area: number;
 }
 
 export interface ClusteringResult {
@@ -279,7 +281,9 @@ export async function getClusterFaces(
        f.photo_id,
        f.bounding_box,
        ph.width AS photo_width,
-       ph.height AS photo_height
+       ph.height AS photo_height,
+       f.confidence,
+       (f.bounding_box->>'width')::int * (f.bounding_box->>'height')::int AS area
      FROM faces f
      JOIN photos ph ON ph.id = f.photo_id
      WHERE f.cluster_id = $1 AND ${fqFilter}
@@ -302,7 +306,9 @@ export async function getUnclusteredFaces(): Promise<ClusterFaceRecord[]> {
        f.photo_id,
        f.bounding_box,
        ph.width AS photo_width,
-       ph.height AS photo_height
+       ph.height AS photo_height,
+       f.confidence,
+       (f.bounding_box->>'width')::int * (f.bounding_box->>'height')::int AS area
      FROM faces f
      JOIN photos ph ON ph.id = f.photo_id
      WHERE f.embedding IS NOT NULL

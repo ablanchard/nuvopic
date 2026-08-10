@@ -113,6 +113,8 @@ export interface ClusterFace {
   boundingBox: { x: number; y: number; width: number; height: number };
   photoWidth: number | null;
   photoHeight: number | null;
+  confidence: number | null;
+  area: number;
 }
 
 export interface ClusteringResult {

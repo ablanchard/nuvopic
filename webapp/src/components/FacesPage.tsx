@@ -3,7 +3,11 @@ import { api } from '../api/client';
 import type { Cluster, ClusterFace, ClusterStrategy } from '../api/client';
 import { ClusterCard } from './ClusterCard';
 import { FaceCrop } from './FaceCrop';
+import { FaceMetrics } from './FaceMetrics';
 import type { RoutableProps } from 'preact-router';
+
+const DEFAULT_MIN_CONFIDENCE = '0.7';
+const DEFAULT_MIN_AREA = '2500';
 
 /** Stable sort: named clusters first (alphabetical), then unnamed (by id). */
 function sortClusters(clusters: Cluster[]): Cluster[] {
@@ -23,6 +27,16 @@ export function FacesPage(_props: RoutableProps) {
   // Data
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [unassigned, setUnassigned] = useState<ClusterFace[]>([]);
+  const [reloadToken, setReloadToken] = useState(0);
+
+  // Face quality filters
+  const [minConfidence, setMinConfidence] = useState(DEFAULT_MIN_CONFIDENCE);
+  const [minArea, setMinArea] = useState(DEFAULT_MIN_AREA);
+  const [savedMinConfidence, setSavedMinConfidence] = useState(DEFAULT_MIN_CONFIDENCE);
+  const [savedMinArea, setSavedMinArea] = useState(DEFAULT_MIN_AREA);
+  const [qualityLoading, setQualityLoading] = useState(true);
+  const [qualitySaving, setQualitySaving] = useState(false);
+  const [qualityStatus, setQualityStatus] = useState<string | null>(null);
 
   // UI state
   const [loading, setLoading] = useState(true);
@@ -44,6 +58,7 @@ export function FacesPage(_props: RoutableProps) {
       ]);
       setClusters(clustersRes.clusters);
       setUnassigned(unassignedRes.faces);
+      setReloadToken((value) => value + 1);
     } catch (err) {
       console.error('Failed to load clusters:', err);
     } finally {
@@ -54,6 +69,22 @@ export function FacesPage(_props: RoutableProps) {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    api.settings.get()
+      .then((settings) => {
+        const confidence = settings.face_min_confidence ?? DEFAULT_MIN_CONFIDENCE;
+        const area = settings.face_min_size ?? DEFAULT_MIN_AREA;
+        setMinConfidence(confidence);
+        setSavedMinConfidence(confidence);
+        setMinArea(area);
+        setSavedMinArea(area);
+      })
+      .catch((err) => {
+        setQualityStatus(`Failed to load face quality settings: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      })
+      .finally(() => setQualityLoading(false));
+  }, []);
 
   // Close popover on outside click
   useEffect(() => {
@@ -96,6 +127,41 @@ export function FacesPage(_props: RoutableProps) {
       setStatus(`Recluster failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
       setClustering(false);
+    }
+  };
+
+  const handleApplyQuality = async () => {
+    const confidence = Number(minConfidence);
+    const area = Number(minArea);
+
+    if (minConfidence.trim() === '' || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+      setQualityStatus('Minimum confidence must be between 0 and 1');
+      return;
+    }
+    if (minArea.trim() === '' || !Number.isFinite(area) || area < 0) {
+      setQualityStatus('Minimum area must be zero or greater');
+      return;
+    }
+
+    const normalizedConfidence = String(confidence);
+    const normalizedArea = String(Math.round(area));
+    setQualitySaving(true);
+    setQualityStatus(null);
+    try {
+      await api.settings.update({
+        face_min_confidence: normalizedConfidence,
+        face_min_size: normalizedArea,
+      });
+      setMinConfidence(normalizedConfidence);
+      setSavedMinConfidence(normalizedConfidence);
+      setMinArea(normalizedArea);
+      setSavedMinArea(normalizedArea);
+      await refresh();
+      setQualityStatus('Filters applied');
+    } catch (err) {
+      setQualityStatus(`Failed to apply filters: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setQualitySaving(false);
     }
   };
 
@@ -149,6 +215,7 @@ export function FacesPage(_props: RoutableProps) {
                   photoHeight={face.photoHeight}
                   size={64}
                 />
+                <FaceMetrics confidence={face.confidence} area={face.area} />
                 <button
                   class="btn btn-small"
                   onClick={(e) => openAssignPopover(face.id, e as unknown as MouseEvent)}
@@ -163,6 +230,66 @@ export function FacesPage(_props: RoutableProps) {
 
       {/* Main Content: Controls + Cluster Grid */}
       <main class="main-content">
+        <div class="clustering-controls">
+          <h2>Face Quality</h2>
+          <div class="controls-row">
+            <div class="control-group">
+              <label for="face-min-confidence">Minimum confidence</label>
+              <div class="control-with-value">
+                <input
+                  id="face-min-confidence"
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={minConfidence}
+                  onInput={(e) => {
+                    setMinConfidence((e.target as HTMLInputElement).value);
+                    setQualityStatus(null);
+                  }}
+                  disabled={qualityLoading || qualitySaving}
+                />
+                <span class="control-value">{Number(minConfidence).toFixed(2)}</span>
+              </div>
+              <span class="control-hint">Detector score from 0 to 1</span>
+            </div>
+
+            <div class="control-group">
+              <label for="face-min-area">Minimum area (px²)</label>
+              <input
+                id="face-min-area"
+                class="face-quality-number-input"
+                type="number"
+                min="0"
+                max="50000"
+                step="100"
+                value={minArea}
+                onInput={(e) => {
+                  setMinArea((e.target as HTMLInputElement).value);
+                  setQualityStatus(null);
+                }}
+                disabled={qualityLoading || qualitySaving}
+              />
+              <span class="control-hint">Width × height; 50 × 50 = 2,500</span>
+            </div>
+
+            <div class="control-actions">
+              <button
+                class="btn btn-primary"
+                onClick={handleApplyQuality}
+                disabled={
+                  qualityLoading ||
+                  qualitySaving ||
+                  (minConfidence === savedMinConfidence && minArea === savedMinArea)
+                }
+              >
+                {qualitySaving ? 'Applying...' : 'Apply Filters'}
+              </button>
+            </div>
+          </div>
+          {qualityStatus && <div class="clustering-status">{qualityStatus}</div>}
+        </div>
+
         {/* Clustering Controls */}
         <div class="clustering-controls">
           <h2>Face Clustering</h2>
@@ -232,6 +359,7 @@ export function FacesPage(_props: RoutableProps) {
                       key={cluster.id}
                       cluster={cluster}
                       onRefresh={refresh}
+                      reloadToken={reloadToken}
                     />
                   ))}
                 </div>

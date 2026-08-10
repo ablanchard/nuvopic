@@ -45,6 +45,8 @@ clusters.get("/unassigned", async (c) => {
       boundingBox: f.bounding_box,
       photoWidth: f.photo_width,
       photoHeight: f.photo_height,
+      confidence: f.confidence,
+      area: f.area,
     })),
   });
 });
@@ -60,6 +62,8 @@ clusters.get("/:id/faces", async (c) => {
       boundingBox: f.bounding_box,
       photoWidth: f.photo_width,
       photoHeight: f.photo_height,
+      confidence: f.confidence,
+      area: f.area,
     })),
   });
 });

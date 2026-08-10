@@ -2,15 +2,17 @@ import { useState, useEffect } from 'preact/hooks';
 import { api } from '../api/client';
 import type { Cluster, ClusterFace } from '../api/client';
 import { FaceCrop } from './FaceCrop';
+import { FaceMetrics } from './FaceMetrics';
 
 interface ClusterCardProps {
   cluster: Cluster;
   onRefresh: () => void;
+  reloadToken: number;
 }
 
 const INITIAL_VISIBLE = 6;
 
-export function ClusterCard({ cluster, onRefresh }: ClusterCardProps) {
+export function ClusterCard({ cluster, onRefresh, reloadToken }: ClusterCardProps) {
   const [faces, setFaces] = useState<ClusterFace[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(false);
@@ -24,7 +26,7 @@ export function ClusterCard({ cluster, onRefresh }: ClusterCardProps) {
       .then((data) => setFaces(data.faces))
       .catch(() => setFaces([]))
       .finally(() => setLoading(false));
-  }, [cluster.id]);
+  }, [cluster.id, reloadToken]);
 
   const visibleFaces = expanded ? faces : faces.slice(0, INITIAL_VISIBLE);
   const hiddenCount = faces.length - INITIAL_VISIBLE;
@@ -123,6 +125,7 @@ export function ClusterCard({ cluster, onRefresh }: ClusterCardProps) {
                   photoHeight={face.photoHeight}
                   size={72}
                 />
+                <FaceMetrics confidence={face.confidence} area={face.area} />
                 <button
                   class="face-remove-btn"
                   onClick={() => handleRemoveFace(face.id)}
