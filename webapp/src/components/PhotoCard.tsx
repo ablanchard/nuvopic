@@ -4,7 +4,7 @@ import { formatPhotoDate } from '../lib/photoDate';
 
 interface PhotoCardProps {
   photo: Photo;
-  onClick?: () => void;
+  onClick?: (thumbnailSrc: string | null) => void;
 }
 
 export function PhotoCard({ photo, onClick }: PhotoCardProps) {
@@ -46,7 +46,7 @@ export function PhotoCard({ photo, onClick }: PhotoCardProps) {
   const placeholderSrc = photo.placeholder || undefined;
 
   return (
-    <div class="photo-card" onClick={onClick}>
+    <div class="photo-card" onClick={() => onClick?.(thumbnailSrc)}>
       {placeholderSrc && placeholderVisible && (
         <img
           src={placeholderSrc}

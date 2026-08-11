@@ -14,17 +14,19 @@ import {
   resetFilters,
 } from '../state/filters';
 import { api } from '../api/client';
-import { getImageUrl } from '../lib/imageUrlCache';
+import { getImageUrl, setImageUrl } from '../lib/imageUrlCache';
 import { formatPhotoDate } from '../lib/photoDate';
 import type { Photo } from '../api/client';
 import type { RoutableProps } from 'preact-router';
 
 export function HomePage(_props: RoutableProps) {
   const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
+  const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const [fullImageSrc, setFullImageSrc] = useState<string | null>(null);
   const [fullImageLoaded, setFullImageLoaded] = useState(false);
+  const [fullImageFailed, setFullImageFailed] = useState(false);
   const [filteredPhotoCount, setFilteredPhotoCount] = useState<number | null>(null);
-  const preloadRef = useRef<HTMLImageElement | null>(null);
+  const previewObjectUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
     document.documentElement.classList.add('home-route-active');
@@ -59,58 +61,68 @@ export function HomePage(_props: RoutableProps) {
     };
   }, []);
 
-  // Load full-res image when modal opens
+  const openPhoto = (photo: Photo, thumbnailSrc: string | null) => {
+    setPreviewImageSrc(thumbnailSrc);
+    setSelectedPhoto(photo);
+  };
+
+  // Keep a lightweight preview visible while the original image downloads.
   useEffect(() => {
     if (!selectedPhoto) {
+      setPreviewImageSrc(null);
       setFullImageSrc(null);
       setFullImageLoaded(false);
-      if (preloadRef.current) {
-        preloadRef.current.src = '';
-        preloadRef.current = null;
+      setFullImageFailed(false);
+      if (previewObjectUrlRef.current) {
+        URL.revokeObjectURL(previewObjectUrlRef.current);
+        previewObjectUrlRef.current = null;
       }
       return;
     }
 
-    // If the grid already loaded this image, its presigned URL is cached
-    // and the browser already has the bytes — use it immediately.
+    const photoId = selectedPhoto.id;
+    let cancelled = false;
+
+    setFullImageLoaded(false);
+    setFullImageFailed(false);
+
+    // The clicked card normally supplies its already-loaded thumbnail. If it
+    // was clicked before loading, fetch the same cache-friendly preview.
+    if (!previewImageSrc) {
+      api.photos.getThumbnail(photoId).then((blob) => {
+        if (cancelled) return;
+        const objectUrl = URL.createObjectURL(blob);
+        previewObjectUrlRef.current = objectUrl;
+        setPreviewImageSrc(objectUrl);
+      }).catch(() => {
+        // The tiny embedded placeholder remains available as the first stage.
+      });
+    }
+
+    // Start the original image request immediately. Rendering it directly lets
+    // browsers display progressive JPEG scans while the preview stays beneath.
     const cachedUrl = getImageUrl(selectedPhoto.id);
     if (cachedUrl) {
       setFullImageSrc(cachedUrl);
-      setFullImageLoaded(true);
-      return;
+    } else {
+      setFullImageSrc(null);
+      api.photos.getFullImageUrl(photoId).then((url) => {
+        if (cancelled) return;
+        setImageUrl(photoId, url);
+        setFullImageSrc(url);
+      }).catch(() => {
+        if (!cancelled) setFullImageFailed(true);
+      });
     }
-
-    // Otherwise fall back to fetching a fresh presigned URL.
-    let cancelled = false;
-
-    api.photos.getFullImageUrl(selectedPhoto.id).then((url) => {
-      if (cancelled) return;
-
-      // Preload the full image in the background
-      const img = new Image();
-      preloadRef.current = img;
-      img.onload = () => {
-        if (!cancelled) {
-          setFullImageSrc(url);
-          setFullImageLoaded(true);
-        }
-      };
-      img.onerror = () => {
-        // Silently stay on thumbnail if S3 fetch fails
-      };
-      img.src = url;
-    }).catch(() => {
-      // Stay on thumbnail if presigned URL fetch fails
-    });
 
     return () => {
       cancelled = true;
-      if (preloadRef.current) {
-        preloadRef.current.src = '';
-        preloadRef.current = null;
+      if (previewObjectUrlRef.current) {
+        URL.revokeObjectURL(previewObjectUrlRef.current);
+        previewObjectUrlRef.current = null;
       }
     };
-  }, [selectedPhoto]);
+  }, [selectedPhoto?.id]);
 
   const renderFilterControls = (includePrimaryControls = false) => (
     <>
@@ -149,7 +161,7 @@ export function HomePage(_props: RoutableProps) {
 
         <main class="main-content">
           <PhotoGrid
-            onPhotoClick={setSelectedPhoto}
+            onPhotoClick={openPhoto}
             onTotalChange={setFilteredPhotoCount}
           />
         </main>
@@ -164,11 +176,32 @@ export function HomePage(_props: RoutableProps) {
                 ? `aspect-ratio: ${selectedPhoto.width} / ${selectedPhoto.height}`
                 : undefined}
             >
-              <img
-                src={fullImageLoaded && fullImageSrc ? fullImageSrc : (selectedPhoto.placeholder || '')}
-                alt={selectedPhoto.description || 'Photo'}
-                class={`modal-image ${fullImageLoaded ? 'modal-image--full' : 'modal-image--thumbnail'}`}
-              />
+              {!fullImageLoaded && (previewImageSrc || selectedPhoto.placeholder) && (
+                <img
+                  src={previewImageSrc || selectedPhoto.placeholder || undefined}
+                  alt={selectedPhoto.description || 'Photo'}
+                  class={`modal-image modal-image--preview ${previewImageSrc ? '' : 'modal-image--placeholder'}`}
+                />
+              )}
+              {fullImageSrc && (
+                <img
+                  src={fullImageSrc}
+                  alt={selectedPhoto.description || 'Photo'}
+                  class="modal-image modal-image--original"
+                  decoding="async"
+                  onLoad={() => setFullImageLoaded(true)}
+                  onError={() => {
+                    setFullImageSrc(null);
+                    setFullImageFailed(true);
+                  }}
+                />
+              )}
+              {!fullImageLoaded && !fullImageFailed && (
+                <span class="modal-image-status" role="status">Loading full resolution…</span>
+              )}
+              {fullImageFailed && (
+                <span class="modal-image-status modal-image-status--error">Full resolution unavailable</span>
+              )}
             </div>
             <div class="modal-info">
               {selectedPhoto.description && (

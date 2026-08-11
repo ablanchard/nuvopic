@@ -19,7 +19,7 @@ import type { GridLayout } from '../lib/gridLayout';
 import { PhotoCache } from '../lib/photoCache';
 
 interface PhotoGridProps {
-  onPhotoClick?: (photo: Photo) => void;
+  onPhotoClick?: (photo: Photo, thumbnailSrc: string | null) => void;
   onTotalChange?: (total: number | null) => void;
 }
 
@@ -257,7 +257,7 @@ export function PhotoGrid({ onPhotoClick, onTotalChange }: PhotoGridProps) {
                                 <PhotoCard
                                   key={photo.id}
                                   photo={photo}
-                                  onClick={() => onPhotoClick?.(photo)}
+                                  onClick={(thumbnailSrc) => onPhotoClick?.(photo, thumbnailSrc)}
                                 />
                               );
                             })

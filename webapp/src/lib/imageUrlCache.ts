@@ -1,18 +1,35 @@
 /**
- * Simple in-memory cache mapping photo IDs to their presigned S3 URLs.
+ * Short-lived in-memory cache mapping photo IDs to their presigned S3 URLs.
  *
- * When PhotoCard loads a full image it stores the URL here. When the modal
- * opens for the same photo it can skip the API call and use the cached URL
- * directly — the browser already has the image bytes for that exact URL in
- * its HTTP cache, so the full image appears instantly.
+ * Presigned URLs expire after 15 minutes, so entries are discarded a little
+ * earlier. Reopening a photo during that window can reuse both the URL and the
+ * browser's HTTP cache.
  */
 
-const cache = new Map<string, string>();
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+interface CacheEntry {
+  url: string;
+  expiresAt: number;
+}
+
+const cache = new Map<string, CacheEntry>();
 
 export function getImageUrl(photoId: string): string | undefined {
-  return cache.get(photoId);
+  const entry = cache.get(photoId);
+  if (!entry) return undefined;
+
+  if (entry.expiresAt <= Date.now()) {
+    cache.delete(photoId);
+    return undefined;
+  }
+
+  return entry.url;
 }
 
 export function setImageUrl(photoId: string, url: string): void {
-  cache.set(photoId, url);
+  cache.set(photoId, {
+    url,
+    expiresAt: Date.now() + CACHE_TTL_MS,
+  });
 }
