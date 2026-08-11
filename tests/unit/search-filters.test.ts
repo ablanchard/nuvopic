@@ -44,4 +44,18 @@ describe("getFilteredPhotosForReprocess", () => {
     expect(sql).not.toContain("WHERE");
     expect(params).toEqual([]);
   });
+
+  it("filters unknown dates directly in SQL and ignores incompatible ranges", async () => {
+    await getFilteredPhotosForReprocess({
+      dateUnknown: true,
+      dateFrom: new Date("2024-01-01"),
+      dateTo: new Date("2024-12-31"),
+    });
+
+    const [sql, params] = queryMock.mock.calls[0];
+    expect(sql).toContain("p.taken_at IS NULL");
+    expect(sql).not.toContain("p.taken_at >=");
+    expect(sql).not.toContain("p.taken_at <=");
+    expect(params).toEqual([]);
+  });
 });

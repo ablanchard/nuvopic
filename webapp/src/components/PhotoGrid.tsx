@@ -73,6 +73,7 @@ export function PhotoGrid({ onPhotoClick, onTotalChange }: PhotoGridProps) {
       tag: currentFilters.tag || undefined,
       person: currentFilters.person || undefined,
       smartTag: currentFilters.smartTag || undefined,
+      dateUnknown: currentFilters.dateUnknown || undefined,
     });
 
     api.photos.timeline({
@@ -82,6 +83,7 @@ export function PhotoGrid({ onPhotoClick, onTotalChange }: PhotoGridProps) {
       smartTag: currentFilters.smartTag || undefined,
       from: currentFilters.from || undefined,
       to: currentFilters.to || undefined,
+      dateUnknown: currentFilters.dateUnknown || undefined,
     }).then((data) => {
       setTimelineGroups(data.groups);
       setTotalPhotos(data.total);

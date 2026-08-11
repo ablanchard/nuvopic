@@ -83,6 +83,7 @@ function parseReprocessPhotoFilters(
     smartTagId: stringValue("smartTag"),
     dateFrom: parseDateFilter(stringValue("from")),
     dateTo: parseDateFilter(stringValue("to")),
+    dateUnknown: raw.dateUnknown === true,
   };
 }
 
@@ -224,6 +225,7 @@ photos.get("/", async (c) => {
   const personId = c.req.query("person");
   const from = c.req.query("from");
   const to = c.req.query("to");
+  const dateUnknown = c.req.query("dateUnknown") === "true";
   const smartTag = c.req.query("smartTag");
   const page = parseInt(c.req.query("page") ?? "1", 10);
   const limit = parseInt(c.req.query("limit") ?? "20", 10);
@@ -235,6 +237,7 @@ photos.get("/", async (c) => {
     smartTagId: smartTag || undefined,
     dateFrom: parseDateFilter(from),
     dateTo: parseDateFilter(to),
+    dateUnknown,
     limit: Math.min(limit, 100),
     offset: (page - 1) * limit,
   };
@@ -274,6 +277,7 @@ photos.get("/timeline", async (c) => {
   const personId = c.req.query("person");
   const from = c.req.query("from");
   const to = c.req.query("to");
+  const dateUnknown = c.req.query("dateUnknown") === "true";
   const smartTag = c.req.query("smartTag");
 
   const filters = {
@@ -283,6 +287,7 @@ photos.get("/timeline", async (c) => {
     smartTagId: smartTag || undefined,
     dateFrom: parseDateFilter(from),
     dateTo: parseDateFilter(to),
+    dateUnknown,
   };
 
   const groups = await getTimelineIndex(filters);

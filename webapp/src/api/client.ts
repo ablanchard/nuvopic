@@ -81,6 +81,7 @@ export interface PhotoFilters {
   smartTag?: string;
   from?: string;
   to?: string;
+  dateUnknown?: boolean;
   page?: number;
   limit?: number;
 }
@@ -477,6 +478,7 @@ export const api = {
       if (filters.smartTag) params.set('smartTag', filters.smartTag);
       if (filters.from) params.set('from', filters.from);
       if (filters.to) params.set('to', filters.to);
+      if (filters.dateUnknown) params.set('dateUnknown', 'true');
       if (filters.page) params.set('page', String(filters.page));
       if (filters.limit) params.set('limit', String(filters.limit));
 
@@ -515,6 +517,7 @@ export const api = {
       if (filters.smartTag) params.set('smartTag', filters.smartTag);
       if (filters.from) params.set('from', filters.from);
       if (filters.to) params.set('to', filters.to);
+      if (filters.dateUnknown) params.set('dateUnknown', 'true');
 
       const query = params.toString();
       return fetchApiJson<TimelineResponse>(`${API_BASE}/photos/timeline${query ? `?${query}` : ''}`);

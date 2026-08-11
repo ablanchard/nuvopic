@@ -92,18 +92,25 @@ export class PhotoCache {
 
   private async fetchSection(sectionKey: string, photoCount: number): Promise<Photo[]> {
     if (sectionKey === 'undated') {
-      // Fetch photos with no taken_at -- use a special filter
-      // The backend sorts by taken_at DESC NULLS LAST, so undated photos
-      // are at the end. We fetch them by requesting a large page.
-      // For a proper solution we'd need a backend param, but we can
-      // approximate by using a very old from date + limit.
-      const data = await api.photos.list({
-        ...this.baseFilters,
-        page: 1,
-        limit: Math.min(photoCount, 100),
-      });
-      // Filter client-side for those without takenAt
-      return data.photos.filter((p) => !p.takenAt);
+      const allPhotos: Photo[] = [];
+      let page = 1;
+      const pageSize = 100;
+
+      while (allPhotos.length < photoCount) {
+        const data = await api.photos.list({
+          ...this.baseFilters,
+          dateUnknown: true,
+          page,
+          limit: pageSize,
+        });
+
+        allPhotos.push(...data.photos);
+
+        if (!data.pagination.hasMore || data.photos.length === 0) break;
+        page++;
+      }
+
+      return allPhotos;
     }
 
     // Parse "YYYY-MM" key

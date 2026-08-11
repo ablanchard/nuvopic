@@ -10,6 +10,7 @@ export interface PhotoFilters {
   smartTagId?: string;
   dateFrom?: Date;
   dateTo?: Date;
+  dateUnknown?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -61,16 +62,20 @@ async function buildPhotoFilterSql(
     paramIndex++;
   }
 
-  if (filters.dateFrom) {
-    conditions.push(`p.taken_at >= $${paramIndex}`);
-    params.push(filters.dateFrom);
-    paramIndex++;
-  }
+  if (filters.dateUnknown) {
+    conditions.push("p.taken_at IS NULL");
+  } else {
+    if (filters.dateFrom) {
+      conditions.push(`p.taken_at >= $${paramIndex}`);
+      params.push(filters.dateFrom);
+      paramIndex++;
+    }
 
-  if (filters.dateTo) {
-    conditions.push(`p.taken_at <= $${paramIndex}`);
-    params.push(filters.dateTo);
-    paramIndex++;
+    if (filters.dateTo) {
+      conditions.push(`p.taken_at <= $${paramIndex}`);
+      params.push(filters.dateTo);
+      paramIndex++;
+    }
   }
 
   if (filters.personId) {

@@ -6,6 +6,7 @@ export const selectedPerson = signal<string | null>(null);
 export const selectedSmartTag = signal<string | null>(null);
 export const dateFrom = signal<string | null>(null);
 export const dateTo = signal<string | null>(null);
+export const dateUnknown = signal(false);
 
 export const DEFAULT_PHOTO_SIZE = 200;
 export const MOBILE_DEFAULT_PHOTO_SIZE = 100;
@@ -28,6 +29,7 @@ export const filters = computed(() => ({
   smartTag: selectedSmartTag.value || undefined,
   from: dateFrom.value || undefined,
   to: dateTo.value || undefined,
+  dateUnknown: dateUnknown.value || undefined,
 }));
 
 export function resetFilters() {
@@ -37,5 +39,6 @@ export function resetFilters() {
   selectedSmartTag.value = null;
   dateFrom.value = null;
   dateTo.value = null;
+  dateUnknown.value = false;
   filterVersion.value++;
 }

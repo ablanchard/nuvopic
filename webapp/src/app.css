@@ -258,6 +258,23 @@ body {
   min-width: 0;
 }
 
+.date-inputs input:disabled {
+  background: #f2f2f2;
+  color: #999;
+}
+
+.unknown-date-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  cursor: pointer;
+}
+
+.unknown-date-filter input {
+  margin: 0;
+}
+
 .main-content {
   flex: 1;
   min-width: 0;
