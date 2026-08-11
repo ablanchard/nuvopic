@@ -10,6 +10,7 @@ import gpuLogs from "./routes/gpu-logs.js";
 import smartTags from "./routes/smart-tags.js";
 import storage from "./routes/storage.js";
 import runtime from "./routes/runtime.js";
+import { GpuPaymentRequiredError } from "../metering/gpu-metering.js";
 
 const api = new Hono();
 
@@ -19,6 +20,18 @@ api.use("/*", cors());
 // Error handling
 api.onError((err, c) => {
   logger.error("API error:", err);
+  if (err instanceof GpuPaymentRequiredError) {
+    return c.json(
+      {
+        error: "payment_required",
+        message: err.message,
+        currency: err.currency,
+        requiredMicros: err.requiredMicros,
+        availableMicros: err.availableMicros,
+      },
+      402
+    );
+  }
   return c.json({ error: err.message }, 500);
 });
 

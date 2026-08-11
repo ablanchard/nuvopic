@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { getObjectAsBuffer, getS3Path } from "./s3/client.js";
 import {
   extractExif,
@@ -15,9 +16,19 @@ import {
   type GpuFacesResult,
   isGpuEnabled,
   getRealtimeGpuProvider,
-  getBatchGpuProvider,
+  getGpuProviderBatchThreshold,
+  GPU_ROUTING_POLICY_VERSION,
+  selectBatchGpuProvider,
   createGpuClient,
+  type GpuProvider,
 } from "./extractors/gpu-client.js";
+import {
+  beginMeteredGpuJob,
+  completeMeteredGpuJob,
+  recordGpuOperationUsage,
+  recordGpuResourceUsage,
+  type MeteringJobContext,
+} from "./metering/gpu-metering.js";
 import {
   insertPhoto,
   insertFace,
@@ -85,6 +96,7 @@ interface ExtractedData {
   caption: string | null;
   faces: Array<{ boundingBox: { x: number; y: number; width: number; height: number }; embedding: number[]; confidence: number }>;
   errors: string[];
+  provider?: string;
   /** When true, skip face delete+reinsert (faces array is empty by design). */
   skipFaces?: boolean;
   /** When true, skip caption update (caption is null by design). */
@@ -146,8 +158,6 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
     logger.info(`[perf] saveToDb ${s3Key}: total=${tSaveTotal}ms (lookup=${tLookupMs}ms insert=${tInsertMs}ms faces=${tFacesMs}ms)`);
   }
 
-  const realtimeProvider = getRealtimeGpuProvider();
-  const batchProvider = getBatchGpuProvider();
   const output: ProcessPhotoOutput = {
     photoId,
     s3Path,
@@ -162,7 +172,7 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
 
   logger.info(`Processed ${s3Path}:`, {
     photoId,
-    mode: batchProvider !== "local" ? batchProvider : realtimeProvider,
+    mode: data.provider ?? getRealtimeGpuProvider(),
     takenAt: takenAt?.toISOString(),
     takenAtPrecision: resolvedDate.precision,
     takenAtSource: resolvedDate.source,
@@ -269,7 +279,7 @@ export async function processPhoto(
   const { s3Bucket, s3Key } = input;
   const s3Path = getS3Path(s3Bucket, s3Key);
   const errors: string[] = [];
-  const gpuEnabled = isGpuEnabled();
+  const gpuEnabled = !!gpuClient || isGpuEnabled();
   const gpuMode = resolveGpuMode(input);
   const t0 = Date.now();
 
@@ -456,7 +466,22 @@ export async function processPhoto(
   }
 
   const tSaveStart = Date.now();
-  const result = await saveToDb({ s3Path, s3Key, width, height, exif, placeholder, caption, faces, errors, skipFaces, skipCaption, captionVersion, facesVersion });
+  const result = await saveToDb({
+    s3Path,
+    s3Key,
+    width,
+    height,
+    exif,
+    placeholder,
+    caption,
+    faces,
+    errors,
+    provider: gpuMode === "skip" ? "local" : gpuClient?.provider ?? realtimeProvider,
+    skipFaces,
+    skipCaption,
+    captionVersion,
+    facesVersion,
+  });
   const tSaveMs = Date.now() - tSaveStart;
 
   const totalMs = Date.now() - t0;
@@ -492,17 +517,21 @@ export async function processPhotoBatch(
   inputs: ProcessPhotoInput[],
   onProgress?: (completed: number, total: number) => void,
   /** Optional parent job log ID — per-photo child logs will reference this. */
-  jobLogId?: string | null
+  jobLogId?: string | null,
+  options?: {
+    provider?: GpuProvider;
+    externalJobId?: string;
+  }
 ): Promise<ProcessPhotoOutput[]> {
   if (inputs.length === 0) return [];
 
-  const batchProvider = getBatchGpuProvider();
-  const useGpu = batchProvider !== "local";
   const total = inputs.length;
   let completed = 0;
 
   // Resolve GPU mode from first input (batch should have uniform mode)
   const gpuMode = resolveGpuMode(inputs[0]);
+  const batchProvider = options?.provider ?? selectBatchGpuProvider(total, gpuMode);
+  const useGpu = batchProvider !== "local";
 
   logger.info(
     `Batch processing ${total} photos (provider=${batchProvider}, gpuMode=${gpuMode}, localConcurrency=${LOCAL_CONCURRENCY}, chunkSize=${CHUNK_SIZE})`
@@ -529,11 +558,27 @@ export async function processPhotoBatch(
     });
   }
 
-  // --- GPU mode: create client, manage lifecycle, run chunked pipeline ---
-  const gpuClient = await createGpuClient(batchProvider);
+  // --- GPU mode: reserve funds, create client, manage lifecycle, and meter usage ---
+  const externalJobId = options?.externalJobId ?? jobLogId ?? crypto.randomUUID();
+  const meteringContext = await beginMeteredGpuJob({
+    externalJobId,
+    provider: batchProvider,
+    gpuMode,
+    photoCount: total,
+    routingPolicyVersion: GPU_ROUTING_POLICY_VERSION,
+    routingThreshold: getGpuProviderBatchThreshold(),
+  });
+  let gpuClient: GpuClient | null = null;
   const batchStartTime = Date.now();
 
   try {
+    gpuClient = await createGpuClient(batchProvider);
+    if (meteringContext) {
+      gpuClient.setMeteringContext?.({
+        workspaceId: meteringContext.workspaceId,
+        externalJobId: meteringContext.externalJobId,
+      });
+    }
     // Start the GPU backend (no-op for Modal, provisions instance for Vast.ai)
     const provisionStart = Date.now();
     await gpuClient.start();
@@ -563,7 +608,13 @@ export async function processPhotoBatch(
           `Processing chunk ${chunkIdx + 1}/${numChunks} (${chunkInputs.length} photos)`
         );
 
-        const chunkResults = await processChunk(chunkInputs, gpuClient, jobLogId);
+        const chunkResults = await processChunk(
+          chunkInputs,
+          gpuClient,
+          jobLogId,
+          meteringContext,
+          reprovisionCount
+        );
 
         const chunkMs = Date.now() - chunkStartTime;
         logger.info(
@@ -688,6 +739,10 @@ export async function processPhotoBatch(
 
       const reprovisionStart = Date.now();
       await gpuClient.reprovision();
+      await recordGpuResourceUsage(
+        meteringContext,
+        gpuClient.drainResourceUsage?.() ?? []
+      );
       const reprovisionMs = Date.now() - reprovisionStart;
       logger.info(
         `Reprovisioning took ${(reprovisionMs / 1000).toFixed(1)}s`
@@ -716,11 +771,18 @@ export async function processPhotoBatch(
     // Always tear down the GPU backend (destroys Vast.ai instance, no-op for Modal)
     const teardownStart = Date.now();
     try {
-      await gpuClient.stop();
+      await gpuClient?.stop();
       logger.info(`GPU teardown took ${((Date.now() - teardownStart) / 1000).toFixed(1)}s`);
     } catch (err) {
       logger.error("Failed to stop GPU client:", err);
     }
+    if (gpuClient) {
+      await recordGpuResourceUsage(
+        meteringContext,
+        gpuClient.drainResourceUsage?.() ?? []
+      );
+    }
+    await completeMeteredGpuJob(meteringContext);
     const totalMs = Date.now() - batchStartTime;
     logger.info(`Batch wall time: ${(totalMs / 1000).toFixed(1)}s`);
   }
@@ -736,7 +798,9 @@ export async function processPhotoBatch(
 async function processChunk(
   inputs: ProcessPhotoInput[],
   gpuClient: GpuClient,
-  jobLogId?: string | null
+  jobLogId?: string | null,
+  meteringContext?: MeteringJobContext | null,
+  reprovision = 0
 ): Promise<ProcessPhotoOutput[]> {
   interface PendingPhoto {
     input: ProcessPhotoInput;
@@ -768,11 +832,51 @@ async function processChunk(
     let facesPromise: Promise<GpuFacesResult> | null = null;
 
     if (mode === "all" || mode === "caption-only") {
-      captionPromise = gpuClient.caption(imageBuffer);
+      const startedAt = Date.now();
+      captionPromise = gpuClient.caption(imageBuffer).then(
+        async (result) => {
+          await recordGpuOperationUsage(meteringContext ?? null, {
+            operation: "caption",
+            elapsedMs: Date.now() - startedAt,
+            succeeded: true,
+            reprovision,
+          });
+          return result;
+        },
+        async (error) => {
+          await recordGpuOperationUsage(meteringContext ?? null, {
+            operation: "caption",
+            elapsedMs: Date.now() - startedAt,
+            succeeded: false,
+            reprovision,
+          });
+          throw error;
+        }
+      );
       captionPromise.catch(() => {}); // suppress unhandled rejection
     }
     if (mode === "all" || mode === "faces-only") {
-      facesPromise = gpuClient.faces(imageBuffer);
+      const startedAt = Date.now();
+      facesPromise = gpuClient.faces(imageBuffer).then(
+        async (result) => {
+          await recordGpuOperationUsage(meteringContext ?? null, {
+            operation: "faces",
+            elapsedMs: Date.now() - startedAt,
+            succeeded: true,
+            reprovision,
+          });
+          return result;
+        },
+        async (error) => {
+          await recordGpuOperationUsage(meteringContext ?? null, {
+            operation: "faces",
+            elapsedMs: Date.now() - startedAt,
+            succeeded: false,
+            reprovision,
+          });
+          throw error;
+        }
+      );
       facesPromise.catch(() => {}); // suppress unhandled rejection
     }
 
@@ -853,7 +957,22 @@ async function processChunk(
         skipFaces = true;
       }
 
-      const output = await saveToDb({ s3Path, s3Key, width, height, exif, placeholder, caption, faces, errors, skipFaces, skipCaption, captionVersion, facesVersion });
+      const output = await saveToDb({
+        s3Path,
+        s3Key,
+        width,
+        height,
+        exif,
+        placeholder,
+        caption,
+        faces,
+        errors,
+        provider: gpuClient.provider,
+        skipFaces,
+        skipCaption,
+        captionVersion,
+        facesVersion,
+      });
       results.push(output);
 
       // Complete or fail the per-photo GPU log

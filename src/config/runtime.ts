@@ -57,8 +57,43 @@ export function getWorkspaceDirectoryUrl(): string | null {
   return process.env.MANAGED_WORKSPACE_DIRECTORY_URL?.trim() || null;
 }
 
+export function getWorkspaceDirectoryListUrl(): string | null {
+  const configured = process.env.MANAGED_WORKSPACE_DIRECTORY_LIST_URL?.trim();
+  if (configured) return configured;
+  const resolveUrl = getWorkspaceDirectoryUrl();
+  if (!resolveUrl) return null;
+  const url = new URL(resolveUrl);
+  url.pathname = url.pathname.replace(/\/resolve\/?$/, "");
+  url.search = "";
+  return url.toString();
+}
+
 export function getWorkspaceDirectoryToken(): string | null {
   return process.env.MANAGED_WORKSPACE_DIRECTORY_TOKEN?.trim() || null;
+}
+
+export type GpuMeteringMode = "disabled" | "shadow" | "enforce";
+
+export function getGpuMeteringMode(): GpuMeteringMode {
+  if (!isManagedMode()) return "disabled";
+  const configured = process.env.GPU_METERING_MODE?.trim().toLowerCase();
+  if (configured === "disabled" || configured === "shadow" || configured === "enforce") {
+    return configured;
+  }
+  return getGpuMeteringUrl() && getGpuMeteringToken() ? "shadow" : "disabled";
+}
+
+export function getGpuMeteringUrl(): string | null {
+  return process.env.GPU_METERING_URL?.trim().replace(/\/+$/, "") || null;
+}
+
+export function getGpuMeteringToken(): string | null {
+  return process.env.GPU_METERING_SERVICE_TOKEN?.trim() || null;
+}
+
+export function getGpuMeteringRequestTimeoutMs(): number {
+  const parsed = Number.parseInt(process.env.GPU_METERING_REQUEST_TIMEOUT_MS ?? "10000", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10_000;
 }
 
 export function getWorkspaceDirectoryCacheTtlMs(): number {

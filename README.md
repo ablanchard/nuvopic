@@ -434,6 +434,8 @@ For the current managed integration and its target multi-tenant design, see
 | `S3_FORCE_PATH_STYLE` | Migration only | One-time import source for path-style mode | `false` |
 | `PROCESSING_MODE` | No | `"modal"`, `"vastai"`, or `"local"` | Auto-detect |
 | `BATCH_GPU_PROVIDER` | No | GPU provider for batch ops: `"modal"`, `"vastai"`, or `"local"` | Same as PROCESSING_MODE |
+| `GPU_PROVIDER_ROUTING_ENABLED` | No | Route small batches to Modal and large batches to Vast.ai when both are configured | `true` |
+| `GPU_PROVIDER_BATCH_THRESHOLD` | No | Largest batch routed to Modal (inclusive) | `500` |
 | `MODAL_ENDPOINT_URL` | No* | Modal inference endpoint URL | |
 | `MODAL_PROXY_KEY` | No* | Modal proxy auth key | |
 | `MODAL_PROXY_SECRET` | No* | Modal proxy auth secret | |
@@ -452,6 +454,12 @@ For the current managed integration and its target multi-tenant design, see
 | `MANAGED_JWT_ISSUER` | Managed only | Expected JWT issuer | |
 | `MANAGED_WORKSPACE_DIRECTORY_JSON` / `MANAGED_WORKSPACE_DIRECTORY_URL` | Managed only | Workspace-to-database routing source | |
 | `MANAGED_WORKSPACE_DIRECTORY_TOKEN` | Managed only | Bearer token for remote workspace directory lookups | |
+| `MANAGED_WORKSPACE_DIRECTORY_LIST_URL` | Managed only | Active workspace discovery endpoint for durable job recovery | Derived from directory URL |
+| `GPU_METERING_URL` | Managed billing | SaaS control-plane base URL for wallet operations | |
+| `GPU_METERING_SERVICE_TOKEN` | Managed billing | Dedicated bearer token for wallet mutations | |
+| `GPU_METERING_MODE` | No | `disabled`, `shadow`, or `enforce` | `shadow` when metering is configured |
+| `GPU_METERING_REQUEST_TIMEOUT_MS` | No | Control-plane request timeout | `10000` |
+| `PROCESSING_JOB_POLL_INTERVAL_MS` | No | Durable managed-webhook queue poll interval | `10000` |
 | `MANAGED_TOKEN_ENDPOINT` | Managed only | Same-origin endpoint the SPA uses to fetch a short-lived workspace token | `/managed/session/token` |
 | `MANAGED_PROFILE_PATH` | Managed only | Profile/account path served by the SaaS app | `/profile` |
 | `MANAGED_ADMIN_PATH` | Managed only | Admin dashboard path served by the SaaS app | `/admin` |
@@ -463,6 +471,19 @@ For the current managed integration and its target multi-tenant design, see
 \** Required when `BATCH_GPU_PROVIDER=vastai`.
 
 \*** Required when `AUTH_PASSWORD` is set. Generate with: `openssl rand -hex 32`
+
+### Managed GPU wallets
+
+Managed mode reserves a workspace monetary allowance before hosted GPU work,
+records raw operation and Vast.ai lease usage in a durable outbox, and settles
+the reservation against the SaaS ledger. Use `GPU_METERING_MODE=shadow` while
+reconciling against provider invoices, then switch to `enforce` to reject jobs
+whose allowance is insufficient.
+
+The `volume-v1` routing policy keeps batches of 500 photos or fewer on Modal
+and sends batches of 501 or more to Vast.ai. The complete job stays on one
+provider. Real-time, webhook, and single-photo work always uses the real-time
+provider (normally Modal).
 
 ## Usage
 
@@ -564,6 +585,18 @@ E2E tests require Docker for PostgreSQL and MinIO:
 npm run docker:up
 npm run test:integration
 ```
+
+### Playwright
+
+The Playwright workflow creates a fresh pgvector database, starts MinIO, seeds
+its own bucket and image, and runs a deterministic inference service. The
+browser test configures that bucket through the setup page and verifies import,
+caption inference, face inference, persisted photo data, GPU logs, and thumbnail
+loading. It also smoke-tests every current page on each push and pull request.
+
+The infrastructure-backed suite is enabled with `E2E_FULL_STACK=true`; without
+that flag, `npm run test:e2e` runs the page suite and skips the isolated import
+test.
 
 ## License
 

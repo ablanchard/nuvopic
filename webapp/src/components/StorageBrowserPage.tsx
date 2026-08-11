@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'preact/hooks';
 import { api } from '../api/client';
-import type { StorageFolderInfo } from '../api/client';
+import type { GpuWalletEstimate, StorageFolderInfo } from '../api/client';
 import { SettingsSidebar } from './SettingsSidebar';
 import type { RoutableProps } from 'preact-router';
 import { STORAGE_PATH } from '../routes';
@@ -42,6 +42,7 @@ export function StorageBrowserPage(_props: RoutableProps) {
 
   // Import progress
   const [importing, setImporting] = useState(false);
+  const [walletEstimate, setWalletEstimate] = useState<GpuWalletEstimate | null>(null);
 
   // Child folders cache: prefix -> FolderNode[]
   const [childrenCache, setChildrenCache] = useState<Map<string, FolderNode[]>>(new Map());
@@ -184,6 +185,31 @@ export function StorageBrowserPage(_props: RoutableProps) {
     if (!enableCaption && enableFaces) return 'faces-only';
     return 'skip';
   };
+
+  const selectedPhotoCount = Array.from(selectedPrefixes).reduce((total, prefix) => {
+    const missing = prefix === ''
+      ? Math.max(0, rootImageCount - rootImportedCount)
+      : [...rootFolders, ...Array.from(childrenCache.values()).flat()]
+          .find((folder) => folder.prefix === prefix)?.missingCount ?? 0;
+    return total + Math.min(missing, limitEnabled ? importLimit : Number.MAX_SAFE_INTEGER);
+  }, 0);
+
+  useEffect(() => {
+    const gpuMode = getGpuMode();
+    if (selectedPhotoCount === 0 || gpuMode === 'skip') {
+      setWalletEstimate(null);
+      return;
+    }
+    let cancelled = false;
+    void api.gpu.estimate(selectedPhotoCount, gpuMode)
+      .then((result) => {
+        if (!cancelled) setWalletEstimate(result.estimate);
+      })
+      .catch(() => {
+        if (!cancelled) setWalletEstimate(null);
+      });
+    return () => { cancelled = true; };
+  }, [selectedPhotoCount, enableCaption, enableFaces]);
 
   // Import selected folders
   const handleImport = async () => {
@@ -410,12 +436,23 @@ export function StorageBrowserPage(_props: RoutableProps) {
                     <button
                       class="btn btn-primary"
                       onClick={handleImport}
-                      disabled={importing || selectedCount === 0}
+                      disabled={importing || selectedCount === 0 || walletEstimate?.sufficient === false}
                     >
                       {importing ? 'Importing...' : `Import Selected (${selectedCount})`}
                     </button>
                   </div>
                 </div>
+                {walletEstimate && (
+                  <p class="storage-import-hint">
+                    Estimated GPU reservation: {new Intl.NumberFormat(undefined, {
+                      style: 'currency',
+                      currency: walletEstimate.currency,
+                    }).format(Number(walletEstimate.estimatedMicros) / 1_000_000)} via {walletEstimate.provider}
+                    {!walletEstimate.sufficient && (
+                      <> · insufficient allowance. <a href="/profile">Open your wallet</a>.</>
+                    )}
+                  </p>
+                )}
                 {!enableCaption && !enableFaces && (
                   <p class="storage-import-hint">
                     Both caption and face processing are off. Import will only extract EXIF data and generate placeholders.

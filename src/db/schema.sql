@@ -338,6 +338,69 @@ CREATE TABLE IF NOT EXISTS gpu_logs (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Durable managed-mode GPU metering state. Financial delivery is intentionally
+-- separate from best-effort gpu_logs and is retried idempotently.
+CREATE TABLE IF NOT EXISTS gpu_metering_jobs (
+    external_job_id TEXT PRIMARY KEY,
+    reservation_id TEXT,
+    provider TEXT NOT NULL CHECK (provider IN ('modal', 'vastai')),
+    gpu_mode TEXT NOT NULL,
+    photo_count INTEGER NOT NULL CHECK (photo_count > 0),
+    routing_policy_version TEXT NOT NULL,
+    routing_threshold INTEGER NOT NULL CHECK (routing_threshold > 0),
+    price_catalog_version TEXT,
+    currency TEXT,
+    reserved_micros BIGINT,
+    settled_micros BIGINT,
+    status TEXT NOT NULL CHECK (
+        status IN ('pending_reservation', 'reserved', 'running', 'settlement_pending', 'settled', 'cancelled', 'failed', 'shadow')
+    ),
+    error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS gpu_metering_outbox (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    external_job_id TEXT NOT NULL REFERENCES gpu_metering_jobs(external_job_id) ON DELETE CASCADE,
+    command_type TEXT NOT NULL CHECK (command_type IN ('reservation', 'usage', 'settlement', 'cancellation')),
+    idempotency_key TEXT NOT NULL UNIQUE,
+    payload JSONB NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    response JSONB,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    delivered_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_gpu_metering_outbox_pending
+    ON gpu_metering_outbox (next_attempt_at, created_at)
+    WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_gpu_metering_jobs_status
+    ON gpu_metering_jobs (status, updated_at);
+
+-- Durable queue for accepted managed webhook work. The worker discovers active
+-- workspaces through the control plane and claims rows with SKIP LOCKED.
+CREATE TABLE IF NOT EXISTS processing_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    type TEXT NOT NULL CHECK (type IN ('s3_webhook')),
+    payload JSONB NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_processing_jobs_pending
+    ON processing_jobs (next_attempt_at, created_at)
+    WHERE status = 'pending';
+
 -- Smart tags: user-defined rule-based tags evaluated at query time
 CREATE TABLE IF NOT EXISTS smart_tags (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

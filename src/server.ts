@@ -16,6 +16,12 @@ import {
 import { getDeployMode, isManagedMode } from "./config/runtime.js";
 import { getSetting } from "./db/settings.js";
 import { closePool, runWithWorkspaceContext } from "./db/client.js";
+import {
+  enqueueS3WebhookJob,
+  processPendingJobsInCurrentWorkspace,
+  startProcessingJobWorker,
+  stopProcessingJobWorker,
+} from "./jobs/processing-jobs.js";
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const SHUTDOWN_TIMEOUT_MS = parseInt(
@@ -89,6 +95,18 @@ async function processWebhookEvent(
   return c.json({ status: "accepted" }, 202);
 }
 
+async function queueManagedWebhookEvent(c: Context, event: unknown): Promise<Response> {
+  // Validate the shape before committing an accepted job to the durable queue.
+  normalizeS3Event(event);
+  const jobId = await enqueueS3WebhookJob(event);
+  const job = processPendingJobsInCurrentWorkspace(1).catch((error) => {
+    logger.error(`Immediate processing-job run failed after enqueueing ${jobId}:`, error);
+  });
+  activeBackgroundJobs.add(job);
+  void job.finally(() => activeBackgroundJobs.delete(job));
+  return c.json({ status: "accepted", jobId }, 202);
+}
+
 const app = new Hono();
 
 app.get("/health", (c) =>
@@ -146,7 +164,7 @@ app.post("/webhook/s3/:workspaceId", async (c) => {
       logger.info(
         `Managed webhook received for workspace=${workspaceId}: ${JSON.stringify(event).slice(0, 200)}`
       );
-      return await processWebhookEvent(c, event);
+      return await queueManagedWebhookEvent(c, event);
     });
   } catch (error) {
     logger.error("Managed webhook error:", error);
@@ -165,7 +183,7 @@ app.post("/process", async (c) => {
   try {
     const event = await c.req.json();
     const result = await handler(event);
-    return c.json(JSON.parse(result.body), result.statusCode as 200 | 400 | 500);
+    return c.json(JSON.parse(result.body), result.statusCode as 200 | 400 | 402 | 500);
   } catch (error) {
     logger.error("Error processing request:", error);
     return c.json(
@@ -193,6 +211,7 @@ const server = serve({ fetch: app.fetch, port: PORT }, () => {
   logger.info(`Health check: http://localhost:${PORT}/health`);
   logger.info(`API: http://localhost:${PORT}/api/v1`);
   logger.info(`Process endpoint: http://localhost:${PORT}/process`);
+  startProcessingJobWorker();
 });
 
 function closeServer(): Promise<void> {
@@ -226,6 +245,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
 
   try {
     await closeServer();
+    await stopProcessingJobWorker();
 
     if (activeBackgroundJobs.size > 0) {
       logger.info(

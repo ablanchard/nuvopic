@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'preact/hooks';
 import { api } from '../api/client';
-import type { ReprocessStatsResponse, PipelineStats, PathFacetEntry } from '../api/client';
+import type { ReprocessStatsResponse, PipelineStats, PathFacetEntry, GpuWalletEstimate } from '../api/client';
 import { SettingsSidebar } from './SettingsSidebar';
 import type { RoutableProps } from 'preact-router';
 import { GPU_LOGS_PATH, REPROCESS_PATH } from '../routes';
@@ -104,6 +104,15 @@ function formatCost(dollars: number): string {
   return `$${dollars.toFixed(2)}`;
 }
 
+function formatWalletEstimate(estimate: GpuWalletEstimate): string {
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: estimate.currency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number(estimate.estimatedMicros) / 1_000_000);
+}
+
 /** Sort version keys: "null" first, then semver ascending. */
 function sortVersionKeys(keys: string[]): string[] {
   return keys.sort((a, b) => {
@@ -129,9 +138,10 @@ interface PipelineCardProps {
   pipeline: PipelineStats;
   secsPerPhoto: number;
   costPerHour: number;
+  walletEstimate: GpuWalletEstimate | null;
 }
 
-function PipelineCard({ title, pipeline, secsPerPhoto, costPerHour }: PipelineCardProps) {
+function PipelineCard({ title, pipeline, secsPerPhoto, costPerHour, walletEstimate }: PipelineCardProps) {
   const versionKeys = sortVersionKeys(Object.keys(pipeline.versions));
   const latestCount = pipeline.versions[pipeline.latestVersion] ?? 0;
 
@@ -203,7 +213,12 @@ function PipelineCard({ title, pipeline, secsPerPhoto, costPerHour }: PipelineCa
             <span class="reprocess-estimate-time">
               ~{formatTime(Math.ceil(pipeline.outdated * secsPerPhoto))}
             </span>
-            {costPerHour > 0 && (
+            {walletEstimate ? (
+              <span class="reprocess-estimate-cost">
+                ~{formatWalletEstimate(walletEstimate)} via {walletEstimate.provider}
+                {!walletEstimate.sufficient && ' · insufficient allowance'}
+              </span>
+            ) : costPerHour > 0 && (
               <span class="reprocess-estimate-cost">
                 ~{formatCost((pipeline.outdated * secsPerPhoto / 3600) * costPerHour)}
               </span>
@@ -356,7 +371,7 @@ export function ReprocessPage(_props: RoutableProps) {
                   <div class="reprocess-actions">
                     <button
                       class="btn btn-primary"
-                      disabled={stats.caption.outdated === 0 || triggering !== null}
+                      disabled={stats.caption.outdated === 0 || triggering !== null || stats.estimates.wallet.caption?.sufficient === false}
                       onClick={() => handleTrigger('caption')}
                     >
                       {triggering === 'caption'
@@ -366,7 +381,7 @@ export function ReprocessPage(_props: RoutableProps) {
 
                     <button
                       class="btn btn-primary"
-                      disabled={stats.faces.outdated === 0 || triggering !== null}
+                      disabled={stats.faces.outdated === 0 || triggering !== null || stats.estimates.wallet.faces?.sufficient === false}
                       onClick={() => handleTrigger('faces')}
                     >
                       {triggering === 'faces'
@@ -376,7 +391,7 @@ export function ReprocessPage(_props: RoutableProps) {
 
                     <button
                       class="btn btn-primary"
-                      disabled={(stats.process.outdated === 0 && stats.caption.outdated === 0 && stats.faces.outdated === 0) || triggering !== null}
+                      disabled={(stats.process.outdated === 0 && stats.caption.outdated === 0 && stats.faces.outdated === 0) || triggering !== null || stats.estimates.wallet.all?.sufficient === false}
                       onClick={() => handleTrigger('all')}
                     >
                       {triggering === 'all'
@@ -400,6 +415,11 @@ export function ReprocessPage(_props: RoutableProps) {
                   {!stats.estimates.costPerHour && (
                     <p class="reprocess-hint">
                       Set <code>GPU_COST_PER_HOUR</code> env var for cost estimates.
+                    </p>
+                  )}
+                  {Object.values(stats.estimates.wallet).some((estimate) => estimate?.sufficient === false) && (
+                    <p class="reprocess-hint">
+                      Your GPU allowance is too low for one or more actions. <a href="/profile">Open your wallet</a> to review the balance.
                     </p>
                   )}
                 </div>
@@ -543,6 +563,7 @@ export function ReprocessPage(_props: RoutableProps) {
                 pipeline={stats.process}
                 secsPerPhoto={stats.estimates.secsPerPhoto}
                 costPerHour={stats.estimates.costPerHour}
+                walletEstimate={stats.estimates.wallet.all}
               />
 
               <PipelineCard
@@ -550,6 +571,7 @@ export function ReprocessPage(_props: RoutableProps) {
                 pipeline={stats.caption}
                 secsPerPhoto={stats.estimates.secsPerPhoto}
                 costPerHour={stats.estimates.costPerHour}
+                walletEstimate={stats.estimates.wallet.caption}
               />
 
               <PipelineCard
@@ -557,6 +579,7 @@ export function ReprocessPage(_props: RoutableProps) {
                 pipeline={stats.faces}
                 secsPerPhoto={stats.estimates.secsPerPhoto}
                 costPerHour={stats.estimates.costPerHour}
+                walletEstimate={stats.estimates.wallet.faces}
               />
             </div>
           </div>

@@ -259,6 +259,15 @@ export interface PipelineStats {
   changelog: Record<string, string>;
 }
 
+export interface GpuWalletEstimate {
+  currency: string;
+  provider: 'modal' | 'vastai';
+  priceCatalogVersion: string;
+  estimatedMicros: string;
+  availableMicros: string;
+  sufficient: boolean;
+}
+
 export interface ReprocessStatsResponse {
   totalPhotos: number;
   pathPrefix: string | null;
@@ -270,6 +279,11 @@ export interface ReprocessStatsResponse {
     provider: string;
     secsPerPhoto: number;
     costPerHour: number;
+    wallet: {
+      all: GpuWalletEstimate | null;
+      caption: GpuWalletEstimate | null;
+      faces: GpuWalletEstimate | null;
+    };
   };
 }
 
@@ -326,7 +340,7 @@ function redirectToAuthSurface() {
 
 async function parseError(response: Response): Promise<Error> {
   const error = await response.json().catch(() => ({ error: 'Request failed' }));
-  return new Error(error.error || 'Request failed');
+  return new Error(error.message || error.error || 'Request failed');
 }
 
 async function fetchPublicJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -772,6 +786,7 @@ export const api = {
       toImport: number;
       remainingAfterLimit: number;
       estimatedTime: string;
+      walletEstimate: GpuWalletEstimate | null;
       keys: string[];
     }> => {
       const params = new URLSearchParams();
@@ -786,6 +801,21 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(options),
       });
+    },
+  },
+
+  gpu: {
+    estimate: (photoCount: number, gpuMode: string): Promise<{
+      provider: string;
+      gpuMode: string;
+      photoCount: number;
+      estimate: GpuWalletEstimate | null;
+    }> => {
+      const params = new URLSearchParams({
+        photoCount: String(photoCount),
+        gpuMode,
+      });
+      return fetchApiJson(`${API_BASE}/photos/gpu-estimate?${params.toString()}`);
     },
   },
 

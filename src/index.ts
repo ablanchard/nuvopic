@@ -1,4 +1,7 @@
-import { processPhoto, type ProcessPhotoOutput } from "./processor.js";
+import crypto from "node:crypto";
+import { processPhoto, processPhotoBatch, type ProcessPhotoOutput } from "./processor.js";
+import { getRealtimeGpuProvider } from "./extractors/gpu-client.js";
+import { GpuPaymentRequiredError } from "./metering/gpu-metering.js";
 import { logger } from "./logger.js";
 
 // S3 Event types
@@ -63,7 +66,7 @@ export async function handler(
 
   try {
     if (isS3Event(event)) {
-      // S3 trigger event
+      const inputs: Array<{ s3Bucket: string; s3Key: string }> = [];
       for (const record of event.Records) {
         const bucket = record.s3.bucket.name;
         const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, " "));
@@ -73,13 +76,16 @@ export async function handler(
           continue;
         }
 
-        try {
-          const result = await processPhoto({ s3Bucket: bucket, s3Key: key });
+        inputs.push({ s3Bucket: bucket, s3Key: key });
+      }
+      if (inputs.length > 0) {
+        const batchResults = await processPhotoBatch(inputs, undefined, null, {
+          provider: getRealtimeGpuProvider(),
+          externalJobId: crypto.randomUUID(),
+        });
+        for (const result of batchResults) {
           results.push(result);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          errors.push(`Failed to process ${key}: ${message}`);
-          logger.error(`Error processing ${key}:`, err);
+          if (result.errors.length > 0) errors.push(...result.errors);
         }
       }
     } else if (isDirectInvocation(event)) {
@@ -93,10 +99,15 @@ export async function handler(
         };
       }
 
-      const result = await processPhoto({
-        s3Bucket: event.s3Bucket,
-        s3Key: event.s3Key,
-      });
+      const [result] = await processPhotoBatch(
+        [{ s3Bucket: event.s3Bucket, s3Key: event.s3Key }],
+        undefined,
+        null,
+        {
+          provider: getRealtimeGpuProvider(),
+          externalJobId: crypto.randomUUID(),
+        }
+      );
       results.push(result);
     } else {
       return {
@@ -119,10 +130,19 @@ export async function handler(
     const message = err instanceof Error ? err.message : String(err);
     logger.error("Handler error:", err);
 
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: message }),
-    };
+    if (err instanceof GpuPaymentRequiredError) {
+      return {
+        statusCode: 402,
+        body: JSON.stringify({
+          error: "payment_required",
+          message: err.message,
+          currency: err.currency,
+          requiredMicros: err.requiredMicros,
+          availableMicros: err.availableMicros,
+        }),
+      };
+    }
+    return { statusCode: 500, body: JSON.stringify({ error: message }) };
   }
 }
 

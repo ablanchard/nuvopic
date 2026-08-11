@@ -2,6 +2,7 @@ import { logger } from "../logger.js";
 import {
   getWorkspaceDirectoryCacheTtlMs,
   getWorkspaceDirectoryJson,
+  getWorkspaceDirectoryListUrl,
   getWorkspaceDirectoryToken,
   getWorkspaceDirectoryUrl,
 } from "../config/runtime.js";
@@ -126,6 +127,33 @@ export async function resolveWorkspaceDirectoryEntry(
 
   logger.warn(`Workspace directory lookup failed for workspace=${workspaceId}`);
   throw new Error(`Unknown workspace: ${workspaceId}`);
+}
+
+export async function listWorkspaceDirectoryIds(): Promise<string[]> {
+  const raw = getWorkspaceDirectoryJson();
+  if (raw) {
+    const parsed = JSON.parse(raw) as WorkspaceDirectoryMap;
+    return Array.isArray(parsed)
+      ? parsed.filter((entry) => entry.status !== "disabled").map((entry) => entry.workspaceId)
+      : Object.entries(parsed)
+          .filter(([, entry]) => entry.status !== "disabled")
+          .map(([workspaceId]) => workspaceId);
+  }
+
+  const url = getWorkspaceDirectoryListUrl();
+  if (!url) return [];
+  const headers: Record<string, string> = { Accept: "application/json" };
+  const bearer = getWorkspaceDirectoryToken();
+  if (bearer) headers.Authorization = `Bearer ${bearer}`;
+  const response = await fetch(url, { headers });
+  if (!response.ok) {
+    throw new Error(`Workspace directory list failed with ${response.status}`);
+  }
+  const data = (await response.json()) as { workspaceIds?: unknown };
+  if (!Array.isArray(data.workspaceIds)) {
+    throw new Error("Workspace directory list response is invalid");
+  }
+  return data.workspaceIds.filter((id): id is string => typeof id === "string" && id.length > 0);
 }
 
 export function clearWorkspaceDirectoryCache(): void {

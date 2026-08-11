@@ -16,7 +16,10 @@ import { getPhotosToReprocess, getPhotosToReprocessCaption, getPhotosToReprocess
 import { getPhotoById } from "../../db/queries.js";
 import { getFaceById, getFacesByPhotoId } from "../../db/queries.js";
 import { processPhoto, processPhotoBatch, type GpuMode } from "../../processor.js";
-import { isGpuEnabled, getBatchGpuProvider } from "../../extractors/gpu-client.js";
+import {
+  isGpuEnabled,
+  selectBatchGpuProvider,
+} from "../../extractors/gpu-client.js";
 import { PROCESS_VERSION, CAPTION_VERSION, FACES_VERSION, PROCESS_CHANGELOG, CAPTION_CHANGELOG, FACES_CHANGELOG, compareSemver } from "../../version.js";
 import { listAllObjects, getS3Path, getPresignedImageUrl, getObjectAsBuffer, isSupportedImage } from "../../s3/client.js";
 import { logger } from "../../logger.js";
@@ -24,6 +27,7 @@ import { clusterUnassignedFaces } from "../../db/clusters.js";
 import { getS3Bucket } from "../../db/settings.js";
 import { safeCreateGpuLog, safeCompleteGpuLog, safeFailGpuLog } from "../../db/gpu-logs.js";
 import type { PhotoDatePrecision, PhotoDateSource } from "../../extractors/exif.js";
+import { getGpuJobEstimate, type GpuJobEstimate } from "../../metering/gpu-metering.js";
 
 const photos = new Hono();
 const THUMBNAIL_CACHE_DIR = path.join(os.tmpdir(), "nuvopic-thumbnails");
@@ -89,6 +93,19 @@ function parseReprocessPhotoFilters(
 
 function isOutdated(version: string | null, latestVersion: string): boolean {
   return version === null || compareSemver(version, latestVersion) < 0;
+}
+
+async function safeGpuEstimate(
+  photoCount: number,
+  gpuMode: GpuMode
+): Promise<GpuJobEstimate | null> {
+  const provider = selectBatchGpuProvider(photoCount, gpuMode);
+  try {
+    return await getGpuJobEstimate({ photoCount, provider, gpuMode });
+  } catch (error) {
+    logger.warn("Could not load GPU wallet estimate:", error);
+    return null;
+  }
 }
 
 function filterOutdatedPhotos(
@@ -296,13 +313,29 @@ photos.get("/timeline", async (c) => {
   return c.json({ groups, total });
 });
 
+photos.get("/gpu-estimate", async (c) => {
+  const photoCount = Number.parseInt(c.req.query("photoCount") ?? "0", 10);
+  const requestedMode = c.req.query("gpuMode") ?? "all";
+  const gpuMode: GpuMode = requestedMode === "caption-only" ||
+    requestedMode === "faces-only" || requestedMode === "skip"
+    ? requestedMode
+    : "all";
+  if (!Number.isSafeInteger(photoCount) || photoCount < 0 || photoCount > 10_000_000) {
+    return c.json({ error: "photoCount must be an integer between 0 and 10000000" }, 400);
+  }
+  const provider = selectBatchGpuProvider(photoCount, gpuMode);
+  const estimate = await safeGpuEstimate(photoCount, gpuMode);
+  return c.json({ provider, gpuMode, photoCount, estimate }, 200, {
+    "Cache-Control": "no-store",
+  });
+});
+
 // Reprocess stats: aggregated version distribution for the reprocess dashboard
 photos.get("/reprocess/stats", async (c) => {
   const pathPrefix = c.req.query("pathPrefix") || undefined;
 
   const stats = await getVersionStats(pathPrefix);
   const gpuEnabled = isGpuEnabled();
-  const provider = getBatchGpuProvider();
   const secsPerPhoto = gpuEnabled ? 3 : 11;
   const costPerHour = parseFloat(process.env.GPU_COST_PER_HOUR ?? "0");
 
@@ -320,32 +353,47 @@ photos.get("/reprocess/stats", async (c) => {
     return outdated;
   }
 
+  const processOutdated = computeOutdated(stats.process, PROCESS_VERSION);
+  const captionOutdated = computeOutdated(stats.caption, CAPTION_VERSION);
+  const facesOutdated = computeOutdated(stats.faces, FACES_VERSION);
+  const [allWallet, captionWallet, facesWallet] = await Promise.all([
+    safeGpuEstimate(processOutdated, "all"),
+    safeGpuEstimate(captionOutdated, "caption-only"),
+    safeGpuEstimate(facesOutdated, "faces-only"),
+  ]);
+  const selectedProvider = selectBatchGpuProvider(processOutdated, "all");
+
   return c.json({
     totalPhotos: stats.totalPhotos,
     pathPrefix: pathPrefix ?? null,
     process: {
       versions: stats.process,
       latestVersion: PROCESS_VERSION,
-      outdated: computeOutdated(stats.process, PROCESS_VERSION),
+      outdated: processOutdated,
       changelog: PROCESS_CHANGELOG,
     },
     caption: {
       versions: stats.caption,
       latestVersion: CAPTION_VERSION,
-      outdated: computeOutdated(stats.caption, CAPTION_VERSION),
+      outdated: captionOutdated,
       changelog: CAPTION_CHANGELOG,
     },
     faces: {
       versions: stats.faces,
       latestVersion: FACES_VERSION,
-      outdated: computeOutdated(stats.faces, FACES_VERSION),
+      outdated: facesOutdated,
       changelog: FACES_CHANGELOG,
     },
     estimates: {
       gpuEnabled,
-      provider,
+      provider: selectedProvider,
       secsPerPhoto,
       costPerHour,
+      wallet: {
+        all: allWallet,
+        caption: captionWallet,
+        faces: facesWallet,
+      },
     },
   });
 });
@@ -457,15 +505,6 @@ photos.post("/reprocess", async (c) => {
   logger.info(`Reprocessing ${photosToProcess.length} photos (force=${force}, gpuMode=${gpuMode})`);
   const startTime = Date.now();
 
-  // Create a job-level GPU log entry
-  const provider = gpuMode === "skip" ? "local" : getBatchGpuProvider();
-  const jobLogId = await safeCreateGpuLog({
-    type: "reprocess",
-    provider,
-    gpuMode,
-    photoCount: photosToProcess.length,
-  });
-
   // Build batch inputs, skipping any with invalid s3_path
   const batchInputs: Array<{ id: string; s3Path: string; s3Bucket: string; s3Key: string }> = [];
   const skipped: Array<{ id: string; s3Path: string; error: string }> = [];
@@ -479,6 +518,14 @@ photos.post("/reprocess", async (c) => {
     batchInputs.push({ id: photo.id, s3Path: photo.s3_path, s3Bucket: match[1], s3Key: match[2] });
   }
 
+  const provider = selectBatchGpuProvider(batchInputs.length, gpuMode);
+  const jobLogId = await safeCreateGpuLog({
+    type: "reprocess",
+    provider,
+    gpuMode,
+    photoCount: batchInputs.length,
+  });
+
   const batchResults = await processPhotoBatch(
     batchInputs.map((p) => ({ s3Bucket: p.s3Bucket, s3Key: p.s3Key, gpuMode })),
     (completed, total) => {
@@ -486,7 +533,8 @@ photos.post("/reprocess", async (c) => {
         logger.info(`Reprocess progress: ${completed}/${total}`);
       }
     },
-    jobLogId
+    jobLogId,
+    { provider, externalJobId: jobLogId ?? undefined }
   );
 
   // Merge results
@@ -562,6 +610,8 @@ photos.get("/import", async (c) => {
   // Rough time estimate: Modal ~3s/photo (GPU bound, sequential), local ~11s/photo
   const secsPerPhoto = isGpuEnabled() ? 3 : 11;
   const estimatedSeconds = Math.ceil(limited.length * secsPerPhoto);
+  const gpuMode: GpuMode = "all";
+  const walletEstimate = await safeGpuEstimate(limited.length, gpuMode);
 
   return c.json({
     bucket,
@@ -573,6 +623,7 @@ photos.get("/import", async (c) => {
     toImport: limited.length,
     remainingAfterLimit: newKeys.length - limited.length,
     estimatedTime: `${Math.ceil(estimatedSeconds / 60)} minutes`,
+    walletEstimate,
     keys: limited,
   });
 });
@@ -621,7 +672,7 @@ photos.post("/import", async (c) => {
   const startTime = Date.now();
 
   // Create a job-level GPU log entry for this import
-  const importProvider = skipModal ? "local" : getBatchGpuProvider();
+  const importProvider = selectBatchGpuProvider(toProcess.length, gpuMode);
   const jobLogId = await safeCreateGpuLog({
     type: "import",
     provider: importProvider,
@@ -639,7 +690,8 @@ photos.post("/import", async (c) => {
         logger.info(`Import progress: ${completed}/${total} (${elapsed}s, ${rate} photos/s)`);
       }
     },
-    jobLogId
+    jobLogId,
+    { provider: importProvider, externalJobId: jobLogId ?? undefined }
   );
 
   const results = toProcess.map((key, i) => ({

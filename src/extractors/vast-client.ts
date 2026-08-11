@@ -23,7 +23,13 @@
  */
 
 import { logger } from "../logger.js";
-import type { GpuClient, GpuAnalysisResult, GpuCaptionResult, GpuFacesResult } from "./gpu-client.js";
+import type {
+  GpuClient,
+  GpuAnalysisResult,
+  GpuCaptionResult,
+  GpuFacesResult,
+  GpuResourceUsage,
+} from "./gpu-client.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -190,12 +196,13 @@ interface CreateInstanceOptions {
   inferenceApiKey: string;
   /** If set, create as interruptible at this bid price. If null, create on-demand. */
   bidPrice: number | null;
+  label: string;
 }
 
 async function createInstance(
   options: CreateInstanceOptions
 ): Promise<number> {
-  const { apiKey, offerId, dockerImage, diskGb, inferenceApiKey, bidPrice } =
+  const { apiKey, offerId, dockerImage, diskGb, inferenceApiKey, bidPrice, label } =
     options;
 
   const body: Record<string, unknown> = {
@@ -207,7 +214,7 @@ async function createInstance(
       "-p 8000:8000": "1",
     },
     onstart: "cd /app && uvicorn server:app --host 0.0.0.0 --port 8000 &",
-    label: "nuvopic-inference",
+    label,
   };
 
   if (bidPrice !== null) {
@@ -417,6 +424,23 @@ export class VastGpuClient implements GpuClient {
   private instanceDead: boolean = false;
   private instanceAbort: AbortController = new AbortController();
   private healthMonitorTimer: ReturnType<typeof setInterval> | null = null;
+  private reprovisionSequence = 0;
+  private activeLease: {
+    providerResourceId: string;
+    gpuModel: string;
+    gpuCount: number;
+    hourlyRateUsd: number;
+    startedAtMs: number;
+    reprovision: number;
+    succeeded: boolean;
+  } | null = null;
+  private completedResourceUsage: GpuResourceUsage[] = [];
+  private resourceLabel = "nuvopic-inference";
+
+  setMeteringContext(context: { workspaceId: string; externalJobId: string }): void {
+    const safe = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 12);
+    this.resourceLabel = `nuvopic-${safe(context.workspaceId)}-${safe(context.externalJobId)}`;
+  }
 
   /** Whether the current instance is interruptible (bid/spot). */
   get isInterruptible(): boolean {
@@ -543,7 +567,17 @@ export class VastGpuClient implements GpuClient {
       diskGb: config.diskGb,
       inferenceApiKey: config.inferenceApiKey,
       bidPrice,
+      label: this.resourceLabel,
     });
+    this.activeLease = {
+      providerResourceId: String(this.instanceId),
+      gpuModel: offer.gpu_name,
+      gpuCount: offer.num_gpus,
+      hourlyRateUsd: bidPrice ?? offer.dph_total,
+      startedAtMs: Date.now(),
+      reprovision: this.reprovisionSequence,
+      succeeded: true,
+    };
 
     logger.info(
       `Vast.ai: instance ${this.instanceId} created` +
@@ -589,12 +623,21 @@ export class VastGpuClient implements GpuClient {
       logger.warn(
         `Vast.ai: cannot destroy instance ${id} — API key not cached (start() may not have been called)`
       );
+      if (this.activeLease) this.activeLease.succeeded = false;
+      this.finishActiveLease();
       return;
     }
 
     logger.info(`Vast.ai: destroying instance ${id}...`);
-    await destroyInstance(apiKey, id);
-    logger.info(`Vast.ai: instance ${id} destroyed.`);
+    try {
+      await destroyInstance(apiKey, id);
+      logger.info(`Vast.ai: instance ${id} destroyed.`);
+    } catch (error) {
+      if (this.activeLease) this.activeLease.succeeded = false;
+      throw error;
+    } finally {
+      this.finishActiveLease();
+    }
   }
 
   /**
@@ -606,6 +649,7 @@ export class VastGpuClient implements GpuClient {
     await this.stop();
 
     logger.info("Vast.ai: reprovisioning — starting new instance...");
+    this.reprovisionSequence += 1;
     await this.start();
 
     logger.info("Vast.ai: reprovisioning complete.");
@@ -631,6 +675,37 @@ export class VastGpuClient implements GpuClient {
    */
   async faces(imageBuffer: Buffer): Promise<GpuFacesResult> {
     return this._post<GpuFacesResult>("/faces", imageBuffer);
+  }
+
+  drainResourceUsage(): GpuResourceUsage[] {
+    const usage = this.completedResourceUsage;
+    this.completedResourceUsage = [];
+    return usage;
+  }
+
+  private finishActiveLease(): void {
+    const lease = this.activeLease;
+    if (!lease) return;
+    this.activeLease = null;
+    const completedAtMs = Date.now();
+    const billableGpuMs = Math.max(0, completedAtMs - lease.startedAtMs);
+    const providerCostUsdMicros = Math.ceil(
+      lease.hourlyRateUsd * (billableGpuMs / 3_600_000) * 1_000_000
+    );
+    this.completedResourceUsage.push({
+      providerResourceId: lease.providerResourceId,
+      gpuModel: lease.gpuModel,
+      gpuCount: lease.gpuCount,
+      billableGpuMs,
+      providerCostUsdMicros,
+      reprovision: lease.reprovision,
+      succeeded: lease.succeeded,
+      occurredAt: new Date(completedAtMs).toISOString(),
+      metadata: {
+        hourlyRateUsd: lease.hourlyRateUsd,
+        meter: "vast_lease_elapsed",
+      },
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -836,6 +911,7 @@ export class VastGpuClient implements GpuClient {
 
     logger.error(`Vast.ai: instance marked as dead — ${reason}`);
     this.instanceDead = true;
+    if (this.activeLease) this.activeLease.succeeded = false;
     this.instanceAbort.abort();
     this.stopHealthMonitor();
   }

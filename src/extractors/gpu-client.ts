@@ -38,6 +38,18 @@ export interface GpuFacesResult {
   }>;
 }
 
+export interface GpuResourceUsage {
+  providerResourceId: string;
+  gpuModel: string | null;
+  gpuCount: number;
+  billableGpuMs: number;
+  providerCostUsdMicros: number;
+  reprovision: number;
+  succeeded: boolean;
+  occurredAt: string;
+  metadata?: Record<string, unknown>;
+}
+
 // ---------------------------------------------------------------------------
 // GPU client interface
 // ---------------------------------------------------------------------------
@@ -84,6 +96,12 @@ export interface GpuClient {
    * No-op for always-on providers like Modal.
    */
   reprovision(): Promise<void>;
+
+  /** Completed provider-resource leases not yet written to the metering outbox. */
+  drainResourceUsage?(): GpuResourceUsage[];
+
+  /** Attach non-sensitive workspace/job identifiers to provider resources. */
+  setMeteringContext?(context: { workspaceId: string; externalJobId: string }): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +109,24 @@ export interface GpuClient {
 // ---------------------------------------------------------------------------
 
 export type GpuProvider = "modal" | "vastai" | "local";
+export const GPU_ROUTING_POLICY_VERSION = "volume-v1";
+
+export function getGpuProviderBatchThreshold(): number {
+  const parsed = Number.parseInt(process.env.GPU_PROVIDER_BATCH_THRESHOLD ?? "500", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 500;
+}
+
+function hasModalConfiguration(): boolean {
+  return !!process.env.MODAL_ENDPOINT_URL;
+}
+
+function hasVastConfiguration(): boolean {
+  return !!(
+    process.env.VAST_API_KEY &&
+    process.env.VAST_DOCKER_IMAGE &&
+    process.env.VAST_INFERENCE_API_KEY
+  );
+}
 
 /** Which GPU provider is configured for real-time (single-photo) processing. */
 export function getRealtimeGpuProvider(): GpuProvider {
@@ -98,12 +134,13 @@ export function getRealtimeGpuProvider(): GpuProvider {
   if (mode === "local") return "local";
   if (mode === "modal") return "modal";
   if (mode === "vastai") {
+    const fallback = hasModalConfiguration() ? "modal" : "local";
     logger.warn(
       "PROCESSING_MODE=vastai is not supported for realtime processing " +
-        "(each photo would provision a new instance). Falling back to local. " +
+        `(each photo would provision a new instance). Falling back to ${fallback}. ` +
         "Use BATCH_GPU_PROVIDER=vastai instead for batch operations."
     );
-    return "local";
+    return fallback;
   }
   // Auto-detect: use Modal if endpoint is configured, otherwise local
   if (process.env.MODAL_ENDPOINT_URL) return "modal";
@@ -120,9 +157,33 @@ export function getBatchGpuProvider(): GpuProvider {
   return getRealtimeGpuProvider();
 }
 
+/** Select one provider for the complete batch using the versioned volume policy. */
+export function selectBatchGpuProvider(
+  photoCount: number,
+  gpuMode: string = "all"
+): GpuProvider {
+  if (gpuMode === "skip") return "local";
+  const configured = getBatchGpuProvider();
+  if (configured === "local") return "local";
+  if ((process.env.GPU_PROVIDER_ROUTING_ENABLED ?? "true").toLowerCase() === "false") {
+    return configured;
+  }
+
+  const threshold = getGpuProviderBatchThreshold();
+  if (photoCount <= threshold) {
+    if (hasModalConfiguration()) return "modal";
+    logger.warn("Volume routing selected Modal, but Modal is not configured; using configured batch provider");
+    return configured;
+  }
+
+  if (hasVastConfiguration()) return "vastai";
+  logger.warn("Volume routing selected Vast.ai, but Vast.ai is not configured; using configured batch provider");
+  return configured;
+}
+
 /** Whether *any* GPU provider is enabled (vs. local-only CPU mode). */
 export function isGpuEnabled(): boolean {
-  return getRealtimeGpuProvider() !== "local";
+  return getRealtimeGpuProvider() !== "local" || getBatchGpuProvider() !== "local";
 }
 
 // ---------------------------------------------------------------------------
@@ -161,8 +222,7 @@ export async function createRealtimeGpuClient(): Promise<GpuClient> {
   return createGpuClient(provider);
 }
 
-export async function createBatchGpuClient(): Promise<GpuClient> {
-  const provider = getBatchGpuProvider();
+export async function createBatchGpuClient(provider = getBatchGpuProvider()): Promise<GpuClient> {
   logger.info(`Creating batch GPU client: ${provider}`);
   return createGpuClient(provider);
 }

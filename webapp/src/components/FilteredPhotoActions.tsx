@@ -1,5 +1,6 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import { api } from '../api/client';
+import type { GpuWalletEstimate } from '../api/client';
 import { filters, filterVersion } from '../state/filters';
 
 interface FilteredPhotoActionsProps {
@@ -16,6 +17,44 @@ export function FilteredPhotoActions({ photoCount, onPhotosChanged }: FilteredPh
     type: 'success' | 'error';
     message: string;
   } | null>(null);
+  const [estimates, setEstimates] = useState<Record<ReprocessMode, GpuWalletEstimate | null>>({
+    caption: null,
+    faces: null,
+    all: null,
+  });
+
+  useEffect(() => {
+    if (!photoCount) {
+      setEstimates({ caption: null, faces: null, all: null });
+      return;
+    }
+    let cancelled = false;
+    void Promise.all([
+      api.gpu.estimate(photoCount, 'caption-only'),
+      api.gpu.estimate(photoCount, 'faces-only'),
+      api.gpu.estimate(photoCount, 'all'),
+    ]).then(([caption, faces, all]) => {
+      if (!cancelled) {
+        setEstimates({
+          caption: caption.estimate,
+          faces: faces.estimate,
+          all: all.estimate,
+        });
+      }
+    }).catch(() => {
+      if (!cancelled) setEstimates({ caption: null, faces: null, all: null });
+    });
+    return () => { cancelled = true; };
+  }, [photoCount]);
+
+  const formatEstimate = (estimate: GpuWalletEstimate | null): string => {
+    if (!estimate) return '';
+    const amount = new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: estimate.currency,
+    }).format(Number(estimate.estimatedMicros) / 1_000_000);
+    return ` · up to ${amount}`;
+  };
 
   const handleTrigger = async (action: PhotoAction) => {
     const refreshFromStorage = action === 'refresh';
@@ -90,23 +129,28 @@ export function FilteredPhotoActions({ photoCount, onPhotosChanged }: FilteredPh
           disabled={disabled}
           onClick={() => handleTrigger('caption')}
         >
-          {triggering === 'caption' ? 'Reprocessing...' : 'Reprocess captions'}
+          {triggering === 'caption' ? 'Reprocessing...' : `Reprocess captions${formatEstimate(estimates.caption)}`}
         </button>
         <button
           class="btn btn-secondary"
           disabled={disabled}
           onClick={() => handleTrigger('faces')}
         >
-          {triggering === 'faces' ? 'Reprocessing...' : 'Reprocess faces'}
+          {triggering === 'faces' ? 'Reprocessing...' : `Reprocess faces${formatEstimate(estimates.faces)}`}
         </button>
         <button
           class="btn btn-primary"
           disabled={disabled}
           onClick={() => handleTrigger('all')}
         >
-          {triggering === 'all' ? 'Reprocessing...' : 'Reprocess all'}
+          {triggering === 'all' ? 'Reprocessing...' : `Reprocess all${formatEstimate(estimates.all)}`}
         </button>
       </div>
+      {Object.values(estimates).some((estimate) => estimate?.sufficient === false) && (
+        <p class="photo-actions-scope">
+          One or more maximum estimates exceed your current allowance. The exact filtered set is checked before processing. <a href="/profile">Open your wallet</a>.
+        </p>
+      )}
       {status && (
         <div class={`photo-actions-status photo-actions-status--${status.type}`}>
           {status.message}
