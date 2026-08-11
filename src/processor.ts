@@ -4,7 +4,9 @@ import {
   generatePlaceholder,
   generateCaption,
   detectFaces,
-  parseDateFromFilename,
+  resolvePhotoDate,
+  type PhotoDatePrecision,
+  type PhotoDateSource,
 } from "./extractors/index.js";
 import {
   type GpuClient,
@@ -62,6 +64,8 @@ export interface ProcessPhotoOutput {
   photoId: string;
   s3Path: string;
   takenAt: Date | null;
+  takenAtPrecision: PhotoDatePrecision;
+  takenAtSource: PhotoDateSource;
   location: { lat: number; lng: number } | null;
   description: string | null;
   facesDetected: number;
@@ -94,7 +98,8 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
   const { s3Path, s3Key, width, height, exif, placeholder, caption, faces, errors } = data;
   const tSave0 = Date.now();
 
-  const takenAt = exif.takenAt ?? parseDateFromFilename(s3Key);
+  const resolvedDate = resolvePhotoDate(exif.takenAt, s3Key);
+  const { takenAt } = resolvedDate;
 
   const tLookupStart = Date.now();
   const existingPhoto = await getPhotoByS3Path(s3Path);
@@ -104,6 +109,8 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
   const photoId = await insertPhoto({
     s3Path,
     takenAt,
+    takenAtPrecision: resolvedDate.precision,
+    takenAtSource: resolvedDate.source,
     locationLat: exif.location?.lat,
     locationLng: exif.location?.lng,
     description: data.skipCaption ? undefined : caption,
@@ -145,6 +152,8 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
     photoId,
     s3Path,
     takenAt,
+    takenAtPrecision: resolvedDate.precision,
+    takenAtSource: resolvedDate.source,
     location: exif.location,
     description: caption,
     facesDetected: faces.length,
@@ -155,6 +164,8 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
     photoId,
     mode: batchProvider !== "local" ? batchProvider : realtimeProvider,
     takenAt: takenAt?.toISOString(),
+    takenAtPrecision: resolvedDate.precision,
+    takenAtSource: resolvedDate.source,
     hasLocation: !!exif.location,
     description: caption?.substring(0, 50),
     facesDetected: faces.length,
@@ -630,6 +641,8 @@ export async function processPhotoBatch(
             photoId: "",
             s3Path: getS3Path(input.s3Bucket, input.s3Key),
             takenAt: null,
+            takenAtPrecision: "unknown",
+            takenAtSource: "unknown",
             location: null,
             description: null,
             facesDetected: 0,
@@ -651,6 +664,8 @@ export async function processPhotoBatch(
             photoId: "",
             s3Path: getS3Path(input.s3Bucket, input.s3Key),
             takenAt: null,
+            takenAtPrecision: "unknown",
+            takenAtSource: "unknown",
             location: null,
             description: null,
             facesDetected: 0,
@@ -855,6 +870,8 @@ async function processChunk(
         photoId: "",
         s3Path,
         takenAt: null,
+        takenAtPrecision: "unknown",
+        takenAtSource: "unknown",
         location: null,
         description: null,
         facesDetected: 0,

@@ -1,6 +1,7 @@
 import { query } from "./client.js";
 import { getFaceQualitySettings, faceQualityFilter } from "./settings.js";
 import { getSmartTagById, buildSmartTagCondition } from "./queries.js";
+import type { PhotoDatePrecision, PhotoDateSource } from "../extractors/exif.js";
 
 export interface PhotoFilters {
   search?: string;
@@ -17,6 +18,8 @@ export interface PhotoWithStats {
   id: string;
   s3_path: string;
   taken_at: Date | null;
+  taken_at_precision: PhotoDatePrecision | null;
+  taken_at_source: PhotoDateSource | null;
   description: string | null;
   location_lat: number | null;
   location_lng: number | null;
@@ -131,6 +134,8 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
       p.id,
       p.s3_path,
       p.taken_at,
+      p.taken_at_precision,
+      p.taken_at_source,
       p.description,
       p.location_lat,
       p.location_lng,
@@ -239,6 +244,8 @@ export async function getPhotoWithDetails(id: string): Promise<PhotoWithStats | 
       p.id,
       p.s3_path,
       p.taken_at,
+      p.taken_at_precision,
+      p.taken_at_source,
       p.description,
       p.location_lat,
       p.location_lng,

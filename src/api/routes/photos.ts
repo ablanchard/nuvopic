@@ -23,6 +23,7 @@ import { logger } from "../../logger.js";
 import { clusterUnassignedFaces } from "../../db/clusters.js";
 import { getS3Bucket } from "../../db/settings.js";
 import { safeCreateGpuLog, safeCompleteGpuLog, safeFailGpuLog } from "../../db/gpu-logs.js";
+import type { PhotoDatePrecision, PhotoDateSource } from "../../extractors/exif.js";
 
 const photos = new Hono();
 const THUMBNAIL_CACHE_DIR = path.join(os.tmpdir(), "nuvopic-thumbnails");
@@ -48,6 +49,19 @@ function parseDateFilter(value: string | undefined): Date | undefined {
   if (!value) return undefined;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function dateMetadata(photo: {
+  taken_at: Date | null;
+  taken_at_precision: PhotoDatePrecision | null;
+  taken_at_source: PhotoDateSource | null;
+}) {
+  const dateUnknown = photo.taken_at === null;
+  return {
+    dateUnknown,
+    datePrecision: dateUnknown ? "unknown" : (photo.taken_at_precision ?? "exact"),
+    dateSource: dateUnknown ? "unknown" : (photo.taken_at_source ?? "legacy"),
+  };
 }
 
 function parseReprocessPhotoFilters(
@@ -234,6 +248,7 @@ photos.get("/", async (c) => {
       thumbnailUrl: `/api/v1/photos/${p.id}/thumbnail?size=512`,
       placeholder: p.placeholder,
       takenAt: p.taken_at,
+      ...dateMetadata(p),
       description: p.description,
       width: p.width,
       height: p.height,
@@ -438,7 +453,7 @@ photos.post("/reprocess", async (c) => {
   const startTime = Date.now();
 
   // Create a job-level GPU log entry
-  const provider = getBatchGpuProvider();
+  const provider = gpuMode === "skip" ? "local" : getBatchGpuProvider();
   const jobLogId = await safeCreateGpuLog({
     type: "reprocess",
     provider,
@@ -675,6 +690,7 @@ photos.get("/:id", async (c) => {
     thumbnailUrl: `/api/v1/photos/${photo.id}/thumbnail?size=512`,
     placeholder: photo.placeholder,
     takenAt: photo.taken_at,
+    ...dateMetadata(photo),
     description: photo.description,
     width: photo.width,
     height: photo.height,

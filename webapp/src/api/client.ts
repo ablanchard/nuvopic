@@ -27,6 +27,9 @@ export interface Photo {
   thumbnailUrl: string;
   placeholder: string | null;
   takenAt: string | null;
+  dateUnknown: boolean;
+  datePrecision: 'exact' | 'day' | 'month' | 'year' | 'unknown';
+  dateSource: 'exif' | 'filename' | 'path' | 'manual' | 'legacy' | 'unknown';
   description: string | null;
   width: number | null;
   height: number | null;
@@ -794,6 +797,7 @@ export const api = {
     trigger: (options: {
       mode?: string;
       force?: boolean;
+      skipModal?: boolean;
       pathPrefix?: string;
       filters?: Omit<PhotoFilters, 'page' | 'limit'>;
     }): Promise<ReprocessTriggerResponse> => {

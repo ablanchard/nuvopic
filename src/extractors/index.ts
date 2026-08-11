@@ -1,4 +1,12 @@
-export { extractExif, parseDateFromFilename, type ExifData } from "./exif.js";
+export {
+  extractExif,
+  parseDateFromFilename,
+  resolvePhotoDate,
+  type ExifData,
+  type PhotoDatePrecision,
+  type PhotoDateSource,
+  type ResolvedPhotoDate,
+} from "./exif.js";
 export { generatePlaceholder } from "./thumbnail.js";
 export { generateCaption, loadCaptionModel } from "./caption.js";
 export {

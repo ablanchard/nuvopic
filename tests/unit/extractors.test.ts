@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import sharp from "sharp";
-import { extractExif, parseDateFromFilename } from "../../src/extractors/exif.js";
+import {
+  extractExif,
+  parseDateFromFilename,
+  resolvePhotoDate,
+} from "../../src/extractors/exif.js";
 import { compareSemver } from "../../src/version.js";
 
 describe("EXIF Extractor", () => {
@@ -39,6 +43,28 @@ describe("EXIF Extractor", () => {
     // PNG doesn't have EXIF
     expect(result.takenAt).toBeNull();
     expect(result.location).toBeNull();
+  });
+
+  it("should read nested EXIF original timestamps", async () => {
+    const image = await sharp({
+      create: {
+        width: 10,
+        height: 10,
+        channels: 3,
+        background: { r: 255, g: 255, b: 255 },
+      },
+    })
+      .withMetadata({
+        exif: {
+          IFD0: { DateTime: "2025:12:28 13:11:36" },
+          IFD2: { DateTimeOriginal: "2025:12:28 13:11:36" },
+        },
+      })
+      .jpeg()
+      .toBuffer();
+
+    const result = await extractExif(image);
+    expect(result.takenAt).toEqual(new Date("2025-12-28T13:11:36.000Z"));
   });
 });
 
@@ -92,6 +118,43 @@ describe("parseDateFromFilename", () => {
   it("should reject invalid month/day values", () => {
     expect(parseDateFromFilename("20231300_120000.jpg")).toBeNull();
     expect(parseDateFromFilename("20231032_120000.jpg")).toBeNull();
+    expect(parseDateFromFilename("20230231_120000.jpg")).toBeNull();
+    expect(parseDateFromFilename("20231015_246000.jpg")).toBeNull();
+  });
+
+  it("should not interpret opaque social-media IDs as dates", () => {
+    expect(parseDateFromFilename("Snapchat-7003030358710177817.jpg")).toBeNull();
+    expect(parseDateFromFilename("Snapchat--7485324816502303059.jpg")).toBeNull();
+    expect(parseDateFromFilename("received_10209667077050984.jpeg")).toBeNull();
+  });
+});
+
+describe("resolvePhotoDate", () => {
+  it("should prefer a plausible EXIF date", () => {
+    const exifDate = new Date("2025-12-28T13:11:36.000Z");
+    expect(resolvePhotoDate(exifDate, "Photos/Camera/2016/08/photo.jpg")).toEqual({
+      takenAt: exifDate,
+      precision: "exact",
+      source: "exif",
+    });
+  });
+
+  it("should infer month precision from a structured storage path", () => {
+    expect(
+      resolvePhotoDate(null, "Photos/Camera/2016/08/Snapchat-7003030358710177817.jpg")
+    ).toEqual({
+      takenAt: new Date("2016-08-01T00:00:00.000Z"),
+      precision: "month",
+      source: "path",
+    });
+  });
+
+  it("should explicitly return unknown when no reliable date exists", () => {
+    expect(resolvePhotoDate(null, "uploads/photo.jpg")).toEqual({
+      takenAt: null,
+      precision: "unknown",
+      source: "unknown",
+    });
   });
 });
 

@@ -12,7 +12,7 @@
  */
 
 /** Overall process version (for local extraction: EXIF, placeholder, dimensions). */
-export const PROCESS_VERSION = "4.0.0";
+export const PROCESS_VERSION = "4.1.0";
 
 /** Caption model version — bump when changing the captioning model or prompt. */
 export const CAPTION_VERSION = "1.0.0";
@@ -25,6 +25,8 @@ export const FACES_VERSION = "1.0.0";
  * Used by the reprocess endpoint to inform the user what re-running will do.
  */
 export const PROCESS_CHANGELOG: Record<string, string> = {
+  "4.1.0":
+    "Validate capture dates, read nested EXIF timestamps, track date precision/source, infer partial dates from structured storage paths, and mark unavailable dates as unknown.",
   "4.0.0":
     "Remove 300x300 BYTEA thumbnail generation and storage; only the tiny 16x16 placeholder is kept. FaceCrop uses full S3 presigned URLs. Saves significant DB space.",
   "3.1.0":

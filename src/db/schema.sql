@@ -109,6 +109,41 @@ BEGIN
     END IF;
 END $$;
 
+-- Migration: record how reliable an inferred capture date is. Existing rows
+-- remain NULL/legacy until they are individually reprocessed; this avoids a
+-- bulk rewrite and lets the API treat NULL taken_at as explicitly unknown.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'photos' AND column_name = 'taken_at_precision'
+    ) THEN
+        ALTER TABLE photos ADD COLUMN taken_at_precision TEXT;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'photos' AND column_name = 'taken_at_source'
+    ) THEN
+        ALTER TABLE photos ADD COLUMN taken_at_source TEXT;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'photos_taken_at_precision_check'
+    ) THEN
+        ALTER TABLE photos ADD CONSTRAINT photos_taken_at_precision_check
+            CHECK (taken_at_precision IS NULL OR taken_at_precision IN ('exact', 'day', 'month', 'year', 'unknown'));
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'photos_taken_at_source_check'
+    ) THEN
+        ALTER TABLE photos ADD CONSTRAINT photos_taken_at_source_check
+            CHECK (taken_at_source IS NULL OR taken_at_source IN ('exif', 'filename', 'path', 'manual', 'legacy', 'unknown'));
+    END IF;
+END $$;
+
 -- Migration: add caption_version and faces_version for independent reprocessing
 -- (v3.0.0: split GPU processing so caption and face detection can be updated separately)
 DO $$

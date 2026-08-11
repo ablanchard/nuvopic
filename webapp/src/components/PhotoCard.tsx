@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'preact/hooks';
 import { api, type Photo } from '../api/client';
+import { formatPhotoDate } from '../lib/photoDate';
 
 interface PhotoCardProps {
   photo: Photo;
@@ -69,11 +70,7 @@ export function PhotoCard({ photo, onClick }: PhotoCardProps) {
         {photo.faceCount > 0 && (
           <span class="face-badge">{photo.faceCount} face{photo.faceCount > 1 ? 's' : ''}</span>
         )}
-        {photo.takenAt && (
-          <span class="date-badge">
-            {new Date(photo.takenAt).toLocaleDateString()}
-          </span>
-        )}
+        <span class="date-badge">{formatPhotoDate(photo)}</span>
       </div>
     </div>
   );

@@ -15,6 +15,7 @@ import {
 } from '../state/filters';
 import { api } from '../api/client';
 import { getImageUrl } from '../lib/imageUrlCache';
+import { formatPhotoDate } from '../lib/photoDate';
 import type { Photo } from '../api/client';
 import type { RoutableProps } from 'preact-router';
 
@@ -173,11 +174,9 @@ export function HomePage(_props: RoutableProps) {
               {selectedPhoto.description && (
                 <p class="description">{selectedPhoto.description}</p>
               )}
-              {selectedPhoto.takenAt && (
-                <p class="date">
-                  Taken: {new Date(selectedPhoto.takenAt).toLocaleString()}
-                </p>
-              )}
+              <p class="date">
+                Taken: {formatPhotoDate(selectedPhoto, true)}
+              </p>
               {selectedPhoto.location && (
                 <p class="location">
                   Location: {selectedPhoto.location.name ||

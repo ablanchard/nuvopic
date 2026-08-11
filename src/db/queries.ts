@@ -1,9 +1,12 @@
 import { query } from "./client.js";
+import type { PhotoDatePrecision, PhotoDateSource } from "../extractors/exif.js";
 
 export interface PhotoRecord {
   id: string;
   s3_path: string;
   taken_at: Date | null;
+  taken_at_precision: PhotoDatePrecision | null;
+  taken_at_source: PhotoDateSource | null;
   location_lat: number | null;
   location_lng: number | null;
   location_name: string | null;
@@ -35,6 +38,8 @@ export interface FaceRecord {
 export interface InsertPhotoParams {
   s3Path: string;
   takenAt?: Date | null;
+  takenAtPrecision?: PhotoDatePrecision;
+  takenAtSource?: PhotoDateSource;
   locationLat?: number | null;
   locationLng?: number | null;
   locationName?: string | null;
@@ -61,10 +66,12 @@ export interface InsertFaceParams {
 
 export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
   const result = await query<{ id: string }>(
-    `INSERT INTO photos (s3_path, taken_at, location_lat, location_lng, location_name, description, placeholder, width, height, process_version, caption_version, faces_version)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    `INSERT INTO photos (s3_path, taken_at, taken_at_precision, taken_at_source, location_lat, location_lng, location_name, description, placeholder, width, height, process_version, caption_version, faces_version)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      ON CONFLICT (s3_path) DO UPDATE SET
-       taken_at = COALESCE(EXCLUDED.taken_at, photos.taken_at),
+       taken_at = CASE WHEN photos.taken_at_source = 'manual' THEN photos.taken_at ELSE EXCLUDED.taken_at END,
+       taken_at_precision = CASE WHEN photos.taken_at_source = 'manual' THEN photos.taken_at_precision ELSE EXCLUDED.taken_at_precision END,
+       taken_at_source = CASE WHEN photos.taken_at_source = 'manual' THEN photos.taken_at_source ELSE EXCLUDED.taken_at_source END,
        location_lat = COALESCE(EXCLUDED.location_lat, photos.location_lat),
        location_lng = COALESCE(EXCLUDED.location_lng, photos.location_lng),
        location_name = COALESCE(EXCLUDED.location_name, photos.location_name),
@@ -80,6 +87,8 @@ export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
     [
       params.s3Path,
       params.takenAt ?? null,
+      params.takenAtPrecision ?? (params.takenAt ? "exact" : "unknown"),
+      params.takenAtSource ?? (params.takenAt ? "legacy" : "unknown"),
       params.locationLat ?? null,
       params.locationLng ?? null,
       params.locationName ?? null,
