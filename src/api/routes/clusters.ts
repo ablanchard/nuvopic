@@ -3,10 +3,15 @@ import {
   getAllClusters,
   getClusterFaces,
   getUnclusteredFaces,
+  getFilteredOutFaces,
+  getWontAssignFaces,
   clusterUnassignedFaces,
   reclusterFaces,
   createClusterFromFace,
   assignFaceToCluster,
+  mergeClusters,
+  markFaceWontAssign,
+  restoreFaceAssignment,
   removeFaceFromCluster,
   nameCluster,
   renameCluster,
@@ -49,6 +54,71 @@ clusters.get("/unassigned", async (c) => {
       area: f.area,
     })),
   });
+});
+
+// List faces excluded by the current confidence or area quality gate
+clusters.get("/filtered-out", async (c) => {
+  const requestedLimit = Number.parseInt(c.req.query("limit") ?? "200", 10);
+  const { faces, total } = await getFilteredOutFaces(requestedLimit);
+  return c.json({
+    faces: faces.map((f) => ({
+      id: f.id,
+      photoId: f.photo_id,
+      boundingBox: f.bounding_box,
+      photoWidth: f.photo_width,
+      photoHeight: f.photo_height,
+      confidence: f.confidence,
+      area: f.area,
+    })),
+    total,
+  });
+});
+
+// List faces manually excluded from assignment
+clusters.get("/wont-assign", async (c) => {
+  const requestedLimit = Number.parseInt(c.req.query("limit") ?? "200", 10);
+  const { faces, total } = await getWontAssignFaces(requestedLimit);
+  return c.json({
+    faces: faces.map((f) => ({
+      id: f.id,
+      photoId: f.photo_id,
+      boundingBox: f.bounding_box,
+      photoWidth: f.photo_width,
+      photoHeight: f.photo_height,
+      confidence: f.confidence,
+      area: f.area,
+    })),
+    total,
+  });
+});
+
+// Manually exclude a face from assignment and automatic clustering
+clusters.post("/wont-assign/:faceId", async (c) => {
+  const faceId = c.req.param("faceId");
+  try {
+    await markFaceWontAssign(faceId);
+    return c.json({ success: true });
+  } catch (error) {
+    if (error instanceof Error && error.message === "Face not found") {
+      return c.json({ error: error.message }, 404);
+    }
+    if (
+      error instanceof Error &&
+      error.message === "Assigned faces cannot be marked as won't assign"
+    ) {
+      return c.json({ error: error.message }, 409);
+    }
+    throw error;
+  }
+});
+
+// Return a manually excluded face to normal gate and clustering behavior
+clusters.delete("/wont-assign/:faceId", async (c) => {
+  const restored = await restoreFaceAssignment(c.req.param("faceId"));
+  if (!restored) {
+    return c.json({ error: "Face is not marked as won't assign" }, 404);
+  }
+  return c.json({ success: true });
 });
 
 // Get faces in a cluster
@@ -138,6 +208,37 @@ clusters.post("/:id/faces/:faceId", async (c) => {
 
   await assignFaceToCluster(faceId, clusterId);
   return c.json({ success: true });
+});
+
+// Merge this cluster into another cluster
+clusters.post("/:id/merge", async (c) => {
+  const sourceClusterId = c.req.param("id");
+  const body: { targetClusterId?: string } = await c.req
+    .json<{ targetClusterId?: string }>()
+    .catch(() => ({}));
+  const targetClusterId = body.targetClusterId;
+
+  if (!targetClusterId) {
+    return c.json({ error: "targetClusterId is required" }, 400);
+  }
+  if (sourceClusterId === targetClusterId) {
+    return c.json({ error: "Source and target clusters must be different" }, 400);
+  }
+
+  try {
+    const result = await mergeClusters(sourceClusterId, targetClusterId);
+    return c.json({
+      success: true,
+      targetClusterId,
+      faceCount: result.faceCount,
+      personId: result.personId,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "Source or target cluster not found") {
+      return c.json({ error: error.message }, 404);
+    }
+    throw error;
+  }
 });
 
 // Remove a face from a cluster (with rejection tracking)

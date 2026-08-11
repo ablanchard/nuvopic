@@ -27,6 +27,10 @@ export function FacesPage(_props: RoutableProps) {
   // Data
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [unassigned, setUnassigned] = useState<ClusterFace[]>([]);
+  const [filteredOut, setFilteredOut] = useState<ClusterFace[]>([]);
+  const [filteredOutTotal, setFilteredOutTotal] = useState(0);
+  const [wontAssign, setWontAssign] = useState<ClusterFace[]>([]);
+  const [wontAssignTotal, setWontAssignTotal] = useState(0);
   const [reloadToken, setReloadToken] = useState(0);
 
   // Face quality filters
@@ -42,6 +46,7 @@ export function FacesPage(_props: RoutableProps) {
   const [loading, setLoading] = useState(true);
   const [clustering, setClustering] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [changingWontAssignFaceId, setChangingWontAssignFaceId] = useState<string | null>(null);
 
   // Assign popover state
   const [assignPopover, setAssignPopover] = useState<{ faceId: string; x: number; y: number } | null>(null);
@@ -49,25 +54,31 @@ export function FacesPage(_props: RoutableProps) {
   // Sorted clusters — stable order that doesn't change when face counts change
   const sortedClusters = useMemo(() => sortClusters(clusters), [clusters]);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (options: { initial?: boolean } = {}) => {
+    if (options.initial) setLoading(true);
     try {
-      const [clustersRes, unassignedRes] = await Promise.all([
+      const [clustersRes, unassignedRes, filteredOutRes, wontAssignRes] = await Promise.all([
         api.clusters.list(),
         api.clusters.getUnassigned(),
+        api.clusters.getFilteredOut(),
+        api.clusters.getWontAssign(),
       ]);
       setClusters(clustersRes.clusters);
       setUnassigned(unassignedRes.faces);
+      setFilteredOut(filteredOutRes.faces);
+      setFilteredOutTotal(filteredOutRes.total);
+      setWontAssign(wontAssignRes.faces);
+      setWontAssignTotal(wontAssignRes.total);
       setReloadToken((value) => value + 1);
     } catch (err) {
       console.error('Failed to load clusters:', err);
     } finally {
-      setLoading(false);
+      if (options.initial) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    refresh();
+    void refresh({ initial: true });
   }, [refresh]);
 
   useEffect(() => {
@@ -177,11 +188,51 @@ export function FacesPage(_props: RoutableProps) {
 
   const handleCreateCluster = async (faceId: string) => {
     setAssignPopover(null);
+    setStatus(null);
     try {
       await api.clusters.create(faceId);
       await refresh();
+      setStatus('Created new cluster');
     } catch (err) {
       console.error('Failed to create cluster:', err);
+      setStatus(`Failed to create cluster: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  };
+
+  const handleWontAssign = async (faceId: string) => {
+    setAssignPopover(null);
+    setChangingWontAssignFaceId(faceId);
+    setStatus(null);
+    try {
+      await api.clusters.markWontAssign(faceId);
+      const face = unassigned.find((candidate) => candidate.id === faceId);
+      setUnassigned((current) => current.filter((candidate) => candidate.id !== faceId));
+      if (face) {
+        setWontAssign((current) => [face, ...current.filter((candidate) => candidate.id !== faceId)]);
+        setWontAssignTotal((current) => current + 1);
+      }
+      setStatus("Face moved to Won't assign");
+      void refresh();
+    } catch (err) {
+      setStatus(`Failed to exclude face: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setChangingWontAssignFaceId(null);
+    }
+  };
+
+  const handleRestoreAssignment = async (faceId: string) => {
+    setChangingWontAssignFaceId(faceId);
+    setStatus(null);
+    try {
+      await api.clusters.restoreAssignment(faceId);
+      setWontAssign((current) => current.filter((face) => face.id !== faceId));
+      setWontAssignTotal((current) => Math.max(0, current - 1));
+      setStatus('Face restored to assignment');
+      void refresh();
+    } catch (err) {
+      setStatus(`Failed to restore face: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setChangingWontAssignFaceId(null);
     }
   };
 
@@ -209,13 +260,10 @@ export function FacesPage(_props: RoutableProps) {
             {unassigned.map((face) => (
               <div key={face.id} class="unassigned-face-item">
                 <FaceCrop
+                  faceId={face.id}
                   photoId={face.photoId}
-                  boundingBox={face.boundingBox}
-                  photoWidth={face.photoWidth}
-                  photoHeight={face.photoHeight}
                   size={64}
                 />
-                <FaceMetrics confidence={face.confidence} area={face.area} />
                 <button
                   class="btn btn-small"
                   onClick={(e) => openAssignPopover(face.id, e as unknown as MouseEvent)}
@@ -226,6 +274,79 @@ export function FacesPage(_props: RoutableProps) {
             ))}
           </div>
         )}
+
+        <details class="filtered-faces-section">
+          <summary class="filtered-faces-summary">
+            Filtered out ({filteredOutTotal})
+          </summary>
+          {loading ? (
+            <div class="sidebar-empty">Loading...</div>
+          ) : filteredOut.length === 0 ? (
+            <div class="sidebar-empty">No faces filtered out</div>
+          ) : (
+            <>
+              <div class="unassigned-grid">
+                {filteredOut.map((face) => (
+                  <div key={face.id} class="unassigned-face-item">
+                    <FaceCrop
+                      faceId={face.id}
+                      photoId={face.photoId}
+                      size={64}
+                    />
+                    <FaceMetrics confidence={face.confidence} area={face.area} />
+                  </div>
+                ))}
+              </div>
+              {filteredOutTotal > filteredOut.length && (
+                <div class="filtered-faces-limit">
+                  Showing the first {filteredOut.length} faces
+                </div>
+              )}
+            </>
+          )}
+        </details>
+
+        <details class="filtered-faces-section wont-assign-section">
+          <summary class="filtered-faces-summary">
+            Won't assign ({wontAssignTotal})
+          </summary>
+          {loading ? (
+            <div class="sidebar-empty">Loading...</div>
+          ) : wontAssign.length === 0 ? (
+            <div class="sidebar-empty">No manually excluded faces</div>
+          ) : (
+            <>
+              <div class="unassigned-grid">
+                {wontAssign.map((face) => (
+                  <div key={face.id} class="unassigned-face-item">
+                    <FaceCrop
+                      faceId={face.id}
+                      photoId={face.photoId}
+                      size={64}
+                    />
+                    {(face.confidence === null ||
+                      face.confidence < Number(savedMinConfidence) ||
+                      face.area < Number(savedMinArea)) && (
+                      <FaceMetrics confidence={face.confidence} area={face.area} />
+                    )}
+                    <button
+                      class="btn btn-small"
+                      onClick={() => handleRestoreAssignment(face.id)}
+                      disabled={changingWontAssignFaceId === face.id}
+                    >
+                      {changingWontAssignFaceId === face.id ? 'Restoring…' : 'Restore'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+              {wontAssignTotal > wontAssign.length && (
+                <div class="filtered-faces-limit">
+                  Showing the first {wontAssign.length} faces
+                </div>
+              )}
+            </>
+          )}
+        </details>
       </aside>
 
       {/* Main Content: Controls + Cluster Grid */}
@@ -360,6 +481,9 @@ export function FacesPage(_props: RoutableProps) {
                       cluster={cluster}
                       onRefresh={refresh}
                       reloadToken={reloadToken}
+                      minConfidence={Number(savedMinConfidence)}
+                      minArea={Number(savedMinArea)}
+                      mergeTargets={sortedClusters.filter((target) => target.id !== cluster.id)}
                     />
                   ))}
                 </div>
@@ -389,6 +513,13 @@ export function FacesPage(_props: RoutableProps) {
           >
             + Create new cluster
           </button>
+          <button
+            class="assign-popover-item assign-popover-exclude"
+            onClick={() => handleWontAssign(assignPopover.faceId)}
+            disabled={changingWontAssignFaceId === assignPopover.faceId}
+          >
+            Won't assign
+          </button>
           {sortedClusters.length > 0 && <div class="assign-popover-divider" />}
           {sortedClusters.map((cluster) => (
             <button
@@ -398,10 +529,8 @@ export function FacesPage(_props: RoutableProps) {
             >
               {cluster.representativeFace && (
                 <FaceCrop
+                  faceId={cluster.representativeFace.faceId}
                   photoId={cluster.representativeFace.photoId}
-                  boundingBox={cluster.representativeFace.boundingBox}
-                  photoWidth={null}
-                  photoHeight={null}
                   size={32}
                 />
               )}

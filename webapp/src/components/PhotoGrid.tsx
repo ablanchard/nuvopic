@@ -20,9 +20,10 @@ import { PhotoCache } from '../lib/photoCache';
 
 interface PhotoGridProps {
   onPhotoClick?: (photo: Photo) => void;
+  onTotalChange?: (total: number | null) => void;
 }
 
-export function PhotoGrid({ onPhotoClick }: PhotoGridProps) {
+export function PhotoGrid({ onPhotoClick, onTotalChange }: PhotoGridProps) {
   const [timelineGroups, setTimelineGroups] = useState<TimelineGroup[]>([]);
   const [totalPhotos, setTotalPhotos] = useState(0);
   const [initialLoad, setInitialLoad] = useState(true);
@@ -64,6 +65,7 @@ export function PhotoGrid({ onPhotoClick }: PhotoGridProps) {
     setInitialLoad(true);
     setTimelineGroups([]);
     setTotalPhotos(0);
+    onTotalChange?.(null);
 
     // Update cache filters
     photoCacheRef.current.setFilters({
@@ -83,6 +85,7 @@ export function PhotoGrid({ onPhotoClick }: PhotoGridProps) {
     }).then((data) => {
       setTimelineGroups(data.groups);
       setTotalPhotos(data.total);
+      onTotalChange?.(data.total);
       setError(null);
     }).catch((err) => {
       setError(err instanceof Error ? err.message : 'Failed to load timeline');

@@ -144,6 +144,15 @@ export async function getFacesByPhotoId(photoId: string): Promise<FaceRecord[]> 
   return result.rows;
 }
 
+export async function getFaceById(faceId: string): Promise<FaceRecord | null> {
+  const result = await query<FaceRecord>(
+    "SELECT * FROM faces WHERE id = $1",
+    [faceId]
+  );
+
+  return result.rows[0] ?? null;
+}
+
 export async function getPhotosToReprocess(
   belowVersion: string,
   pathPrefix?: string

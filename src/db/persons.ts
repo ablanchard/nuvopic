@@ -1,5 +1,4 @@
 import { query } from "./client.js";
-import { getFaceQualitySettings, faceQualityFilter } from "./settings.js";
 
 export interface PersonRecord {
   id: string;
@@ -24,9 +23,6 @@ export interface FaceWithPhoto {
 }
 
 export async function getAllPersons(): Promise<PersonWithStats[]> {
-  const fqSettings = await getFaceQualitySettings();
-  const fqFilter = faceQualityFilter("f", fqSettings);
-
   const result = await query<PersonWithStats>(
     `SELECT
       p.id,
@@ -36,17 +32,15 @@ export async function getAllPersons(): Promise<PersonWithStats[]> {
        FROM faces f
        JOIN face_clusters fc ON f.cluster_id = fc.id
        JOIN photos ph ON f.photo_id = ph.id
-       WHERE fc.person_id = p.id AND ${fqFilter}) as face_count
+       WHERE fc.person_id = p.id) as face_count
     FROM persons p
+    WHERE EXISTS (SELECT 1 FROM face_clusters fc WHERE fc.person_id = p.id)
     ORDER BY p.name`
   );
   return result.rows;
 }
 
 export async function getPersonById(id: string): Promise<PersonWithStats | null> {
-  const fqSettings = await getFaceQualitySettings();
-  const fqFilter = faceQualityFilter("f", fqSettings);
-
   const result = await query<PersonWithStats>(
     `SELECT
       p.id,
@@ -56,7 +50,7 @@ export async function getPersonById(id: string): Promise<PersonWithStats | null>
        FROM faces f
        JOIN face_clusters fc ON f.cluster_id = fc.id
        JOIN photos ph ON f.photo_id = ph.id
-       WHERE fc.person_id = p.id AND ${fqFilter}) as face_count
+       WHERE fc.person_id = p.id) as face_count
     FROM persons p
     WHERE p.id = $1`,
     [id]
@@ -66,7 +60,10 @@ export async function getPersonById(id: string): Promise<PersonWithStats | null>
 
 export async function createPerson(name: string): Promise<string> {
   const result = await query<{ id: string }>(
-    `INSERT INTO persons (name) VALUES ($1) RETURNING id`,
+    `INSERT INTO persons (name)
+     VALUES ($1)
+     ON CONFLICT (LOWER(BTRIM(name))) DO UPDATE SET name = EXCLUDED.name
+     RETURNING id`,
     [name.trim()]
   );
   return result.rows[0].id;

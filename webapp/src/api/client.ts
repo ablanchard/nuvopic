@@ -498,6 +498,12 @@ export const api = {
       return fetchApiBlob(`${API_BASE}/photos/${id}/thumbnail?size=${size}`);
     },
 
+    getFaceThumbnail: (photoId: string, faceId: string, size = 96): Promise<Blob> => {
+      return fetchApiBlob(
+        `${API_BASE}/photos/${photoId}/faces/${faceId}/thumbnail?size=${size}`,
+      );
+    },
+
     timeline: (filters: Omit<PhotoFilters, 'page' | 'limit'> = {}): Promise<TimelineResponse> => {
       const params = new URLSearchParams();
       if (filters.search) params.set('q', filters.search);
@@ -561,6 +567,26 @@ export const api = {
       return fetchApiJson<{ faces: ClusterFace[] }>(`${API_BASE}/clusters/unassigned`);
     },
 
+    getFilteredOut: (): Promise<{ faces: ClusterFace[]; total: number }> => {
+      return fetchApiJson<{ faces: ClusterFace[]; total: number }>(`${API_BASE}/clusters/filtered-out`);
+    },
+
+    getWontAssign: (): Promise<{ faces: ClusterFace[]; total: number }> => {
+      return fetchApiJson<{ faces: ClusterFace[]; total: number }>(`${API_BASE}/clusters/wont-assign`);
+    },
+
+    markWontAssign: (faceId: string): Promise<void> => {
+      return fetchApiJson<void>(`${API_BASE}/clusters/wont-assign/${faceId}`, {
+        method: 'POST',
+      });
+    },
+
+    restoreAssignment: (faceId: string): Promise<void> => {
+      return fetchApiJson<void>(`${API_BASE}/clusters/wont-assign/${faceId}`, {
+        method: 'DELETE',
+      });
+    },
+
     getFaces: (clusterId: string): Promise<{ faces: ClusterFace[] }> => {
       return fetchApiJson<{ faces: ClusterFace[] }>(`${API_BASE}/clusters/${clusterId}/faces`);
     },
@@ -609,6 +635,20 @@ export const api = {
       return fetchApiJson<void>(`${API_BASE}/clusters/${clusterId}/faces/${faceId}`, {
         method: 'POST',
       });
+    },
+
+    merge: (
+      sourceClusterId: string,
+      targetClusterId: string,
+    ): Promise<{ targetClusterId: string; faceCount: number; personId: string | null }> => {
+      return fetchApiJson<{ targetClusterId: string; faceCount: number; personId: string | null }>(
+        `${API_BASE}/clusters/${sourceClusterId}/merge`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetClusterId }),
+        },
+      );
     },
 
     removeFace: (clusterId: string, faceId: string): Promise<void> => {
@@ -751,7 +791,12 @@ export const api = {
       return fetchApiJson<ReprocessStatsResponse>(`${API_BASE}/photos/reprocess/stats${query ? `?${query}` : ''}`);
     },
 
-    trigger: (options: { mode?: string; force?: boolean; pathPrefix?: string }): Promise<ReprocessTriggerResponse> => {
+    trigger: (options: {
+      mode?: string;
+      force?: boolean;
+      pathPrefix?: string;
+      filters?: Omit<PhotoFilters, 'page' | 'limit'>;
+    }): Promise<ReprocessTriggerResponse> => {
       return fetchApiJson<ReprocessTriggerResponse>(`${API_BASE}/photos/reprocess`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

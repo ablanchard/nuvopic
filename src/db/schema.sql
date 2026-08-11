@@ -135,6 +135,52 @@ CREATE TABLE IF NOT EXISTS face_clusters (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Person names represent identities and are case-insensitively unique. Older
+-- clients could submit a name twice (for example, Enter followed by blur), so
+-- merge any duplicate identities before enforcing uniqueness.
+DO $$
+DECLARE
+    duplicate RECORD;
+BEGIN
+    FOR duplicate IN
+        SELECT normalized_name, (array_agg(id ORDER BY cluster_count DESC, direct_face_count DESC, created_at, id))[1] AS keep_id
+        FROM (
+            SELECT
+                p.id,
+                p.created_at,
+                LOWER(BTRIM(p.name)) AS normalized_name,
+                (SELECT COUNT(*) FROM face_clusters fc WHERE fc.person_id = p.id) AS cluster_count,
+                (SELECT COUNT(*) FROM faces f WHERE f.person_id = p.id) AS direct_face_count
+            FROM persons p
+        ) ranked_people
+        GROUP BY normalized_name
+        HAVING COUNT(*) > 1
+    LOOP
+        UPDATE face_clusters
+        SET person_id = duplicate.keep_id
+        WHERE person_id IN (
+            SELECT id FROM persons
+            WHERE LOWER(BTRIM(name)) = duplicate.normalized_name
+              AND id <> duplicate.keep_id
+        );
+
+        UPDATE faces
+        SET person_id = duplicate.keep_id
+        WHERE person_id IN (
+            SELECT id FROM persons
+            WHERE LOWER(BTRIM(name)) = duplicate.normalized_name
+              AND id <> duplicate.keep_id
+        );
+
+        DELETE FROM persons
+        WHERE LOWER(BTRIM(name)) = duplicate.normalized_name
+          AND id <> duplicate.keep_id;
+    END LOOP;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_persons_normalized_name
+    ON persons (LOWER(BTRIM(name)));
+
 -- User rejected a face from a cluster ("not this person")
 CREATE TABLE IF NOT EXISTS face_rejections (
     face_id UUID REFERENCES faces(id) ON DELETE CASCADE,
@@ -147,6 +193,12 @@ CREATE TABLE IF NOT EXISTS face_rejections (
 CREATE TABLE IF NOT EXISTS face_manual_assignments (
     face_id UUID PRIMARY KEY REFERENCES faces(id) ON DELETE CASCADE,
     cluster_id UUID REFERENCES face_clusters(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Faces the user explicitly does not want assigned or automatically clustered
+CREATE TABLE IF NOT EXISTS face_assignment_exclusions (
+    face_id UUID PRIMARY KEY REFERENCES faces(id) ON DELETE CASCADE,
     created_at TIMESTAMP DEFAULT NOW()
 );
 

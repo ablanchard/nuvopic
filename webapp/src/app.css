@@ -140,6 +140,48 @@ body {
   text-transform: uppercase;
 }
 
+.photo-actions-section {
+  padding-top: 1rem;
+  border-top: 1px solid #eee;
+}
+
+.photo-actions-scope {
+  margin: 0 0 0.65rem;
+  color: #888;
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.photo-actions-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.photo-actions-buttons .btn {
+  width: 100%;
+}
+
+.photo-actions-status {
+  margin-top: 0.65rem;
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.photo-actions-status--success {
+  color: #256;
+  background: #f0fff4;
+  border: 1px solid #c6f0c6;
+}
+
+.photo-actions-status--error {
+  color: #900;
+  background: #fff5f5;
+  border: 1px solid #f0c6c6;
+}
+
 .tag-chips {
   display: flex;
   flex-wrap: wrap;
@@ -1084,11 +1126,48 @@ body {
   color: #333;
 }
 
+.cluster-merge {
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #eee;
+}
+
+.cluster-merge-toggle {
+  color: #555;
+}
+
+.cluster-merge-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.cluster-merge-select {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  font-size: 0.8rem;
+}
+
+.cluster-merge-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.cluster-merge-error {
+  color: #a00;
+  font-size: 0.75rem;
+}
+
 /* Face Crop */
 .face-crop {
   border-radius: 6px;
   background: #eee;
   display: block;
+  object-fit: cover;
 }
 
 .face-crop--loaded {
@@ -1121,6 +1200,31 @@ body {
   align-items: center;
   gap: 0.25rem;
   width: 64px;
+}
+
+.filtered-faces-section {
+  margin-top: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid #eee;
+}
+
+.filtered-faces-summary {
+  color: #555;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
+.filtered-faces-section[open] .filtered-faces-summary {
+  margin-bottom: 0.75rem;
+}
+
+.filtered-faces-limit {
+  margin-top: 0.75rem;
+  color: #999;
+  font-size: 0.72rem;
+  text-align: center;
 }
 
 /* Assign Popover */
@@ -1173,6 +1277,10 @@ body {
 .assign-popover-create {
   color: #0066cc;
   font-weight: 500;
+}
+
+.assign-popover-exclude {
+  color: #855400;
 }
 
 .assign-popover-name {

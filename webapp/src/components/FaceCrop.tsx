@@ -2,114 +2,76 @@ import { useRef, useEffect, useState } from 'preact/hooks';
 import { api } from '../api/client';
 
 interface FaceCropProps {
+  faceId: string;
   photoId: string;
-  boundingBox: { x: number; y: number; width: number; height: number };
-  photoWidth: number | null;
-  photoHeight: number | null;
   size?: number;
 }
 
 /**
- * Renders a cropped face from a photo using canvas.
- * Fetches the full S3 presigned URL for the photo and crops the face region.
- * The bounding box is in absolute pixel coordinates of the original photo.
+ * Loads a small, authenticated face crop generated and cached by the backend.
+ * Fetching starts only when the image is close to the viewport.
  */
-export function FaceCrop({ photoId, boundingBox, photoWidth, photoHeight, size = 80 }: FaceCropProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+export function FaceCrop({ faceId, photoId, size = 80 }: FaceCropProps) {
+  const imageRef = useRef<HTMLImageElement>(null);
+  const [nearViewport, setNearViewport] = useState(false);
+  const [src, setSrc] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const image = imageRef.current;
+    if (!image) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      setNearViewport(true);
+      return;
+    }
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setNearViewport(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: '240px' });
+    observer.observe(image);
+    return () => observer.disconnect();
+  }, []);
 
+  useEffect(() => {
+    if (!nearViewport) return;
     let cancelled = false;
+    let objectUrl: string | null = null;
+    setLoaded(false);
+    setSrc(null);
 
-    // Fetch the presigned URL, then load the image
-    api.photos.getFullImageUrl(photoId).then((url) => {
-      if (cancelled) return;
-
-      const img = new Image();
-
-      img.onload = () => {
-        if (cancelled) return;
-
-        const imgW = img.naturalWidth;
-        const imgH = img.naturalHeight;
-
-        // Scale bounding box from original photo coords to loaded image coords
-        const scaleX = photoWidth ? imgW / photoWidth : 1;
-        const scaleY = photoHeight ? imgH / photoHeight : 1;
-
-        let bx = boundingBox.x * scaleX;
-        let by = boundingBox.y * scaleY;
-        let bw = boundingBox.width * scaleX;
-        let bh = boundingBox.height * scaleY;
-
-        // Add padding around face (20%)
-        const padX = bw * 0.2;
-        const padY = bh * 0.2;
-        bx = Math.max(0, bx - padX);
-        by = Math.max(0, by - padY);
-        bw = Math.min(imgW - bx, bw + padX * 2);
-        bh = Math.min(imgH - by, bh + padY * 2);
-
-        // Make it square (use the larger dimension)
-        const side = Math.max(bw, bh);
-        const cx = bx + bw / 2;
-        const cy = by + bh / 2;
-        const sx = Math.max(0, Math.min(imgW - side, cx - side / 2));
-        const sy = Math.max(0, Math.min(imgH - side, cy - side / 2));
-        const sideW = Math.min(side, imgW - sx);
-        const sideH = Math.min(side, imgH - sy);
-
-        canvas.width = size;
-        canvas.height = size;
-        ctx.drawImage(img, sx, sy, sideW, sideH, 0, 0, size, size);
-        setLoaded(true);
-      };
-
-      img.onerror = () => {
-        if (cancelled) return;
-        // Show placeholder on error
-        canvas.width = size;
-        canvas.height = size;
-        ctx.fillStyle = '#e0e0e0';
-        ctx.fillRect(0, 0, size, size);
-        ctx.fillStyle = '#999';
-        ctx.font = '12px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText('?', size / 2, size / 2 + 4);
-      };
-
-      img.src = url;
-    }).catch(() => {
-      if (cancelled) return;
-      // Show placeholder on fetch error
-      canvas.width = size;
-      canvas.height = size;
-      ctx.fillStyle = '#e0e0e0';
-      ctx.fillRect(0, 0, size, size);
-      ctx.fillStyle = '#999';
-      ctx.font = '12px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('?', size / 2, size / 2 + 4);
-    });
+    api.photos.getFaceThumbnail(photoId, faceId, Math.max(size, 96))
+      .then((blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        if (cancelled) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        setSrc(objectUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setSrc(null);
+      });
 
     return () => {
       cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [photoId, boundingBox, photoWidth, photoHeight, size]);
+  }, [nearViewport, photoId, faceId, size]);
 
   return (
-    <canvas
-      ref={canvasRef}
+    <img
+      ref={imageRef}
       class={`face-crop ${loaded ? 'face-crop--loaded' : ''}`}
+      src={src ?? undefined}
+      alt="Face"
       width={size}
       height={size}
       style={{ width: `${size}px`, height: `${size}px` }}
+      onLoad={() => setLoaded(true)}
+      onError={() => setLoaded(false)}
     />
   );
 }

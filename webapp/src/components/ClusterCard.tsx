@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'preact/hooks';
+import { useState, useEffect, useRef } from 'preact/hooks';
 import { api } from '../api/client';
 import type { Cluster, ClusterFace } from '../api/client';
 import { FaceCrop } from './FaceCrop';
@@ -8,24 +8,48 @@ interface ClusterCardProps {
   cluster: Cluster;
   onRefresh: () => void;
   reloadToken: number;
+  minConfidence: number;
+  minArea: number;
+  mergeTargets: Cluster[];
 }
 
 const INITIAL_VISIBLE = 6;
 
-export function ClusterCard({ cluster, onRefresh, reloadToken }: ClusterCardProps) {
+export function ClusterCard({
+  cluster,
+  onRefresh,
+  reloadToken,
+  minConfidence,
+  minArea,
+  mergeTargets,
+}: ClusterCardProps) {
   const [faces, setFaces] = useState<ClusterFace[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [nameInput, setNameInput] = useState(cluster.personName ?? '');
   const [saving, setSaving] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeTargetId, setMergeTargetId] = useState('');
+  const [merging, setMerging] = useState(false);
+  const [mergeError, setMergeError] = useState<string | null>(null);
+  const savingRef = useRef(false);
 
   useEffect(() => {
-    setLoading(true);
+    let cancelled = false;
     api.clusters.getFaces(cluster.id)
-      .then((data) => setFaces(data.faces))
-      .catch(() => setFaces([]))
-      .finally(() => setLoading(false));
+      .then((data) => {
+        if (!cancelled) setFaces(data.faces);
+      })
+      .catch(() => {
+        // Keep the currently rendered faces when a background sync fails.
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [cluster.id, reloadToken]);
 
   const visibleFaces = expanded ? faces : faces.slice(0, INITIAL_VISIBLE);
@@ -33,8 +57,9 @@ export function ClusterCard({ cluster, onRefresh, reloadToken }: ClusterCardProp
 
   const handleNameSave = async () => {
     const trimmed = nameInput.trim();
-    if (!trimmed) return;
+    if (!trimmed || savingRef.current) return;
 
+    savingRef.current = true;
     setSaving(true);
     try {
       if (cluster.personName) {
@@ -49,6 +74,7 @@ export function ClusterCard({ cluster, onRefresh, reloadToken }: ClusterCardProp
     } catch (err) {
       console.error('Failed to save name:', err);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -73,6 +99,23 @@ export function ClusterCard({ cluster, onRefresh, reloadToken }: ClusterCardProp
       // Revert - reload faces
       api.clusters.getFaces(cluster.id)
         .then((data) => setFaces(data.faces));
+    }
+  };
+
+  const handleMerge = async () => {
+    if (!mergeTargetId || merging) return;
+
+    setMerging(true);
+    setMergeError(null);
+    try {
+      await api.clusters.merge(cluster.id, mergeTargetId);
+      setMergeOpen(false);
+      setMergeTargetId('');
+      onRefresh();
+    } catch (err) {
+      setMergeError(err instanceof Error ? err.message : 'Failed to merge clusters');
+    } finally {
+      setMerging(false);
     }
   };
 
@@ -119,13 +162,15 @@ export function ClusterCard({ cluster, onRefresh, reloadToken }: ClusterCardProp
             {visibleFaces.map((face) => (
               <div key={face.id} class="cluster-face-item">
                 <FaceCrop
+                  faceId={face.id}
                   photoId={face.photoId}
-                  boundingBox={face.boundingBox}
-                  photoWidth={face.photoWidth}
-                  photoHeight={face.photoHeight}
                   size={72}
                 />
-                <FaceMetrics confidence={face.confidence} area={face.area} />
+                {(face.confidence === null ||
+                  face.confidence < minConfidence ||
+                  face.area < minArea) && (
+                  <FaceMetrics confidence={face.confidence} area={face.area} />
+                )}
                 <button
                   class="face-remove-btn"
                   onClick={() => handleRemoveFace(face.id)}
@@ -154,6 +199,60 @@ export function ClusterCard({ cluster, onRefresh, reloadToken }: ClusterCardProp
           </>
         )}
       </div>
+
+      {mergeTargets.length > 0 && (
+        <div class="cluster-merge">
+          {!mergeOpen ? (
+            <button
+              class="btn btn-small cluster-merge-toggle"
+              onClick={() => {
+                setMergeOpen(true);
+                setMergeError(null);
+              }}
+            >
+              Merge
+            </button>
+          ) : (
+            <div class="cluster-merge-controls">
+              <select
+                class="cluster-merge-select"
+                value={mergeTargetId}
+                onChange={(event) => setMergeTargetId((event.target as HTMLSelectElement).value)}
+                disabled={merging}
+                aria-label="Merge into cluster"
+              >
+                <option value="">Select target cluster…</option>
+                {mergeTargets.map((target) => (
+                  <option key={target.id} value={target.id}>
+                    {target.personName || 'Unnamed cluster'} ({target.faceCount} face{target.faceCount === 1 ? '' : 's'})
+                  </option>
+                ))}
+              </select>
+              <div class="cluster-merge-actions">
+                <button
+                  class="btn btn-small btn-primary"
+                  onClick={handleMerge}
+                  disabled={!mergeTargetId || merging}
+                >
+                  {merging ? 'Merging…' : 'Merge into selected'}
+                </button>
+                <button
+                  class="btn btn-small btn-secondary"
+                  onClick={() => {
+                    setMergeOpen(false);
+                    setMergeTargetId('');
+                    setMergeError(null);
+                  }}
+                  disabled={merging}
+                >
+                  Cancel
+                </button>
+              </div>
+              {mergeError && <div class="cluster-merge-error">{mergeError}</div>}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

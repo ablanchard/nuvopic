@@ -1,4 +1,4 @@
-import { query } from "./client.js";
+import { query, withTransaction } from "./client.js";
 import { logger } from "../logger.js";
 import { getFaceQualitySettings, faceQualityFilter } from "./settings.js";
 
@@ -58,6 +58,28 @@ function toVectorLiteral(embedding: number[]): string {
   return `[${embedding.join(",")}]`;
 }
 
+/** Faces presented as unassigned in the UI, including automatic singletons. */
+function effectivelyUnassignedFilter(alias: string): string {
+  return `(
+    ${alias}.cluster_id IS NULL
+    OR (
+      NOT EXISTS (
+        SELECT 1 FROM face_manual_assignments ma_unassigned
+        WHERE ma_unassigned.face_id = ${alias}.id
+      )
+      AND EXISTS (
+        SELECT 1 FROM face_clusters c_unassigned
+        WHERE c_unassigned.id = ${alias}.cluster_id
+          AND c_unassigned.person_id IS NULL
+          AND (
+            SELECT COUNT(*) FROM faces f_cluster
+            WHERE f_cluster.cluster_id = c_unassigned.id
+          ) < 2
+      )
+    )
+  )`;
+}
+
 // ---------------------------------------------------------------------------
 // Core clustering algorithm
 // ---------------------------------------------------------------------------
@@ -86,6 +108,7 @@ export async function clusterUnassignedFaces(
        AND f.embedding IS NOT NULL
        AND ${fqFilter}
        AND f.id NOT IN (SELECT face_id FROM face_manual_assignments)
+       AND f.id NOT IN (SELECT face_id FROM face_assignment_exclusions)
      ORDER BY f.created_at ASC`
   );
 
@@ -233,19 +256,16 @@ export async function reclusterFaces(
 // ---------------------------------------------------------------------------
 
 /** Get all clusters with face count and representative face info.
- *  Excludes unnamed clusters with fewer than 2 quality faces (not meaningful).
- *  Face counts only include faces that pass quality thresholds. */
+ *  Excludes automatic unnamed clusters with fewer than 2 faces, but
+ *  keeps a singleton cluster when the user explicitly created it.
+ *  Assigned faces remain visible even when quality settings change. */
 export async function getAllClusters(): Promise<ClusterRecord[]> {
-  const fqSettings = await getFaceQualitySettings();
-  const fqFilter = faceQualityFilter("f", fqSettings);
-  const fqFilter2 = faceQualityFilter("f2", fqSettings);
-
   const result = await query<ClusterRecord>(
     `SELECT
        c.id,
        c.person_id,
        p.name AS person_name,
-       (SELECT COUNT(*)::int FROM faces f WHERE f.cluster_id = c.id AND ${fqFilter}) AS face_count,
+       (SELECT COUNT(*)::int FROM faces f WHERE f.cluster_id = c.id) AS face_count,
        rep.id AS representative_face_id,
        rep.photo_id AS representative_photo_id,
        rep.bounding_box AS representative_bounding_box
@@ -254,12 +274,15 @@ export async function getAllClusters(): Promise<ClusterRecord[]> {
      LEFT JOIN LATERAL (
        SELECT f.id, f.photo_id, f.bounding_box
        FROM faces f
-       WHERE f.cluster_id = c.id AND ${fqFilter}
+       WHERE f.cluster_id = c.id
        ORDER BY f.created_at ASC
        LIMIT 1
      ) rep ON true
      WHERE c.person_id IS NOT NULL
-        OR (SELECT COUNT(*) FROM faces f2 WHERE f2.cluster_id = c.id AND ${fqFilter2}) >= 2
+        OR (SELECT COUNT(*) FROM faces f2 WHERE f2.cluster_id = c.id) >= 2
+        OR EXISTS (
+          SELECT 1 FROM face_manual_assignments ma WHERE ma.cluster_id = c.id
+        )
      ORDER BY
        CASE WHEN c.person_id IS NULL THEN 0 ELSE 1 END,
        face_count DESC`
@@ -268,13 +291,10 @@ export async function getAllClusters(): Promise<ClusterRecord[]> {
   return result.rows;
 }
 
-/** Get all quality faces in a cluster with photo dimensions for bounding box scaling. */
+/** Get all assigned faces in a cluster, regardless of the current quality gate. */
 export async function getClusterFaces(
   clusterId: string
 ): Promise<ClusterFaceRecord[]> {
-  const fqSettings = await getFaceQualitySettings();
-  const fqFilter = faceQualityFilter("f", fqSettings);
-
   const result = await query<ClusterFaceRecord>(
     `SELECT
        f.id,
@@ -286,7 +306,7 @@ export async function getClusterFaces(
        (f.bounding_box->>'width')::int * (f.bounding_box->>'height')::int AS area
      FROM faces f
      JOIN photos ph ON ph.id = f.photo_id
-     WHERE f.cluster_id = $1 AND ${fqFilter}
+     WHERE f.cluster_id = $1
      ORDER BY f.created_at ASC`,
     [clusterId]
   );
@@ -294,11 +314,13 @@ export async function getClusterFaces(
   return result.rows;
 }
 
-/** Get faces that are effectively unassigned: no cluster, or in a single-face unnamed cluster.
+/** Get faces that are effectively unassigned: no cluster, or in an automatic
+ *  single-face unnamed cluster. Manually created singletons are assigned.
  *  Only returns faces that pass quality thresholds. */
 export async function getUnclusteredFaces(): Promise<ClusterFaceRecord[]> {
   const fqSettings = await getFaceQualitySettings();
   const fqFilter = faceQualityFilter("f", fqSettings);
+  const unassignedFilter = effectivelyUnassignedFilter("f");
 
   const result = await query<ClusterFaceRecord>(
     `SELECT
@@ -313,23 +335,167 @@ export async function getUnclusteredFaces(): Promise<ClusterFaceRecord[]> {
      JOIN photos ph ON ph.id = f.photo_id
      WHERE f.embedding IS NOT NULL
        AND ${fqFilter}
-       AND (
-         f.cluster_id IS NULL
-         OR (
-           -- In an unnamed cluster with only 1 face (treated as unassigned)
-           EXISTS (
-             SELECT 1 FROM face_clusters c
-             WHERE c.id = f.cluster_id
-               AND c.person_id IS NULL
-               AND (SELECT COUNT(*) FROM faces f2 WHERE f2.cluster_id = c.id) < 2
-           )
-         )
+       AND ${unassignedFilter}
+       AND NOT EXISTS (
+         SELECT 1 FROM face_assignment_exclusions x WHERE x.face_id = f.id
        )
      ORDER BY f.created_at DESC
      LIMIT 200`
   );
 
   return result.rows;
+}
+
+/** Get faces excluded specifically by the current confidence or area gate. */
+export async function getFilteredOutFaces(
+  limit = 200
+): Promise<{ faces: ClusterFaceRecord[]; total: number }> {
+  const fqSettings = await getFaceQualitySettings();
+  const fqFilter = faceQualityFilter("f", fqSettings);
+  const unassignedFilter = effectivelyUnassignedFilter("f");
+  const normalizedLimit = Number.isFinite(limit) ? Math.trunc(limit) : 200;
+  const safeLimit = Math.min(Math.max(normalizedLimit, 1), 500);
+
+  const [facesResult, countResult] = await Promise.all([
+    query<ClusterFaceRecord>(
+      `SELECT
+         f.id,
+         f.photo_id,
+         f.bounding_box,
+         ph.width AS photo_width,
+         ph.height AS photo_height,
+         f.confidence,
+         (f.bounding_box->>'width')::int * (f.bounding_box->>'height')::int AS area
+       FROM faces f
+       JOIN photos ph ON ph.id = f.photo_id
+       WHERE (${fqFilter}) IS NOT TRUE
+         AND ${unassignedFilter}
+         AND NOT EXISTS (
+           SELECT 1 FROM face_assignment_exclusions x WHERE x.face_id = f.id
+         )
+       ORDER BY f.created_at DESC
+       LIMIT $1`,
+      [safeLimit]
+    ),
+    query<{ count: number }>(
+      `SELECT COUNT(*)::int AS count
+       FROM faces f
+       WHERE (${fqFilter}) IS NOT TRUE
+         AND ${unassignedFilter}
+         AND NOT EXISTS (
+           SELECT 1 FROM face_assignment_exclusions x WHERE x.face_id = f.id
+         )`
+    ),
+  ]);
+
+  return {
+    faces: facesResult.rows,
+    total: countResult.rows[0]?.count ?? 0,
+  };
+}
+
+/** Get faces manually excluded from assignment and automatic clustering. */
+export async function getWontAssignFaces(
+  limit = 200
+): Promise<{ faces: ClusterFaceRecord[]; total: number }> {
+  const normalizedLimit = Number.isFinite(limit) ? Math.trunc(limit) : 200;
+  const safeLimit = Math.min(Math.max(normalizedLimit, 1), 500);
+  const [facesResult, countResult] = await Promise.all([
+    query<ClusterFaceRecord>(
+      `SELECT
+         f.id,
+         f.photo_id,
+         f.bounding_box,
+         ph.width AS photo_width,
+         ph.height AS photo_height,
+         f.confidence,
+         (f.bounding_box->>'width')::int * (f.bounding_box->>'height')::int AS area
+       FROM face_assignment_exclusions x
+       JOIN faces f ON f.id = x.face_id
+       JOIN photos ph ON ph.id = f.photo_id
+       ORDER BY x.created_at DESC
+       LIMIT $1`,
+      [safeLimit]
+    ),
+    query<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM face_assignment_exclusions`
+    ),
+  ]);
+
+  return {
+    faces: facesResult.rows,
+    total: countResult.rows[0]?.count ?? 0,
+  };
+}
+
+/** Manually exclude an effectively unassigned face from future clustering. */
+export async function markFaceWontAssign(faceId: string): Promise<void> {
+  await withTransaction(async (client) => {
+    const result = await client.query<{
+      cluster_id: string | null;
+      cluster_person_id: string | null;
+      cluster_face_count: number;
+      manually_assigned: boolean;
+    }>(
+      `SELECT
+         f.cluster_id,
+         c.person_id AS cluster_person_id,
+         CASE
+           WHEN f.cluster_id IS NULL THEN 0
+           ELSE (SELECT COUNT(*)::int FROM faces f2 WHERE f2.cluster_id = f.cluster_id)
+         END AS cluster_face_count,
+         EXISTS (
+           SELECT 1 FROM face_manual_assignments ma WHERE ma.face_id = f.id
+         ) AS manually_assigned
+       FROM faces f
+       LEFT JOIN face_clusters c ON c.id = f.cluster_id
+       WHERE f.id = $1
+       FOR UPDATE OF f`,
+      [faceId]
+    );
+
+    const face = result.rows[0];
+    if (!face) throw new Error("Face not found");
+
+    const isAssigned =
+      face.cluster_id !== null &&
+      (face.cluster_person_id !== null ||
+        face.cluster_face_count >= 2 ||
+        face.manually_assigned);
+    if (isAssigned) {
+      throw new Error("Assigned faces cannot be marked as won't assign");
+    }
+
+    await client.query(
+      `INSERT INTO face_assignment_exclusions (face_id)
+       VALUES ($1)
+       ON CONFLICT (face_id) DO NOTHING`,
+      [faceId]
+    );
+
+    if (face.cluster_id) {
+      await client.query(
+        `UPDATE faces SET cluster_id = NULL, person_id = NULL WHERE id = $1`,
+        [faceId]
+      );
+      await client.query(
+        `DELETE FROM face_clusters
+         WHERE id = $1
+           AND person_id IS NULL
+           AND NOT EXISTS (SELECT 1 FROM faces WHERE cluster_id = $1)`,
+        [face.cluster_id]
+      );
+    }
+  });
+}
+
+/** Restore a manually excluded face to normal gate and clustering behavior. */
+export async function restoreFaceAssignment(faceId: string): Promise<boolean> {
+  const result = await query(
+    `DELETE FROM face_assignment_exclusions WHERE face_id = $1 RETURNING face_id`,
+    [faceId]
+  );
+  return result.rowCount === 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,9 +509,24 @@ export async function getUnclusteredFaces(): Promise<ClusterFaceRecord[]> {
 export async function createClusterFromFace(
   faceId: string
 ): Promise<{ clusterId: string }> {
-  // Get the face's embedding
-  const face = await query<{ embedding: string }>(
-    `SELECT embedding::text FROM faces WHERE id = $1`,
+  // Reuse an existing automatic singleton rather than leaving it orphaned.
+  const face = await query<{
+    embedding: string;
+    cluster_id: string | null;
+    cluster_person_id: string | null;
+    cluster_face_count: number;
+  }>(
+    `SELECT
+       f.embedding::text,
+       f.cluster_id,
+       c.person_id AS cluster_person_id,
+       CASE
+         WHEN f.cluster_id IS NULL THEN 0
+         ELSE (SELECT COUNT(*)::int FROM faces f2 WHERE f2.cluster_id = f.cluster_id)
+       END AS cluster_face_count
+     FROM faces f
+     LEFT JOIN face_clusters c ON c.id = f.cluster_id
+     WHERE f.id = $1`,
     [faceId]
   );
 
@@ -353,18 +534,36 @@ export async function createClusterFromFace(
     throw new Error("Face not found");
   }
 
+  const current = face.rows[0];
+  if (
+    current.cluster_id &&
+    current.cluster_person_id === null &&
+    current.cluster_face_count === 1
+  ) {
+    await query(
+      `INSERT INTO face_manual_assignments (face_id, cluster_id)
+       VALUES ($1, $2)
+       ON CONFLICT (face_id) DO UPDATE SET cluster_id = $2`,
+      [faceId, current.cluster_id]
+    );
+    await query(`DELETE FROM face_assignment_exclusions WHERE face_id = $1`, [
+      faceId,
+    ]);
+    return { clusterId: current.cluster_id };
+  }
+
   // Create cluster with this face's embedding as representative
   const cluster = await query<{ id: string }>(
     `INSERT INTO face_clusters (representative_embedding)
      VALUES ($1::vector)
      RETURNING id`,
-    [face.rows[0].embedding]
+    [current.embedding]
   );
 
   const clusterId = cluster.rows[0].id;
 
   // Assign face to cluster
-  await query(`UPDATE faces SET cluster_id = $1 WHERE id = $2`, [
+  await query(`UPDATE faces SET cluster_id = $1, person_id = NULL WHERE id = $2`, [
     clusterId,
     faceId,
   ]);
@@ -376,6 +575,20 @@ export async function createClusterFromFace(
      ON CONFLICT (face_id) DO UPDATE SET cluster_id = $2`,
     [faceId, clusterId]
   );
+  await query(`DELETE FROM face_assignment_exclusions WHERE face_id = $1`, [
+    faceId,
+  ]);
+
+  // Moving a face out of an automatic singleton can leave an empty shell.
+  if (current.cluster_id) {
+    await query(
+      `DELETE FROM face_clusters
+       WHERE id = $1
+         AND person_id IS NULL
+         AND NOT EXISTS (SELECT 1 FROM faces WHERE cluster_id = $1)`,
+      [current.cluster_id]
+    );
+  }
 
   return { clusterId };
 }
@@ -420,6 +633,111 @@ export async function assignFaceToCluster(
     `DELETE FROM face_rejections WHERE face_id = $1 AND cluster_id = $2`,
     [faceId, clusterId]
   );
+  await query(`DELETE FROM face_assignment_exclusions WHERE face_id = $1`, [
+    faceId,
+  ]);
+}
+
+/** Merge a source cluster into a target cluster as one atomic manual action. */
+export async function mergeClusters(
+  sourceClusterId: string,
+  targetClusterId: string
+): Promise<{ faceCount: number; personId: string | null }> {
+  if (sourceClusterId === targetClusterId) {
+    throw new Error("Source and target clusters must be different");
+  }
+
+  return withTransaction(async (client) => {
+    const clusters = await client.query<{
+      id: string;
+      person_id: string | null;
+    }>(
+      `SELECT id, person_id
+       FROM face_clusters
+       WHERE id = ANY($1::uuid[])
+       ORDER BY id
+       FOR UPDATE`,
+      [[sourceClusterId, targetClusterId]]
+    );
+
+    const source = clusters.rows.find((cluster) => cluster.id === sourceClusterId);
+    const target = clusters.rows.find((cluster) => cluster.id === targetClusterId);
+    if (!source || !target) {
+      throw new Error("Source or target cluster not found");
+    }
+
+    // The target identity wins. If it is unnamed, preserve the source identity.
+    const personId = target.person_id ?? source.person_id;
+    await client.query(
+      `UPDATE face_clusters SET person_id = $1 WHERE id = $2`,
+      [personId, targetClusterId]
+    );
+
+    // A manual merge overrides any earlier rejection of the target cluster.
+    await client.query(
+      `DELETE FROM face_rejections r
+       USING faces f
+       WHERE f.cluster_id = $1
+         AND r.face_id = f.id
+         AND r.cluster_id = $2`,
+      [sourceClusterId, targetClusterId]
+    );
+
+    await client.query(
+      `UPDATE faces
+       SET cluster_id = $1
+       WHERE cluster_id = $2`,
+      [targetClusterId, sourceClusterId]
+    );
+    await client.query(
+      `UPDATE faces
+       SET person_id = $1
+       WHERE cluster_id = $2`,
+      [personId, targetClusterId]
+    );
+
+    // Keep the user-confirmed merge intact across future reclustering.
+    await client.query(
+      `INSERT INTO face_manual_assignments (face_id, cluster_id)
+       SELECT id, $1 FROM faces WHERE cluster_id = $1
+       ON CONFLICT (face_id) DO UPDATE SET cluster_id = $1`,
+      [targetClusterId]
+    );
+
+    await client.query(`DELETE FROM face_clusters WHERE id = $1`, [sourceClusterId]);
+
+    // If the target identity replaced the source identity, discard it only
+    // when it is no longer referenced by another cluster or face.
+    if (source.person_id && source.person_id !== personId) {
+      await client.query(
+        `DELETE FROM persons p
+         WHERE p.id = $1
+           AND NOT EXISTS (SELECT 1 FROM face_clusters c WHERE c.person_id = p.id)
+           AND NOT EXISTS (SELECT 1 FROM faces f WHERE f.person_id = p.id)`,
+        [source.person_id]
+      );
+    }
+
+    await client.query(
+      `UPDATE face_clusters
+       SET representative_embedding = (
+         SELECT AVG(f.embedding) FROM faces f
+         WHERE f.cluster_id = $1 AND f.embedding IS NOT NULL
+       )
+       WHERE id = $1`,
+      [targetClusterId]
+    );
+
+    const count = await client.query<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM faces WHERE cluster_id = $1`,
+      [targetClusterId]
+    );
+
+    return {
+      faceCount: count.rows[0]?.count ?? 0,
+      personId,
+    };
+  });
 }
 
 /**
@@ -487,22 +805,15 @@ export async function nameCluster(
 ): Promise<{ personId: string }> {
   const trimmed = name.trim();
 
-  // Find existing person with this name, or create a new one
-  const existing = await query<{ id: string }>(
-    `SELECT id FROM persons WHERE LOWER(name) = LOWER($1) LIMIT 1`,
+  // Atomically reuse an existing identity if another request used this name.
+  const person = await query<{ id: string }>(
+    `INSERT INTO persons (name)
+     VALUES ($1)
+     ON CONFLICT (LOWER(BTRIM(name))) DO UPDATE SET name = EXCLUDED.name
+     RETURNING id`,
     [trimmed]
   );
-
-  let personId: string;
-  if (existing.rows.length > 0) {
-    personId = existing.rows[0].id;
-  } else {
-    const person = await query<{ id: string }>(
-      `INSERT INTO persons (name) VALUES ($1) RETURNING id`,
-      [trimmed]
-    );
-    personId = person.rows[0].id;
-  }
+  const personId = person.rows[0].id;
 
   // Link person to cluster
   await query(`UPDATE face_clusters SET person_id = $1 WHERE id = $2`, [
@@ -546,11 +857,32 @@ export async function renameCluster(
   }
 
   if (cluster.rows[0].person_id) {
-    // Update existing person name
-    await query(`UPDATE persons SET name = $1 WHERE id = $2`, [
-      name.trim(),
-      cluster.rows[0].person_id,
-    ]);
+    const currentPersonId = cluster.rows[0].person_id;
+    const existing = await query<{ id: string }>(
+      `SELECT id FROM persons
+       WHERE LOWER(BTRIM(name)) = LOWER(BTRIM($1))
+         AND id <> $2
+       LIMIT 1`,
+      [name, currentPersonId]
+    );
+
+    if (existing.rows[0]) {
+      const targetPersonId = existing.rows[0].id;
+      await query(`UPDATE face_clusters SET person_id = $1 WHERE person_id = $2`, [
+        targetPersonId,
+        currentPersonId,
+      ]);
+      await query(`UPDATE faces SET person_id = $1 WHERE person_id = $2`, [
+        targetPersonId,
+        currentPersonId,
+      ]);
+      await query(`DELETE FROM persons WHERE id = $1`, [currentPersonId]);
+    } else {
+      await query(`UPDATE persons SET name = $1 WHERE id = $2`, [
+        name.trim(),
+        currentPersonId,
+      ]);
+    }
   } else {
     // Cluster was unnamed — create person and link
     await nameCluster(clusterId, name);
@@ -567,9 +899,8 @@ export async function renameCluster(
  * - "average": averages all face embeddings using pgvector
  */
 /**
- * Dissolve unnamed clusters that have only 1 face.
- * Single-face clusters aren't meaningful — the face is freed back to unassigned.
- * Named clusters are never dissolved (user explicitly created them).
+ * Dissolve automatic unnamed clusters that have only 1 face.
+ * Manually created and named clusters are preserved.
  */
 export async function dissolveSingleFaceClusters(): Promise<number> {
   // Find unnamed clusters with exactly 1 face
@@ -578,6 +909,10 @@ export async function dissolveSingleFaceClusters(): Promise<number> {
      FROM face_clusters c
      JOIN faces f ON f.cluster_id = c.id
      WHERE c.person_id IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM face_manual_assignments ma
+         WHERE ma.face_id = f.id AND ma.cluster_id = c.id
+       )
      GROUP BY c.id, f.id
      HAVING (SELECT COUNT(*) FROM faces f2 WHERE f2.cluster_id = c.id) = 1`
   );

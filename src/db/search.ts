@@ -28,16 +28,21 @@ export interface PhotoWithStats {
   tags: string[];
 }
 
-export async function searchPhotos(filters: PhotoFilters): Promise<{
-  photos: PhotoWithStats[];
-  total: number;
-}> {
-  const fqSettings = await getFaceQualitySettings();
-  const fqFilter = faceQualityFilter("f", fqSettings);
+type UnpaginatedPhotoFilters = Omit<PhotoFilters, "limit" | "offset">;
 
+interface PhotoFilterSql {
+  whereClause: string;
+  params: unknown[];
+  nextParamIndex: number;
+}
+
+async function buildPhotoFilterSql(
+  filters: UnpaginatedPhotoFilters,
+  startParamIndex = 1
+): Promise<PhotoFilterSql> {
   const conditions: string[] = [];
   const params: unknown[] = [];
-  let paramIndex = 1;
+  let paramIndex = startParamIndex;
 
   if (filters.search) {
     conditions.push(`(
@@ -84,7 +89,6 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
     paramIndex++;
   }
 
-  // Smart tag filter: resolve tag's rules and build WHERE clause
   if (filters.smartTagId) {
     const tag = await getSmartTagById(filters.smartTagId);
     if (tag && tag.values.length > 0) {
@@ -95,7 +99,21 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
     }
   }
 
-  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  return {
+    whereClause: conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "",
+    params,
+    nextParamIndex: paramIndex,
+  };
+}
+
+export async function searchPhotos(filters: PhotoFilters): Promise<{
+  photos: PhotoWithStats[];
+  total: number;
+}> {
+  const fqSettings = await getFaceQualitySettings();
+  const fqFilter = faceQualityFilter("f", fqSettings);
+  const { whereClause, params, nextParamIndex: paramIndex } =
+    await buildPhotoFilterSql(filters);
 
   // Count total
   const countResult = await query<{ count: string }>(
@@ -141,6 +159,30 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
   };
 }
 
+export interface FilteredPhotoForReprocess {
+  id: string;
+  s3_path: string;
+  process_version: string | null;
+  caption_version: string | null;
+  faces_version: string | null;
+}
+
+/** Return every photo matching the same filters used by the Photos page. */
+export async function getFilteredPhotosForReprocess(
+  filters: UnpaginatedPhotoFilters
+): Promise<FilteredPhotoForReprocess[]> {
+  const { whereClause, params } = await buildPhotoFilterSql(filters);
+  const result = await query<FilteredPhotoForReprocess>(
+    `SELECT p.id, p.s3_path, p.process_version, p.caption_version, p.faces_version
+     FROM photos p
+     ${whereClause}
+     ORDER BY p.created_at ASC`,
+    params
+  );
+
+  return result.rows;
+}
+
 export interface TimelineGroup {
   year: number | null;
   month: number | null;
@@ -150,68 +192,8 @@ export interface TimelineGroup {
 export async function getTimelineIndex(
   filters: Omit<PhotoFilters, "limit" | "offset">
 ): Promise<TimelineGroup[]> {
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-  let paramIndex = 1;
-
-  if (filters.search) {
-    conditions.push(`(
-      p.description ILIKE $${paramIndex}
-      OR EXISTS (
-        SELECT 1 FROM faces f2
-        JOIN face_clusters fc2 ON f2.cluster_id = fc2.id
-        JOIN persons per ON fc2.person_id = per.id
-        WHERE f2.photo_id = p.id AND per.name ILIKE $${paramIndex}
-      )
-    )`);
-    params.push(`%${filters.search}%`);
-    paramIndex++;
-  }
-
-  if (filters.dateFrom) {
-    conditions.push(`p.taken_at >= $${paramIndex}`);
-    params.push(filters.dateFrom);
-    paramIndex++;
-  }
-
-  if (filters.dateTo) {
-    conditions.push(`p.taken_at <= $${paramIndex}`);
-    params.push(filters.dateTo);
-    paramIndex++;
-  }
-
-  if (filters.personId) {
-    conditions.push(`EXISTS (
-      SELECT 1 FROM faces f
-      JOIN face_clusters fc ON f.cluster_id = fc.id
-      WHERE f.photo_id = p.id AND fc.person_id = $${paramIndex}
-    )`);
-    params.push(filters.personId);
-    paramIndex++;
-  }
-
-  if (filters.tagIds && filters.tagIds.length > 0) {
-    conditions.push(`EXISTS (
-      SELECT 1 FROM photo_tags pt
-      WHERE pt.photo_id = p.id AND pt.tag_id = ANY($${paramIndex})
-    )`);
-    params.push(filters.tagIds);
-    paramIndex++;
-  }
-
-  // Smart tag filter: resolve tag's rules and build WHERE clause
-  if (filters.smartTagId) {
-    const tag = await getSmartTagById(filters.smartTagId);
-    if (tag && tag.values.length > 0) {
-      const result = buildSmartTagCondition(tag, paramIndex);
-      conditions.push(result.condition);
-      params.push(...result.params);
-      paramIndex = result.nextIndex;
-    }
-  }
-
-  const whereClause =
-    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const { whereClause, params } = await buildPhotoFilterSql(filters);
+  const hasConditions = whereClause.length > 0;
 
   // Get monthly counts for photos with a date
   const dated = await query<{ year: string; month: string; count: string }>(
@@ -220,7 +202,7 @@ export async function getTimelineIndex(
       EXTRACT(MONTH FROM p.taken_at)::int AS month,
       COUNT(*)::int AS count
     FROM photos p
-    ${whereClause}${conditions.length > 0 ? " AND" : " WHERE"} p.taken_at IS NOT NULL
+    ${whereClause}${hasConditions ? " AND" : " WHERE"} p.taken_at IS NOT NULL
     GROUP BY year, month
     ORDER BY year DESC, month DESC`,
     params
@@ -230,7 +212,7 @@ export async function getTimelineIndex(
   const undated = await query<{ count: string }>(
     `SELECT COUNT(*)::int AS count
     FROM photos p
-    ${whereClause}${conditions.length > 0 ? " AND" : " WHERE"} p.taken_at IS NULL`,
+    ${whereClause}${hasConditions ? " AND" : " WHERE"} p.taken_at IS NULL`,
     params
   );
 

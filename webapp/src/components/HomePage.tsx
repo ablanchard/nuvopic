@@ -6,6 +6,7 @@ import { TagFilter } from './TagFilter';
 import { PersonList } from './PersonList';
 import { DateFilter } from './DateFilter';
 import { SmartTagFilter } from './SmartTagFilter';
+import { FilteredPhotoActions } from './FilteredPhotoActions';
 import {
   DEFAULT_PHOTO_SIZE,
   MOBILE_DEFAULT_PHOTO_SIZE,
@@ -21,6 +22,7 @@ export function HomePage(_props: RoutableProps) {
   const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
   const [fullImageSrc, setFullImageSrc] = useState<string | null>(null);
   const [fullImageLoaded, setFullImageLoaded] = useState(false);
+  const [filteredPhotoCount, setFilteredPhotoCount] = useState<number | null>(null);
   const preloadRef = useRef<HTMLImageElement | null>(null);
 
   useEffect(() => {
@@ -124,6 +126,7 @@ export function HomePage(_props: RoutableProps) {
       <PersonList />
       <TagFilter />
       <DateFilter />
+      <FilteredPhotoActions photoCount={filteredPhotoCount} />
     </>
   );
 
@@ -144,7 +147,10 @@ export function HomePage(_props: RoutableProps) {
         </aside>
 
         <main class="main-content">
-          <PhotoGrid onPhotoClick={setSelectedPhoto} />
+          <PhotoGrid
+            onPhotoClick={setSelectedPhoto}
+            onTotalChange={setFilteredPhotoCount}
+          />
         </main>
       </div>
 
