@@ -4,12 +4,13 @@ import { filters, filterVersion } from '../state/filters';
 
 interface FilteredPhotoActionsProps {
   photoCount: number | null;
+  onPhotosChanged?: () => void;
 }
 
 type ReprocessMode = 'caption' | 'faces' | 'all';
 type PhotoAction = ReprocessMode | 'refresh';
 
-export function FilteredPhotoActions({ photoCount }: FilteredPhotoActionsProps) {
+export function FilteredPhotoActions({ photoCount, onPhotosChanged }: FilteredPhotoActionsProps) {
   const [triggering, setTriggering] = useState<PhotoAction | null>(null);
   const [status, setStatus] = useState<{
     type: 'success' | 'error';
@@ -55,6 +56,7 @@ export function FilteredPhotoActions({ photoCount }: FilteredPhotoActionsProps) 
         });
       }
 
+      onPhotosChanged?.();
       filterVersion.value++;
     } catch (err) {
       setStatus({

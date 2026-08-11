@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'preact/hooks';
+import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
 import { PhotoGrid } from './PhotoGrid';
 import { SearchBar } from './SearchBar';
 import { SizeSlider } from './SizeSlider';
@@ -12,6 +12,8 @@ import {
   MOBILE_DEFAULT_PHOTO_SIZE,
   photoSize,
   resetFilters,
+  dateUnknown,
+  filterVersion,
 } from '../state/filters';
 import { api } from '../api/client';
 import { getImageUrl, setImageUrl } from '../lib/imageUrlCache';
@@ -26,15 +28,29 @@ export function HomePage(_props: RoutableProps) {
   const [fullImageLoaded, setFullImageLoaded] = useState(false);
   const [fullImageFailed, setFullImageFailed] = useState(false);
   const [filteredPhotoCount, setFilteredPhotoCount] = useState<number | null>(null);
+  const [unknownDateCount, setUnknownDateCount] = useState<number | null>(null);
   const previewObjectUrlRef = useRef<string | null>(null);
+
+  const refreshUnknownDateCount = useCallback(() => {
+    api.photos.timeline({ dateUnknown: true }).then((data) => {
+      setUnknownDateCount(data.total);
+      if (data.total === 0 && dateUnknown.value) {
+        dateUnknown.value = false;
+        filterVersion.value++;
+      }
+    }).catch(() => {
+      setUnknownDateCount(null);
+    });
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.add('home-route-active');
+    refreshUnknownDateCount();
 
     return () => {
       document.documentElement.classList.remove('home-route-active');
     };
-  }, []);
+  }, [refreshUnknownDateCount]);
 
   useEffect(() => {
     const mobileQuery = window.matchMedia('(max-width: 768px)');
@@ -138,8 +154,11 @@ export function HomePage(_props: RoutableProps) {
       <SmartTagFilter />
       <PersonList />
       <TagFilter />
-      <DateFilter />
-      <FilteredPhotoActions photoCount={filteredPhotoCount} />
+      <DateFilter hasUnknownDates={(unknownDateCount ?? 0) > 0} />
+      <FilteredPhotoActions
+        photoCount={filteredPhotoCount}
+        onPhotosChanged={refreshUnknownDateCount}
+      />
     </>
   );
 

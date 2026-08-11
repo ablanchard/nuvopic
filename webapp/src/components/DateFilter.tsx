@@ -1,6 +1,10 @@
 import { dateFrom, dateTo, dateUnknown, filterVersion } from '../state/filters';
 
-export function DateFilter() {
+interface DateFilterProps {
+  hasUnknownDates: boolean;
+}
+
+export function DateFilter({ hasUnknownDates }: DateFilterProps) {
   return (
     <div class="filter-section">
       <h3>Date Range</h3>
@@ -25,22 +29,24 @@ export function DateFilter() {
           }}
         />
       </div>
-      <label class="unknown-date-filter">
-        <input
-          type="checkbox"
-          checked={dateUnknown.value}
-          onChange={(e) => {
-            const checked = (e.target as HTMLInputElement).checked;
-            dateUnknown.value = checked;
-            if (checked) {
-              dateFrom.value = null;
-              dateTo.value = null;
-            }
-            filterVersion.value++;
-          }}
-        />
-        Unknown date only
-      </label>
+      {hasUnknownDates && (
+        <label class="unknown-date-filter">
+          <input
+            type="checkbox"
+            checked={dateUnknown.value}
+            onChange={(e) => {
+              const checked = (e.target as HTMLInputElement).checked;
+              dateUnknown.value = checked;
+              if (checked) {
+                dateFrom.value = null;
+                dateTo.value = null;
+              }
+              filterVersion.value++;
+            }}
+          />
+          Unknown date only
+        </label>
+      )}
     </div>
   );
 }
