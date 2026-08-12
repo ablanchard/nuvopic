@@ -5,6 +5,7 @@ import { SizeSlider } from './SizeSlider';
 import { TagFilter } from './TagFilter';
 import { PersonList } from './PersonList';
 import { DateFilter } from './DateFilter';
+import { LocationFilter } from './LocationFilter';
 import { SmartTagFilter } from './SmartTagFilter';
 import { FilteredPhotoActions } from './FilteredPhotoActions';
 import {
@@ -154,6 +155,7 @@ export function HomePage(_props: RoutableProps) {
       <SmartTagFilter />
       <PersonList />
       <TagFilter />
+      <LocationFilter />
       <DateFilter hasUnknownDates={(unknownDateCount ?? 0) > 0} />
       <FilteredPhotoActions
         photoCount={filteredPhotoCount}
@@ -231,7 +233,11 @@ export function HomePage(_props: RoutableProps) {
               </p>
               {selectedPhoto.location && (
                 <p class="location">
-                  Location: {selectedPhoto.location.name ||
+                  Location: {[
+                    selectedPhoto.location.name,
+                    selectedPhoto.location.region,
+                    selectedPhoto.location.country,
+                  ].filter(Boolean).join(', ') ||
                     `${selectedPhoto.location.lat.toFixed(4)}, ${selectedPhoto.location.lng.toFixed(4)}`}
                 </p>
               )}

@@ -11,6 +11,9 @@ export interface PhotoFilters {
   dateFrom?: Date;
   dateTo?: Date;
   dateUnknown?: boolean;
+  locationCity?: string;
+  locationRegion?: string;
+  locationCountry?: string;
   limit?: number;
   offset?: number;
 }
@@ -25,6 +28,8 @@ export interface PhotoWithStats {
   location_lat: number | null;
   location_lng: number | null;
   location_name: string | null;
+  location_region: string | null;
+  location_country: string | null;
   width: number | null;
   height: number | null;
   placeholder: string | null;
@@ -88,6 +93,24 @@ async function buildPhotoFilterSql(
     paramIndex++;
   }
 
+  if (filters.locationCountry) {
+    conditions.push(`p.location_country = $${paramIndex}`);
+    params.push(filters.locationCountry);
+    paramIndex++;
+  }
+
+  if (filters.locationRegion) {
+    conditions.push(`p.location_region = $${paramIndex}`);
+    params.push(filters.locationRegion);
+    paramIndex++;
+  }
+
+  if (filters.locationCity) {
+    conditions.push(`p.location_name = $${paramIndex}`);
+    params.push(filters.locationCity);
+    paramIndex++;
+  }
+
   if (filters.tagIds && filters.tagIds.length > 0) {
     conditions.push(`EXISTS (
       SELECT 1 FROM photo_tags pt
@@ -145,6 +168,8 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
       p.location_lat,
       p.location_lng,
       p.location_name,
+      p.location_region,
+      p.location_country,
       p.width,
       p.height,
       p.placeholder,
@@ -167,6 +192,53 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
     photos: photosResult.rows,
     total,
   };
+}
+
+export interface LocationFacet {
+  city: string;
+  region: string | null;
+  country: string;
+  count: number;
+}
+
+/** Count city/region/country combinations under the active non-location filters. */
+export async function getLocationFacets(
+  filters: Omit<PhotoFilters, "limit" | "offset">
+): Promise<LocationFacet[]> {
+  const {
+    locationCity: _locationCity,
+    locationRegion: _locationRegion,
+    locationCountry: _locationCountry,
+    ...baseFilters
+  } = filters;
+  const { whereClause, params } = await buildPhotoFilterSql(baseFilters);
+  const hasConditions = whereClause.length > 0;
+  const result = await query<{
+    city: string;
+    region: string | null;
+    country: string;
+    count: string;
+  }>(
+    `SELECT
+       p.location_name AS city,
+       p.location_region AS region,
+       p.location_country AS country,
+       COUNT(*)::int AS count
+     FROM photos p
+     ${whereClause}${hasConditions ? " AND" : " WHERE"}
+       p.location_name IS NOT NULL
+       AND p.location_country IS NOT NULL
+     GROUP BY p.location_country, p.location_region, p.location_name
+     ORDER BY p.location_country, p.location_region NULLS LAST, p.location_name`,
+    params
+  );
+
+  return result.rows.map((row) => ({
+    city: row.city,
+    region: row.region,
+    country: row.country,
+    count: parseInt(row.count, 10),
+  }));
 }
 
 export interface FilteredPhotoForReprocess {
@@ -255,6 +327,8 @@ export async function getPhotoWithDetails(id: string): Promise<PhotoWithStats | 
       p.location_lat,
       p.location_lng,
       p.location_name,
+      p.location_region,
+      p.location_country,
       p.width,
       p.height,
       p.placeholder,

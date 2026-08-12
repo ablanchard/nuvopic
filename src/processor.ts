@@ -6,6 +6,7 @@ import {
   generateCaption,
   detectFaces,
   resolvePhotoDate,
+  resolveLocation,
   type PhotoDatePrecision,
   type PhotoDateSource,
 } from "./extractors/index.js";
@@ -77,7 +78,13 @@ export interface ProcessPhotoOutput {
   takenAt: Date | null;
   takenAtPrecision: PhotoDatePrecision;
   takenAtSource: PhotoDateSource;
-  location: { lat: number; lng: number } | null;
+  location: {
+    lat: number;
+    lng: number;
+    name: string | null;
+    region: string | null;
+    country: string | null;
+  } | null;
   description: string | null;
   facesDetected: number;
   errors: string[];
@@ -112,6 +119,15 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
 
   const resolvedDate = resolvePhotoDate(exif.takenAt, s3Key);
   const { takenAt } = resolvedDate;
+  let resolvedLocation: ReturnType<typeof resolveLocation> = null;
+  if (exif.location) {
+    try {
+      resolvedLocation = resolveLocation(exif.location.lat, exif.location.lng);
+    } catch (error) {
+      // Location enrichment must never prevent the photo itself from importing.
+      logger.warn(`Offline location resolution failed for ${s3Path}:`, error);
+    }
+  }
 
   const tLookupStart = Date.now();
   const existingPhoto = await getPhotoByS3Path(s3Path);
@@ -125,6 +141,9 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
     takenAtSource: resolvedDate.source,
     locationLat: exif.location?.lat,
     locationLng: exif.location?.lng,
+    locationName: resolvedLocation?.name,
+    locationRegion: resolvedLocation?.region,
+    locationCountry: resolvedLocation?.country,
     description: data.skipCaption ? undefined : caption,
     placeholder,
     width,
@@ -164,7 +183,14 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
     takenAt,
     takenAtPrecision: resolvedDate.precision,
     takenAtSource: resolvedDate.source,
-    location: exif.location,
+    location: exif.location
+      ? {
+          ...exif.location,
+          name: resolvedLocation?.name ?? null,
+          region: resolvedLocation?.region ?? null,
+          country: resolvedLocation?.country ?? null,
+        }
+      : null,
     description: caption,
     facesDetected: faces.length,
     errors,

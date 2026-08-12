@@ -73,6 +73,9 @@ export function PhotoGrid({ onPhotoClick, onTotalChange }: PhotoGridProps) {
       tag: currentFilters.tag || undefined,
       person: currentFilters.person || undefined,
       smartTag: currentFilters.smartTag || undefined,
+      city: currentFilters.city || undefined,
+      region: currentFilters.region || undefined,
+      country: currentFilters.country || undefined,
       dateUnknown: currentFilters.dateUnknown || undefined,
     });
 
@@ -81,6 +84,9 @@ export function PhotoGrid({ onPhotoClick, onTotalChange }: PhotoGridProps) {
       tag: currentFilters.tag || undefined,
       person: currentFilters.person || undefined,
       smartTag: currentFilters.smartTag || undefined,
+      city: currentFilters.city || undefined,
+      region: currentFilters.region || undefined,
+      country: currentFilters.country || undefined,
       from: currentFilters.from || undefined,
       to: currentFilters.to || undefined,
       dateUnknown: currentFilters.dateUnknown || undefined,

@@ -547,6 +547,9 @@ curl -X POST http://localhost:8080/process \
 | taken_at | TIMESTAMP | When photo was taken |
 | location_lat | DOUBLE | GPS latitude |
 | location_lng | DOUBLE | GPS longitude |
+| location_name | TEXT | Offline-resolved nearest city |
+| location_region | TEXT | First-level administrative region |
+| location_country | TEXT | Country name |
 | description | TEXT | AI-generated caption |
 | thumbnail | BYTEA | 200x200 JPEG |
 
@@ -573,6 +576,7 @@ Many-to-many relationship for user-defined tags.
 | `npm run webapp:build` | Build frontend for production |
 | `npm run build:all` | Build backend + frontend |
 | `npm run init-db` | Initialize database schema |
+| `npm run backfill-locations` | Resolve city, region, and country for existing GPS-tagged photos |
 | `npm run docker:up` | Start local PostgreSQL + MinIO |
 | `npm run docker:down` | Stop local services |
 
@@ -625,3 +629,6 @@ test.
 ## License
 
 MIT
+
+City, region, and country resolution uses the SimpleMaps World Cities dataset,
+distributed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

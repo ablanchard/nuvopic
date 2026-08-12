@@ -8,7 +8,10 @@ vi.mock("../../src/db/client.js", () => ({
   query: queryMock,
 }));
 
-import { getFilteredPhotosForReprocess } from "../../src/db/search.js";
+import {
+  getFilteredPhotosForReprocess,
+  getLocationFacets,
+} from "../../src/db/search.js";
 
 describe("getFilteredPhotosForReprocess", () => {
   beforeEach(() => {
@@ -57,5 +60,40 @@ describe("getFilteredPhotosForReprocess", () => {
     expect(sql).not.toContain("p.taken_at >=");
     expect(sql).not.toContain("p.taken_at <=");
     expect(params).toEqual([]);
+  });
+
+  it("uses exact hierarchical location filters", async () => {
+    await getFilteredPhotosForReprocess({
+      locationCountry: "Spain",
+      locationRegion: "Catalonia",
+      locationCity: "Barcelona",
+    });
+
+    const [sql, params] = queryMock.mock.calls[0];
+    expect(sql).toContain("p.location_country = $1");
+    expect(sql).toContain("p.location_region = $2");
+    expect(sql).toContain("p.location_name = $3");
+    expect(params).toEqual(["Spain", "Catalonia", "Barcelona"]);
+  });
+
+  it("counts location facets under non-location filters", async () => {
+    queryMock.mockResolvedValueOnce({
+      rows: [
+        { city: "Barcelona", region: "Catalonia", country: "Spain", count: 7 },
+      ],
+    });
+
+    const result = await getLocationFacets({
+      search: "beach",
+      locationCountry: "Spain",
+    });
+
+    const [sql, params] = queryMock.mock.calls[0];
+    expect(sql).toContain("p.description ILIKE $1");
+    expect(sql).not.toContain("p.location_country =");
+    expect(params).toEqual(["%beach%"]);
+    expect(result).toEqual([
+      { city: "Barcelona", region: "Catalonia", country: "Spain", count: 7 },
+    ]);
   });
 });

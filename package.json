@@ -10,6 +10,7 @@
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "init-db": "tsx scripts/init-db.ts",
+    "backfill-locations": "tsx scripts/backfill-locations.ts",
     "provision-workspaces": "tsx scripts/provision-workspaces.ts",
     "migrate-s3-settings": "tsx scripts/migrate-s3-settings.ts",
     "docker:up": "docker-compose up -d",
@@ -30,9 +31,12 @@
     "@hono/node-server": "^1.19.9",
     "dotenv": "^17.3.1",
     "exif-reader": "^2.0.1",
+    "geokdbush": "^2.1.0",
     "hono": "^4.11.7",
+    "kdbush": "^4.1.0",
     "pg": "^8.13.0",
-    "sharp": "^0.33.5"
+    "sharp": "^0.33.5",
+    "world-cities-json": "^1.0.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

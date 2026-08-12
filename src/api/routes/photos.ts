@@ -9,6 +9,7 @@ import {
   getPhotoWithDetails,
   getTimelineIndex,
   getFilteredPhotosForReprocess,
+  getLocationFacets,
   type PhotoFilters,
   type FilteredPhotoForReprocess,
 } from "../../db/search.js";
@@ -90,6 +91,9 @@ function parseReprocessPhotoFilters(
     tagIds: tag ? [tag] : undefined,
     personId: stringValue("person"),
     smartTagId: stringValue("smartTag"),
+    locationCity: stringValue("city"),
+    locationRegion: stringValue("region"),
+    locationCountry: stringValue("country"),
     dateFrom: parseDateFilter(stringValue("from")),
     dateTo: parseDateFilter(stringValue("to")),
     dateUnknown: raw.dateUnknown === true,
@@ -249,6 +253,9 @@ photos.get("/", async (c) => {
   const to = c.req.query("to");
   const dateUnknown = c.req.query("dateUnknown") === "true";
   const smartTag = c.req.query("smartTag");
+  const city = c.req.query("city");
+  const region = c.req.query("region");
+  const country = c.req.query("country");
   const page = parseInt(c.req.query("page") ?? "1", 10);
   const limit = parseInt(c.req.query("limit") ?? "20", 10);
 
@@ -257,6 +264,9 @@ photos.get("/", async (c) => {
     tagIds: tag ? [tag] : undefined,
     personId: personId || undefined,
     smartTagId: smartTag || undefined,
+    locationCity: city || undefined,
+    locationRegion: region || undefined,
+    locationCountry: country || undefined,
     dateFrom: parseDateFilter(from),
     dateTo: parseDateFilter(to),
     dateUnknown,
@@ -279,8 +289,14 @@ photos.get("/", async (c) => {
       height: p.height,
       faceCount: p.face_count,
       tags: p.tags,
-      location: p.location_lat && p.location_lng
-        ? { lat: p.location_lat, lng: p.location_lng, name: p.location_name }
+      location: p.location_lat !== null && p.location_lng !== null
+        ? {
+            lat: p.location_lat,
+            lng: p.location_lng,
+            name: p.location_name,
+            region: p.location_region,
+            country: p.location_country,
+          }
         : null,
     })),
     pagination: {
@@ -289,6 +305,26 @@ photos.get("/", async (c) => {
       total,
       hasMore: page * limit < total,
     },
+  });
+});
+
+// Counted hierarchical location facets under the active non-location filters.
+photos.get("/location-facets", async (c) => {
+  const tag = c.req.query("tag");
+  const filters = {
+    search: c.req.query("q") || undefined,
+    tagIds: tag ? [tag] : undefined,
+    personId: c.req.query("person") || undefined,
+    smartTagId: c.req.query("smartTag") || undefined,
+    dateFrom: parseDateFilter(c.req.query("from")),
+    dateTo: parseDateFilter(c.req.query("to")),
+    dateUnknown: c.req.query("dateUnknown") === "true",
+  };
+
+  const facets = await getLocationFacets(filters);
+  return c.json({
+    facets,
+    total: facets.reduce((sum, facet) => sum + facet.count, 0),
   });
 });
 
@@ -301,12 +337,18 @@ photos.get("/timeline", async (c) => {
   const to = c.req.query("to");
   const dateUnknown = c.req.query("dateUnknown") === "true";
   const smartTag = c.req.query("smartTag");
+  const city = c.req.query("city");
+  const region = c.req.query("region");
+  const country = c.req.query("country");
 
   const filters = {
     search: q || undefined,
     tagIds: tag ? [tag] : undefined,
     personId: personId || undefined,
     smartTagId: smartTag || undefined,
+    locationCity: city || undefined,
+    locationRegion: region || undefined,
+    locationCountry: country || undefined,
     dateFrom: parseDateFilter(from),
     dateTo: parseDateFilter(to),
     dateUnknown,
@@ -745,8 +787,14 @@ photos.get("/:id", async (c) => {
     height: photo.height,
     faceCount: photo.face_count,
     tags: photo.tags,
-    location: photo.location_lat && photo.location_lng
-      ? { lat: photo.location_lat, lng: photo.location_lng, name: photo.location_name }
+    location: photo.location_lat !== null && photo.location_lng !== null
+      ? {
+          lat: photo.location_lat,
+          lng: photo.location_lng,
+          name: photo.location_name,
+          region: photo.location_region,
+          country: photo.location_country,
+        }
       : null,
   });
 });

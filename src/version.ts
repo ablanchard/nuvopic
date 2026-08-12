@@ -12,7 +12,7 @@
  */
 
 /** Overall process version (for local extraction: EXIF, placeholder, dimensions). */
-export const PROCESS_VERSION = "4.1.0";
+export const PROCESS_VERSION = "4.2.0";
 
 /** Caption model version — bump when changing the captioning model or prompt. */
 export const CAPTION_VERSION = "1.0.0";
@@ -25,6 +25,8 @@ export const FACES_VERSION = "1.0.0";
  * Used by the reprocess endpoint to inform the user what re-running will do.
  */
 export const PROCESS_CHANGELOG: Record<string, string> = {
+  "4.2.0":
+    "Resolve EXIF GPS coordinates to an offline city, region, and country for location facets and filtering.",
   "4.1.0":
     "Validate capture dates, read nested EXIF timestamps, track date precision/source, infer partial dates from structured storage paths, and mark unavailable dates as unknown.",
   "4.0.0":

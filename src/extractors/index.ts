@@ -8,6 +8,7 @@ export {
   type ResolvedPhotoDate,
 } from "./exif.js";
 export { generatePlaceholder } from "./thumbnail.js";
+export { resolveLocation, type ResolvedLocation } from "./location.js";
 export { generateCaption, loadCaptionModel } from "./caption.js";
 export {
   detectFaces,

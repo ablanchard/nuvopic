@@ -10,6 +10,8 @@ export interface PhotoRecord {
   location_lat: number | null;
   location_lng: number | null;
   location_name: string | null;
+  location_region: string | null;
+  location_country: string | null;
   description: string | null;
   placeholder: string | null;
   width: number | null;
@@ -43,6 +45,8 @@ export interface InsertPhotoParams {
   locationLat?: number | null;
   locationLng?: number | null;
   locationName?: string | null;
+  locationRegion?: string | null;
+  locationCountry?: string | null;
   description?: string | null;
   placeholder?: string | null;
   width?: number | null;
@@ -66,8 +70,8 @@ export interface InsertFaceParams {
 
 export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
   const result = await query<{ id: string }>(
-    `INSERT INTO photos (s3_path, taken_at, taken_at_precision, taken_at_source, location_lat, location_lng, location_name, description, placeholder, width, height, process_version, caption_version, faces_version)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+    `INSERT INTO photos (s3_path, taken_at, taken_at_precision, taken_at_source, location_lat, location_lng, location_name, location_region, location_country, description, placeholder, width, height, process_version, caption_version, faces_version)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
      ON CONFLICT (s3_path) DO UPDATE SET
        taken_at = CASE WHEN photos.taken_at_source = 'manual' THEN photos.taken_at ELSE EXCLUDED.taken_at END,
        taken_at_precision = CASE WHEN photos.taken_at_source = 'manual' THEN photos.taken_at_precision ELSE EXCLUDED.taken_at_precision END,
@@ -75,6 +79,8 @@ export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
        location_lat = COALESCE(EXCLUDED.location_lat, photos.location_lat),
        location_lng = COALESCE(EXCLUDED.location_lng, photos.location_lng),
        location_name = COALESCE(EXCLUDED.location_name, photos.location_name),
+       location_region = COALESCE(EXCLUDED.location_region, photos.location_region),
+       location_country = COALESCE(EXCLUDED.location_country, photos.location_country),
        description = COALESCE(EXCLUDED.description, photos.description),
        placeholder = COALESCE(EXCLUDED.placeholder, photos.placeholder),
        width = COALESCE(EXCLUDED.width, photos.width),
@@ -92,6 +98,8 @@ export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
       params.locationLat ?? null,
       params.locationLng ?? null,
       params.locationName ?? null,
+      params.locationRegion ?? null,
+      params.locationCountry ?? null,
       params.description ?? null,
       params.placeholder ?? null,
       params.width ?? null,

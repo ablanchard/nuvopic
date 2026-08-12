@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS photos (
     location_lat DOUBLE PRECISION,
     location_lng DOUBLE PRECISION,
     location_name TEXT,
+    location_region TEXT,
+    location_country TEXT,
     description TEXT,
     thumbnail BYTEA,
     process_version TEXT,
@@ -68,6 +70,23 @@ BEGIN
         WHERE table_name = 'photos' AND column_name = 'process_version'
     ) THEN
         ALTER TABLE photos ADD COLUMN process_version TEXT;
+    END IF;
+END $$;
+
+-- Migration: enrich GPS coordinates with an offline city-level location.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'photos' AND column_name = 'location_region'
+    ) THEN
+        ALTER TABLE photos ADD COLUMN location_region TEXT;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'photos' AND column_name = 'location_country'
+    ) THEN
+        ALTER TABLE photos ADD COLUMN location_country TEXT;
     END IF;
 END $$;
 

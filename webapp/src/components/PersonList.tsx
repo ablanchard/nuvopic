@@ -6,10 +6,14 @@ import { selectedPerson, filterVersion } from '../state/filters';
 export function PersonList() {
   const [persons, setPersons] = useState<Person[]>([]);
   const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState(true);
 
   useEffect(() => {
     api.persons.list()
-      .then((data) => setPersons(data.persons))
+      .then((data) => setPersons(
+        data.persons.sort((a, b) =>
+          b.faceCount - a.faceCount || a.name.localeCompare(b.name)),
+      ))
       .finally(() => setLoading(false));
   }, []);
 
@@ -22,8 +26,12 @@ export function PersonList() {
   }
 
   return (
-    <div class="filter-section">
-      <h3>People</h3>
+    <details
+      class="filter-section facet-filter"
+      open={expanded}
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+    >
+      <summary class="facet-filter-summary">People</summary>
       <div class="person-list">
         {persons.map((person) => (
           <button
@@ -39,6 +47,6 @@ export function PersonList() {
           </button>
         ))}
       </div>
-    </div>
+    </details>
   );
 }

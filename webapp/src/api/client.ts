@@ -39,6 +39,8 @@ export interface Photo {
     lat: number;
     lng: number;
     name: string | null;
+    region: string | null;
+    country: string | null;
   } | null;
 }
 
@@ -82,6 +84,9 @@ export interface PhotoFilters {
   from?: string;
   to?: string;
   dateUnknown?: boolean;
+  city?: string;
+  region?: string;
+  country?: string;
   page?: number;
   limit?: number;
 }
@@ -94,6 +99,18 @@ export interface TimelineGroup {
 
 export interface TimelineResponse {
   groups: TimelineGroup[];
+  total: number;
+}
+
+export interface LocationFacet {
+  city: string;
+  region: string | null;
+  country: string;
+  count: number;
+}
+
+export interface LocationFacetsResponse {
+  facets: LocationFacet[];
   total: number;
 }
 
@@ -541,6 +558,9 @@ export const api = {
       if (filters.from) params.set('from', filters.from);
       if (filters.to) params.set('to', filters.to);
       if (filters.dateUnknown) params.set('dateUnknown', 'true');
+      if (filters.city) params.set('city', filters.city);
+      if (filters.region) params.set('region', filters.region);
+      if (filters.country) params.set('country', filters.country);
       if (filters.page) params.set('page', String(filters.page));
       if (filters.limit) params.set('limit', String(filters.limit));
 
@@ -580,9 +600,30 @@ export const api = {
       if (filters.from) params.set('from', filters.from);
       if (filters.to) params.set('to', filters.to);
       if (filters.dateUnknown) params.set('dateUnknown', 'true');
+      if (filters.city) params.set('city', filters.city);
+      if (filters.region) params.set('region', filters.region);
+      if (filters.country) params.set('country', filters.country);
 
       const query = params.toString();
       return fetchApiJson<TimelineResponse>(`${API_BASE}/photos/timeline${query ? `?${query}` : ''}`);
+    },
+
+    locationFacets: (
+      filters: Omit<PhotoFilters, 'page' | 'limit' | 'city' | 'region' | 'country'> = {},
+    ): Promise<LocationFacetsResponse> => {
+      const params = new URLSearchParams();
+      if (filters.search) params.set('q', filters.search);
+      if (filters.tag) params.set('tag', filters.tag);
+      if (filters.person) params.set('person', filters.person);
+      if (filters.smartTag) params.set('smartTag', filters.smartTag);
+      if (filters.from) params.set('from', filters.from);
+      if (filters.to) params.set('to', filters.to);
+      if (filters.dateUnknown) params.set('dateUnknown', 'true');
+
+      const query = params.toString();
+      return fetchApiJson<LocationFacetsResponse>(
+        `${API_BASE}/photos/location-facets${query ? `?${query}` : ''}`,
+      );
     },
   },
 

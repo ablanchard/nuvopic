@@ -140,6 +140,39 @@ body {
   text-transform: uppercase;
 }
 
+.facet-filter-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+  color: #666;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+  list-style: none;
+  text-transform: uppercase;
+}
+
+.facet-filter-summary::-webkit-details-marker {
+  display: none;
+}
+
+.facet-filter-summary::after {
+  content: '›';
+  color: #999;
+  font-size: 1rem;
+  transform: rotate(90deg);
+  transition: transform 0.15s ease;
+}
+
+.facet-filter:not([open]) .facet-filter-summary {
+  margin-bottom: 0;
+}
+
+.facet-filter:not([open]) .facet-filter-summary::after {
+  transform: rotate(0deg);
+}
+
 .photo-actions-section {
   padding-top: 1rem;
   border-top: 1px solid #eee;
