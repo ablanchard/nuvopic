@@ -26,16 +26,16 @@
     "build:all": "npm run build && npm run webapp:build"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.700.0",
-    "@aws-sdk/s3-request-presigner": "^3.999.0",
-    "@hono/node-server": "^1.19.9",
+    "@aws-sdk/client-s3": "^3.1109.0",
+    "@aws-sdk/s3-request-presigner": "^3.1109.0",
+    "@hono/node-server": "^2.1.0",
     "dotenv": "^17.3.1",
     "exif-reader": "^2.0.1",
     "geokdbush": "^2.1.0",
-    "hono": "^4.11.7",
+    "hono": "^4.13.1",
     "kdbush": "^4.1.0",
     "pg": "^8.13.0",
-    "sharp": "^0.33.5",
+    "sharp": "^0.35.3",
     "world-cities-json": "^1.0.1"
   },
   "devDependencies": {
@@ -44,7 +44,7 @@
     "@types/pg": "^8.11.10",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
-    "vitest": "^2.1.0"
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=20.0.0"
