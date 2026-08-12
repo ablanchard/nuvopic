@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState } from 'preact/hooks';
 import { api } from '../api/client';
+import { whenNearViewport } from '../lib/nearViewport';
 
 interface FaceCropProps {
   faceId: string;
@@ -20,19 +21,8 @@ export function FaceCrop({ faceId, photoId, size = 80 }: FaceCropProps) {
   useEffect(() => {
     const image = imageRef.current;
     if (!image) return;
-    if (typeof IntersectionObserver === 'undefined') {
-      setNearViewport(true);
-      return;
-    }
 
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) {
-        setNearViewport(true);
-        observer.disconnect();
-      }
-    }, { rootMargin: '240px' });
-    observer.observe(image);
-    return () => observer.disconnect();
+    return whenNearViewport(image, () => setNearViewport(true));
   }, []);
 
   useEffect(() => {
