@@ -19,6 +19,14 @@ const S3_REQUIRED_KEYS = [
   "s3_access_key_id",
   "s3_secret_access_key",
 ] as const;
+const AUTO_IMPORT_KEYS = new Set([
+  "storage_provider",
+  "auto_import_enabled",
+  "auto_import_prefixes",
+  "auto_import_initial_mode",
+  "auto_import_gpu_mode",
+  "auto_import_scan_interval_minutes",
+]);
 
 const settings = new Hono();
 
@@ -70,6 +78,36 @@ settings.put("/", async (c) => {
     if (value === MASKED_VALUE) continue;
     entries[key] = value;
     if (key.startsWith(S3_SETTING_PREFIX)) hasS3Change = true;
+  }
+
+  if (entries.auto_import_enabled && !["true", "false"].includes(entries.auto_import_enabled)) {
+    return c.json({ error: "auto_import_enabled must be true or false" }, 400);
+  }
+  if (
+    entries.auto_import_initial_mode &&
+    !["new_only", "all"].includes(entries.auto_import_initial_mode)
+  ) {
+    return c.json({ error: "auto_import_initial_mode must be new_only or all" }, 400);
+  }
+  if (
+    entries.auto_import_gpu_mode &&
+    !["all", "caption-only", "faces-only", "skip"].includes(entries.auto_import_gpu_mode)
+  ) {
+    return c.json({ error: "Invalid auto_import_gpu_mode" }, 400);
+  }
+  if (entries.auto_import_scan_interval_minutes) {
+    const interval = Number(entries.auto_import_scan_interval_minutes);
+    if (!Number.isSafeInteger(interval) || interval < 1 || interval > 10080) {
+      return c.json(
+        { error: "auto_import_scan_interval_minutes must be between 1 and 10080" },
+        400
+      );
+    }
+  }
+  for (const key of Object.keys(entries)) {
+    if (key.startsWith("auto_import_") && !AUTO_IMPORT_KEYS.has(key)) {
+      return c.json({ error: `Unknown automatic import setting: ${key}` }, 400);
+    }
   }
 
   if (hasS3Change) {

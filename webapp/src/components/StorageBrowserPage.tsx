@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'preact/hooks';
 import { api } from '../api/client';
-import type { GpuWalletEstimate, StorageFolderInfo } from '../api/client';
+import type { AutomaticImportStatus, GpuWalletEstimate, StorageFolderInfo } from '../api/client';
 import { SettingsSidebar } from './SettingsSidebar';
 import type { RoutableProps } from 'preact-router';
 import { STORAGE_PATH } from '../routes';
@@ -16,6 +16,15 @@ interface FolderNode extends StorageFolderInfo {
 
 type GpuMode = 'all' | 'caption-only' | 'faces-only' | 'skip';
 
+function normalizeMonitorPrefixes(prefixes: string[]): string[] {
+  const sorted = [...new Set(prefixes)].sort(
+    (left, right) => left.length - right.length || left.localeCompare(right),
+  );
+  return sorted.filter(
+    (prefix, index) => !sorted.slice(0, index).some((parent) => prefix.startsWith(parent)),
+  );
+}
+
 /* =========================================================================
    Component
    ========================================================================= */
@@ -23,6 +32,7 @@ type GpuMode = 'all' | 'caption-only' | 'faces-only' | 'skip';
 export function StorageBrowserPage(_props: RoutableProps) {
   // Top-level browse state
   const [rootFolders, setRootFolders] = useState<FolderNode[]>([]);
+  const [bucketName, setBucketName] = useState('');
   const [rootImageCount, setRootImageCount] = useState(0);
   const [rootImportedCount, setRootImportedCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -43,6 +53,14 @@ export function StorageBrowserPage(_props: RoutableProps) {
   // Import progress
   const [importing, setImporting] = useState(false);
   const [walletEstimate, setWalletEstimate] = useState<GpuWalletEstimate | null>(null);
+
+  // Automatic import configuration and status
+  const [automaticImportStatus, setAutomaticImportStatus] = useState<AutomaticImportStatus | null>(null);
+  const [automaticInitialMode, setAutomaticInitialMode] = useState<'new_only' | 'all'>('new_only');
+  const [automaticGpuMode, setAutomaticGpuMode] = useState<GpuMode>('all');
+  const [automaticScanInterval, setAutomaticScanInterval] = useState(10);
+  const [automaticSaving, setAutomaticSaving] = useState(false);
+  const [automaticScanning, setAutomaticScanning] = useState(false);
 
   // Child folders cache: prefix -> FolderNode[]
   const [childrenCache, setChildrenCache] = useState<Map<string, FolderNode[]>>(new Map());
@@ -80,7 +98,17 @@ export function StorageBrowserPage(_props: RoutableProps) {
   const refresh = useCallback(async (forceCountRefresh: boolean = false) => {
     setLoading(true);
     try {
-      const data = await api.storage.browse('');
+      const [data, automaticImport] = await Promise.all([
+        api.storage.browse(''),
+        api.storage.automaticImportStatus(),
+      ]);
+      setBucketName(data.bucket);
+      setAutomaticImportStatus(automaticImport);
+      if (automaticImport.connection) {
+        setAutomaticInitialMode(automaticImport.connection.initialImportMode);
+        setAutomaticGpuMode(automaticImport.connection.gpuMode);
+        setAutomaticScanInterval(automaticImport.connection.scanIntervalMinutes);
+      }
       setRootFolders((previousFolders) => {
         const previousByPrefix = new Map(
           previousFolders.map((folder) => [folder.prefix, folder])
@@ -172,6 +200,8 @@ export function StorageBrowserPage(_props: RoutableProps) {
       if (next.has(prefix)) {
         next.delete(prefix);
       } else {
+        if (prefix === '') return new Set(['']);
+        next.delete('');
         next.add(prefix);
       }
       return next;
@@ -253,6 +283,147 @@ export function StorageBrowserPage(_props: RoutableProps) {
     }
   };
 
+  const refreshAutomaticImportStatus = async () => {
+    const next = await api.storage.automaticImportStatus();
+    setAutomaticImportStatus(next);
+    return next;
+  };
+
+  const saveAutomaticImportConfig = async (prefixes: string[], enabled: boolean) => {
+    await api.settings.update({
+      auto_import_enabled: enabled ? 'true' : 'false',
+      auto_import_prefixes: prefixes.join(','),
+      auto_import_initial_mode: automaticInitialMode,
+      auto_import_gpu_mode: automaticGpuMode,
+      auto_import_scan_interval_minutes: String(automaticScanInterval),
+    });
+    return refreshAutomaticImportStatus();
+  };
+
+  const handleSaveAutomaticImport = async () => {
+    if (selectedPrefixes.size === 0) return;
+    setAutomaticSaving(true);
+    setStatus(null);
+    try {
+      const connection = automaticImportStatus?.connection;
+      const selected = Array.from(selectedPrefixes);
+      const wholeBucketSelected = selectedPrefixes.has('');
+      const alreadyWatchingWholeBucket = connection?.enabled && connection.allowedPrefixes.length === 0;
+      const existing = connection?.enabled ? connection.allowedPrefixes : [];
+      const prefixes = wholeBucketSelected || alreadyWatchingWholeBucket
+        ? []
+        : normalizeMonitorPrefixes([...existing, ...selected]);
+      await saveAutomaticImportConfig(prefixes, true);
+      setSelectedPrefixes(new Set());
+      setStatus({
+        type: 'success',
+        message: prefixes.length === 0
+          ? 'The entire bucket is monitored automatically.'
+          : `Added selected paths. ${prefixes.length} monitor${prefixes.length === 1 ? ' is' : 's are'} active.`,
+      });
+    } catch (err) {
+      setStatus({
+        type: 'error',
+        message: `Failed to save automatic folders: ${err instanceof Error ? err.message : 'Unknown error'}`,
+      });
+    } finally {
+      setAutomaticSaving(false);
+    }
+  };
+
+  const handleSaveAutomaticOptions = async () => {
+    const connection = automaticImportStatus?.connection;
+    if (!connection?.enabled) return;
+    setAutomaticSaving(true);
+    setStatus(null);
+    try {
+      await saveAutomaticImportConfig(connection.allowedPrefixes, true);
+      setStatus({ type: 'success', message: 'Automatic monitor settings updated.' });
+    } catch (err) {
+      setStatus({
+        type: 'error',
+        message: `Failed to update monitor settings: ${err instanceof Error ? err.message : 'Unknown error'}`,
+      });
+    } finally {
+      setAutomaticSaving(false);
+    }
+  };
+
+  const handleRemoveAutomaticMonitor = async (prefix: string) => {
+    const connection = automaticImportStatus?.connection;
+    if (!connection?.enabled) return;
+    setAutomaticSaving(true);
+    setStatus(null);
+    try {
+      if (prefix === '' || connection.allowedPrefixes.length <= 1) {
+        await saveAutomaticImportConfig([], false);
+        setStatus({ type: 'success', message: 'The last automatic monitor was removed.' });
+      } else {
+        const remaining = connection.allowedPrefixes.filter((candidate) => candidate !== prefix);
+        await saveAutomaticImportConfig(remaining, true);
+        setStatus({
+          type: 'success',
+          message: `Monitor removed. ${remaining.length} monitor${remaining.length === 1 ? ' remains' : 's remain'}.`,
+        });
+      }
+    } catch (err) {
+      setStatus({
+        type: 'error',
+        message: `Failed to remove monitor: ${err instanceof Error ? err.message : 'Unknown error'}`,
+      });
+    } finally {
+      setAutomaticSaving(false);
+    }
+  };
+
+  const handleDisableAutomaticImport = async () => {
+    setAutomaticSaving(true);
+    setStatus(null);
+    try {
+      await saveAutomaticImportConfig([], false);
+      setStatus({ type: 'success', message: 'All automatic monitors stopped.' });
+    } catch (err) {
+      setStatus({
+        type: 'error',
+        message: `Failed to stop automatic import: ${err instanceof Error ? err.message : 'Unknown error'}`,
+      });
+    } finally {
+      setAutomaticSaving(false);
+    }
+  };
+
+  const handleAutomaticScan = async () => {
+    setAutomaticScanning(true);
+    setStatus(null);
+    try {
+      await api.storage.reconcile();
+      await refreshAutomaticImportStatus();
+      setStatus({ type: 'success', message: 'Automatic import scan scheduled.' });
+    } catch (err) {
+      setStatus({
+        type: 'error',
+        message: `Failed to schedule scan: ${err instanceof Error ? err.message : 'Unknown error'}`,
+      });
+    } finally {
+      setAutomaticScanning(false);
+    }
+  };
+
+  const isAutomaticallyMonitored = (prefix: string): boolean => {
+    const connection = automaticImportStatus?.connection;
+    if (!connection?.enabled) return false;
+    if (connection.allowedPrefixes.length === 0) return true;
+    return connection.allowedPrefixes.some(
+      (allowed) => prefix === allowed || prefix.startsWith(allowed)
+    );
+  };
+
+  const containsAutomaticallyMonitoredPath = (prefix: string): boolean => {
+    const connection = automaticImportStatus?.connection;
+    if (!connection?.enabled || connection.allowedPrefixes.length === 0) return false;
+    return connection.allowedPrefixes.some((allowed) => allowed.startsWith(prefix));
+  };
+
   /* -----------------------------------------------------------------------
      Render folder tree recursively
      ----------------------------------------------------------------------- */
@@ -261,6 +432,8 @@ export function StorageBrowserPage(_props: RoutableProps) {
     const isExpanded = expandedPrefixes.has(folder.prefix);
     const isSelected = selectedPrefixes.has(folder.prefix);
     const isLoading = loadingPrefixes.has(folder.prefix);
+    const isMonitored = isAutomaticallyMonitored(folder.prefix);
+    const containsMonitoredPath = !isMonitored && containsAutomaticallyMonitoredPath(folder.prefix);
     const children = childrenCache.get(folder.prefix);
     const childImageInfo = childrenImageCounts.get(folder.prefix);
 
@@ -303,6 +476,16 @@ export function StorageBrowserPage(_props: RoutableProps) {
                   {folder.importedCount > 0 ? `${folder.importedCount} imported · ` : ''}counting…
                 </span>
               )}
+              {isMonitored && (
+                <span class="storage-tree-auto" title="New photos in this folder are imported automatically">
+                  automatic
+                </span>
+              )}
+              {containsMonitoredPath && (
+                <span class="storage-tree-auto storage-tree-auto--partial" title="A nested folder is imported automatically">
+                  automatic inside
+                </span>
+              )}
             </span>
           </label>
         </div>
@@ -341,52 +524,156 @@ export function StorageBrowserPage(_props: RoutableProps) {
       <SettingsSidebar activePath={STORAGE_PATH} />
 
       <main class="main-content">
-        {loading ? (
-          <div class="settings-container">
-            {/* Skeleton: Import Options */}
+        <div class="settings-container">
+            {/* Automatic import controls */}
             <div class="settings-section">
-              <h2 class="settings-section-title">Import Options</h2>
+              <h2 class="settings-section-title">Automatic Import</h2>
               <div class="settings-card">
-                <div class="storage-skeleton-toggles">
-                  <div class="storage-skeleton-toggle">
-                    <div class="skeleton-line storage-skeleton-checkbox" />
-                    <div class="skeleton-line" style="width: 130px" />
+                <div class="storage-auto-status">
+                  <div>
+                    <strong>
+                      {automaticImportStatus?.connection?.enabled
+                        ? automaticImportStatus.connection.allowedPrefixes.length === 0
+                          ? '1 monitor active'
+                          : `${automaticImportStatus.connection.allowedPrefixes.length} monitor${automaticImportStatus.connection.allowedPrefixes.length === 1 ? '' : 's'} active`
+                        : 'No active monitors'}
+                    </strong>
+                    <p class="storage-import-hint">
+                      {automaticImportStatus?.connection?.enabled
+                        ? automaticImportStatus.connection.allowedPrefixes.length === 0
+                          ? `Watching the entire ${automaticImportStatus.connection.bucket} bucket.`
+                          : 'Each path below is an active monitor. Processing and scan settings apply to all monitors.'
+                        : 'Select the bucket or one or more folders below, then add them as monitors.'}
+                    </p>
+                    {automaticImportStatus?.connection?.enabled && (
+                      <div class="storage-monitor-list">
+                        {(automaticImportStatus.connection.allowedPrefixes.length === 0
+                          ? ['']
+                          : automaticImportStatus.connection.allowedPrefixes
+                        ).map((prefix) => (
+                          <div key={prefix || '__bucket__'} class="storage-monitor-item">
+                            <span class="storage-monitor-indicator" aria-hidden="true" />
+                            <span class="storage-monitor-path">
+                              {prefix || `${automaticImportStatus.connection?.bucket ?? 'Bucket'} (entire bucket)`}
+                            </span>
+                            <button
+                              type="button"
+                              class="storage-monitor-remove"
+                              onClick={() => handleRemoveAutomaticMonitor(prefix)}
+                              disabled={automaticSaving || automaticScanning}
+                              title={`Remove monitor for ${prefix || 'the entire bucket'}`}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {automaticImportStatus?.connection?.lastError && (
+                      <p class="storage-auto-error">Last scan error: {automaticImportStatus.connection.lastError}</p>
+                    )}
+                    {automaticImportStatus?.connection?.lastReconciledAt && (
+                      <p class="storage-import-hint">
+                        Last scan: {new Date(automaticImportStatus.connection.lastReconciledAt).toLocaleString()}
+                      </p>
+                    )}
+                    <p class="storage-import-hint">
+                      Queue: {automaticImportStatus?.jobs.pending ?? 0} pending, {automaticImportStatus?.jobs.running ?? 0} processing, {automaticImportStatus?.jobs.failed ?? 0} failed, {automaticImportStatus?.jobs.completed ?? 0} completed
+                    </p>
                   </div>
-                  <div class="storage-skeleton-toggle">
-                    <div class="skeleton-line storage-skeleton-checkbox" />
-                    <div class="skeleton-line" style="width: 110px" />
-                  </div>
-                  <div class="storage-skeleton-toggle">
-                    <div class="skeleton-line storage-skeleton-checkbox" />
-                    <div class="skeleton-line" style="width: 100px" />
+                  <div class={`storage-auto-state ${automaticImportStatus?.connection?.enabled ? 'storage-auto-state--active' : ''}`}>
+                    {automaticImportStatus?.connection?.enabled ? 'Active' : 'Stopped'}
                   </div>
                 </div>
-                <div>
-                  <div class="skeleton-line" style="width: 150px; height: 2rem; border-radius: 6px" />
+
+                <div class="storage-auto-options">
+                  <label>
+                    <span>First scan</span>
+                    <select
+                      class="setting-text-input"
+                      value={automaticInitialMode}
+                      onChange={(e) => setAutomaticInitialMode((e.target as HTMLSelectElement).value as 'new_only' | 'all')}
+                      disabled={automaticSaving}
+                    >
+                      <option value="new_only">Only photos added after setup</option>
+                      <option value="all">Import existing photos too</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Processing</span>
+                    <select
+                      class="setting-text-input"
+                      value={automaticGpuMode}
+                      onChange={(e) => setAutomaticGpuMode((e.target as HTMLSelectElement).value as GpuMode)}
+                      disabled={automaticSaving}
+                    >
+                      <option value="all">Captions and faces</option>
+                      <option value="caption-only">Captions only</option>
+                      <option value="faces-only">Faces only</option>
+                      <option value="skip">Metadata only</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Scan every</span>
+                    <div class="storage-auto-interval">
+                      <input
+                        type="number"
+                        class="setting-number-input"
+                        value={automaticScanInterval}
+                        min={1}
+                        max={10080}
+                        onInput={(e) => setAutomaticScanInterval(Math.min(10080, Math.max(1, parseInt((e.target as HTMLInputElement).value) || 10)))}
+                        disabled={automaticSaving}
+                      />
+                      <span>minutes</span>
+                    </div>
+                  </label>
+                </div>
+
+                <p class="storage-import-hint">
+                  Folder checkboxes below are used for both actions. Adding selected monitors keeps all existing monitors active.
+                  Selecting the entire bucket replaces path-specific coverage because it already includes every folder.
+                </p>
+                <div class="storage-import-actions storage-auto-actions">
+                  <button
+                    class="btn btn-primary"
+                    onClick={handleSaveAutomaticImport}
+                    disabled={automaticSaving || selectedCount === 0}
+                  >
+                    {automaticSaving ? 'Saving...' : `Add Selected Monitors (${selectedCount})`}
+                  </button>
+                  {automaticImportStatus?.connection?.enabled && (
+                    <>
+                      <button
+                        class="btn btn-secondary"
+                        onClick={handleSaveAutomaticOptions}
+                        disabled={automaticSaving || automaticScanning}
+                      >
+                        Save Monitor Settings
+                      </button>
+                      <button
+                        class="btn btn-secondary"
+                        onClick={handleAutomaticScan}
+                        disabled={automaticSaving || automaticScanning}
+                      >
+                        {automaticScanning ? 'Scheduling...' : 'Scan Now'}
+                      </button>
+                      <button
+                        class="btn btn-secondary storage-auto-stop"
+                        onClick={handleDisableAutomaticImport}
+                        disabled={automaticSaving || automaticScanning}
+                      >
+                        Stop All Monitors
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
 
-            {/* Skeleton: S3 Folders */}
+            {/* One-time import controls */}
             <div class="settings-section">
-              <h2 class="settings-section-title">S3 Folders</h2>
-              <div class="settings-card">
-                {[0.6, 0.4, 0.5, 0.35, 0.55, 0.3].map((w, i) => (
-                  <div key={i} class="storage-skeleton-folder-row">
-                    <div class="skeleton-line storage-skeleton-caret" />
-                    <div class="skeleton-line storage-skeleton-checkbox" />
-                    <div class="skeleton-line storage-skeleton-name" style={`width: ${w * 100}%`} />
-                    <div class="skeleton-line storage-skeleton-count" />
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div class="settings-container">
-            {/* Import controls */}
-            <div class="settings-section">
-              <h2 class="settings-section-title">Import Options</h2>
+              <h2 class="settings-section-title">One-time Import</h2>
               <div class="settings-card">
                 <div class="storage-import-controls">
                   <div class="storage-import-toggles">
@@ -438,7 +725,7 @@ export function StorageBrowserPage(_props: RoutableProps) {
                       onClick={handleImport}
                       disabled={importing || selectedCount === 0 || walletEstimate?.sufficient === false}
                     >
-                      {importing ? 'Importing...' : `Import Selected (${selectedCount})`}
+                      {importing ? 'Importing...' : `Import Selected Once (${selectedCount})`}
                     </button>
                   </div>
                 </div>
@@ -474,25 +761,37 @@ export function StorageBrowserPage(_props: RoutableProps) {
                 <button
                   class="storage-refresh-btn"
                   onClick={() => refresh(true)}
-                  disabled={importing}
+                  disabled={importing || loading}
                   title="Refresh folder listing"
                 >
                   &#8635;
                 </button>
               </div>
               <div class="settings-card">
-                {rootImageCount > 0 && (
-                  <div class="storage-root-info">
-                    <span>{rootImageCount} images at bucket root</span>
+                <p class="storage-import-hint storage-tree-instructions">
+                  Select the whole bucket or individual folders, then choose automatic monitoring or a one-time import above.
+                </p>
+                <label class="storage-root-info storage-root-select">
+                  <input
+                    type="checkbox"
+                    checked={selectedPrefixes.has('')}
+                    onChange={() => toggleSelect('')}
+                  />
+                  <strong>{bucketName || 'Bucket'} (entire bucket)</strong>
+                  <span class="storage-tree-counts">
+                    {rootImageCount > 0 && <span>{rootImageCount} images at bucket root</span>}
                     {rootImageCount - rootImportedCount > 0 && (
                       <span class="storage-tree-count-missing">
-                        ({rootImageCount - rootImportedCount} not imported)
+                        {rootImageCount - rootImportedCount} not imported
                       </span>
                     )}
-                  </div>
-                )}
+                    {isAutomaticallyMonitored('') && (
+                      <span class="storage-tree-auto">automatic</span>
+                    )}
+                  </span>
+                </label>
                 <div class="path-tree">
-                  {rootFolders.length === 0 ? (
+                  {!loading && rootFolders.length === 0 ? (
                     <p class="storage-tree-empty">No folders found in bucket.</p>
                   ) : (
                     rootFolders.map((folder) => renderFolder(folder))
@@ -501,7 +800,6 @@ export function StorageBrowserPage(_props: RoutableProps) {
               </div>
             </div>
           </div>
-        )}
       </main>
     </div>
   );

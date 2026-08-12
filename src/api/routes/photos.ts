@@ -28,6 +28,11 @@ import { getS3Bucket } from "../../db/settings.js";
 import { safeCreateGpuLog, safeCompleteGpuLog, safeFailGpuLog } from "../../db/gpu-logs.js";
 import type { PhotoDatePrecision, PhotoDateSource } from "../../extractors/exif.js";
 import { getGpuJobEstimate, type GpuJobEstimate } from "../../metering/gpu-metering.js";
+import {
+  enqueueReprocessJob,
+  getReprocessJob,
+  type ReprocessMode,
+} from "../../jobs/reprocess-jobs.js";
 
 const photos = new Hono();
 const THUMBNAIL_CACHE_DIR = path.join(os.tmpdir(), "nuvopic-thumbnails");
@@ -431,6 +436,26 @@ photos.get("/reprocess", async (c) => {
   });
 });
 
+photos.get("/reprocess/jobs/:jobId", async (c) => {
+  const job = await getReprocessJob(c.req.param("jobId"));
+  if (!job) return c.json({ error: "Reprocess job not found" }, 404);
+  return c.json({
+    id: job.id,
+    logId: job.gpuLogId,
+    mode: job.mode,
+    gpuMode: job.gpuMode,
+    provider: job.provider,
+    status: job.status,
+    photoCount: job.photoCount,
+    photosSucceeded: job.photosSucceeded,
+    photosFailed: job.photosFailed,
+    lastError: job.lastError,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+    completedAt: job.completedAt,
+  });
+});
+
 // Trigger reprocessing of outdated photos
 // Body options:
 //   { "force": true }             — reprocess all photos (not just outdated)
@@ -444,7 +469,11 @@ photos.post("/reprocess", async (c) => {
     .catch(() => ({}));
   const force: boolean = body.force === true;
   const skipModal: boolean = body.skipModal === true;
-  const mode: string = typeof body.mode === "string" ? body.mode : "all";
+  const requestedMode = typeof body.mode === "string" ? body.mode : "all";
+  if (requestedMode !== "all" && requestedMode !== "caption" && requestedMode !== "faces") {
+    return c.json({ error: "mode must be one of: all, caption, faces" }, 400);
+  }
+  const mode: ReprocessMode = requestedMode;
   const pathPrefix: string | undefined =
     typeof body.pathPrefix === "string" && body.pathPrefix
       ? body.pathPrefix
@@ -475,9 +504,26 @@ photos.post("/reprocess", async (c) => {
     photosToProcess = await getPhotosToReprocess(PROCESS_VERSION, pathPrefix);
   }
 
+  let gpuMode: GpuMode;
+  if (skipModal) {
+    gpuMode = "skip";
+  } else if (mode === "caption") {
+    gpuMode = "caption-only";
+  } else if (mode === "faces") {
+    gpuMode = "faces-only";
+  } else {
+    gpuMode = "all";
+  }
+
   if (photosToProcess.length === 0) {
     return c.json({
+      jobId: null,
+      logId: null,
+      status: "completed",
       message: "All photos are up to date",
+      mode: gpuMode,
+      gpuMode,
+      photoCount: 0,
       currentVersions: {
         process: PROCESS_VERSION,
         caption: CAPTION_VERSION,
@@ -490,93 +536,39 @@ photos.post("/reprocess", async (c) => {
     });
   }
 
-  // Resolve GPU mode
-  let gpuMode: GpuMode;
-  if (skipModal) {
-    gpuMode = "skip";
-  } else if (mode === "caption") {
-    gpuMode = "caption-only";
-  } else if (mode === "faces") {
-    gpuMode = "faces-only";
-  } else {
-    gpuMode = "all";
-  }
-
-  logger.info(`Reprocessing ${photosToProcess.length} photos (force=${force}, gpuMode=${gpuMode})`);
-  const startTime = Date.now();
-
-  // Build batch inputs, skipping any with invalid s3_path
-  const batchInputs: Array<{ id: string; s3Path: string; s3Bucket: string; s3Key: string }> = [];
-  const skipped: Array<{ id: string; s3Path: string; error: string }> = [];
-
-  for (const photo of photosToProcess) {
-    const match = photo.s3_path.match(/^s3:\/\/([^/]+)\/(.+)$/);
-    if (!match) {
-      skipped.push({ id: photo.id, s3Path: photo.s3_path, error: "Invalid s3_path format" });
-      continue;
-    }
-    batchInputs.push({ id: photo.id, s3Path: photo.s3_path, s3Bucket: match[1], s3Key: match[2] });
-  }
-
-  const provider = selectBatchGpuProvider(batchInputs.length, gpuMode);
-  const jobLogId = await safeCreateGpuLog({
-    type: "reprocess",
-    provider,
+  const provider = selectBatchGpuProvider(photosToProcess.length, gpuMode);
+  const job = await enqueueReprocessJob({
+    photos: photosToProcess,
+    mode,
     gpuMode,
-    photoCount: batchInputs.length,
+    provider,
+    force,
+    pathPrefix,
+    filters: body.filters,
   });
-
-  const batchResults = await processPhotoBatch(
-    batchInputs.map((p) => ({ s3Bucket: p.s3Bucket, s3Key: p.s3Key, gpuMode })),
-    (completed, total) => {
-      if (completed % 10 === 0 || completed === total) {
-        logger.info(`Reprocess progress: ${completed}/${total}`);
-      }
-    },
-    jobLogId,
-    { provider, externalJobId: jobLogId ?? undefined }
+  logger.info(
+    `Queued reprocess job ${job.id} for ${job.photoCount} photos ` +
+      `(force=${force}, gpuMode=${gpuMode}, provider=${provider})`
   );
 
-  // Merge results
-  const results = [
-    ...batchInputs.map((p, i) => ({
-      id: p.id,
-      s3Path: p.s3Path,
-      success: batchResults[i].errors.length === 0 || batchResults[i].photoId !== "",
-      error: batchResults[i].errors.length > 0 ? batchResults[i].errors.join("; ") : undefined,
-    })),
-    ...skipped.map((s) => ({ id: s.id, s3Path: s.s3Path, success: false, error: s.error })),
-  ];
-
-  const succeeded = results.filter((r) => r.success).length;
-  const failed = results.filter((r) => !r.success).length;
-  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-  // Complete the job-level GPU log
-  await safeCompleteGpuLog(jobLogId, { photosSucceeded: succeeded, photosFailed: failed });
-
-  // Auto-cluster newly detected faces after reprocess (only if we processed faces)
-  if (gpuMode === "all" || gpuMode === "faces-only") {
-    try {
-      const clusterResult = await clusterUnassignedFaces({ threshold: 0.6, strategy: "first" });
-      logger.info(`Auto-clustered ${clusterResult.clustered} faces into ${clusterResult.newClusters} new clusters`);
-    } catch (err) {
-      logger.error("Auto-clustering failed:", err);
-    }
-  }
-
   return c.json({
+    jobId: job.id,
+    logId: job.gpuLogId,
+    status: "queued",
     mode: gpuMode,
+    gpuMode,
+    provider,
+    photoCount: job.photoCount,
     currentVersions: {
       process: PROCESS_VERSION,
       caption: CAPTION_VERSION,
       faces: FACES_VERSION,
     },
-    reprocessed: succeeded,
-    failed,
-    elapsedSeconds: parseFloat(elapsed),
-    results,
-  });
+    reprocessed: 0,
+    failed: 0,
+    elapsedSeconds: 0,
+    results: [],
+  }, 202);
 });
 
 // Preview import: list S3 objects that would be imported

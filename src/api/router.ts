@@ -42,7 +42,8 @@ api.route("/tags", tags);
 api.route("/clusters", clusters);
 api.route("/runtime", runtime);
 api.route("/settings", settings);
-api.route("/gpu-logs", gpuLogs);
+api.route("/logs", gpuLogs);
+api.route("/gpu-logs", gpuLogs); // Backward-compatible API alias.
 api.route("/smart-tags", smartTags);
 api.route("/storage", storage);
 

@@ -458,28 +458,46 @@ export async function completeMeteredGpuJob(
   context: MeteringJobContext | null
 ): Promise<void> {
   if (!context) return;
+  await finalizeMeteredGpuJob(context.externalJobId);
+}
+
+async function finalizeMeteredGpuJob(externalJobId: string): Promise<void> {
+  const job = await query<{ status: string }>(
+    `SELECT status FROM gpu_metering_jobs WHERE external_job_id = $1`,
+    [externalJobId]
+  );
+  if (!job.rows[0] || job.rows[0].status === "settled" || job.rows[0].status === "cancelled") {
+    return;
+  }
   const usageCount = await query<{ count: string }>(
     `SELECT COUNT(*)::text AS count FROM gpu_metering_outbox
      WHERE external_job_id = $1 AND command_type = 'usage'`,
-    [context.externalJobId]
+    [externalJobId]
   );
   const hasUsage = usageCount.rows[0]?.count !== "0";
   const command = hasUsage ? "settlement" : "cancellation";
   await query(
     `UPDATE gpu_metering_jobs SET status = $2, updated_at = NOW()
      WHERE external_job_id = $1`,
-    [context.externalJobId, hasUsage ? "settlement_pending" : "failed"]
+    [externalJobId, hasUsage ? "settlement_pending" : "failed"]
   );
   await enqueueCommand(
-    context.externalJobId,
+    externalJobId,
     command,
-    `${command}:${context.externalJobId}`,
+    `${command}:${externalJobId}`,
     hasUsage ? {} : { reason: "No hosted GPU usage was recorded" }
   );
   try {
-    await flushMeteringOutbox(context.externalJobId);
+    await flushMeteringOutbox(externalJobId);
   } catch (error) {
     logger.error("GPU metering delivery remains pending in the durable outbox:", error);
     if (getGpuMeteringMode() === "enforce") throw error;
   }
+}
+
+/** Finalize a reservation whose worker lease expired before its normal finally block ran. */
+export async function completeInterruptedMeteredGpuJob(
+  externalJobId: string
+): Promise<void> {
+  await finalizeMeteredGpuJob(externalJobId);
 }

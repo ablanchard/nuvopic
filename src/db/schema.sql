@@ -281,7 +281,13 @@ CREATE TABLE IF NOT EXISTS settings (
 -- Seed default settings (insert only if not already present)
 INSERT INTO settings (key, value) VALUES
     ('face_min_confidence', '0.7'),
-    ('face_min_size', '2500')
+    ('face_min_size', '2500'),
+    ('storage_provider', 's3-compatible'),
+    ('auto_import_enabled', 'false'),
+    ('auto_import_prefixes', ''),
+    ('auto_import_initial_mode', 'new_only'),
+    ('auto_import_gpu_mode', 'all'),
+    ('auto_import_scan_interval_minutes', '10')
 ON CONFLICT (key) DO NOTHING;
 
 -- Migration: remove generate_thumbnail setting (no longer used)
@@ -314,7 +320,7 @@ CREATE TABLE IF NOT EXISTS gpu_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     -- Self-referencing: parent_id IS NULL = job-level, otherwise photo-level child
     parent_id UUID REFERENCES gpu_logs(id) ON DELETE CASCADE,
-    -- Log type: 'import' | 'reprocess' | 'caption' | 'faces' | 'analyze' | 'single'
+    -- Log type: 'inventory' | 'inventory-item' | 'import' | 'reprocess' | 'caption' | 'faces' | 'analyze' | 'single'
     type TEXT NOT NULL,
     -- GPU provider used: 'modal' | 'vastai' | 'local'
     provider TEXT,
@@ -381,6 +387,101 @@ CREATE INDEX IF NOT EXISTS idx_gpu_metering_outbox_pending
 CREATE INDEX IF NOT EXISTS idx_gpu_metering_jobs_status
     ON gpu_metering_jobs (status, updated_at);
 
+-- Provider-neutral object-storage connection used by automatic imports. The
+-- first product version has one settings-backed connection per workspace, but
+-- keeping the identity explicit lets future provider drivers share the same
+-- inventory and queue.
+CREATE TABLE IF NOT EXISTS storage_connections (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL DEFAULT 's3-compatible',
+    bucket TEXT NOT NULL,
+    allowed_prefixes TEXT[] NOT NULL DEFAULT '{}',
+    automatic_import_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    initial_import_mode TEXT NOT NULL DEFAULT 'new_only'
+        CHECK (initial_import_mode IN ('new_only', 'all')),
+    gpu_mode TEXT NOT NULL DEFAULT 'all'
+        CHECK (gpu_mode IN ('all', 'caption-only', 'faces-only', 'skip')),
+    scan_interval_minutes INTEGER NOT NULL DEFAULT 10
+        CHECK (scan_interval_minutes BETWEEN 1 AND 10080),
+    baseline_completed BOOLEAN NOT NULL DEFAULT FALSE,
+    last_reconciled_at TIMESTAMPTZ,
+    next_reconciliation_at TIMESTAMPTZ,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS inventory_sync_runs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    connection_id TEXT NOT NULL REFERENCES storage_connections(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'running'
+        CHECK (status IN ('running', 'completed', 'failed')),
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    page_count INTEGER NOT NULL DEFAULT 0,
+    object_count INTEGER NOT NULL DEFAULT 0,
+    queued_count INTEGER NOT NULL DEFAULT 0,
+    error TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_sync_runs_one_active
+    ON inventory_sync_runs (connection_id)
+    WHERE status = 'running';
+
+CREATE TABLE IF NOT EXISTS storage_objects (
+    connection_id TEXT NOT NULL REFERENCES storage_connections(id) ON DELETE CASCADE,
+    object_key TEXT NOT NULL,
+    etag TEXT,
+    version_id TEXT,
+    object_fingerprint TEXT NOT NULL,
+    size BIGINT,
+    last_modified TIMESTAMPTZ,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_run_id UUID REFERENCES inventory_sync_runs(id) ON DELETE SET NULL,
+    imported_at TIMESTAMPTZ,
+    imported_fingerprint TEXT,
+    missing_since TIMESTAMPTZ,
+    PRIMARY KEY (connection_id, object_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_storage_objects_last_seen_run
+    ON storage_objects (connection_id, last_seen_run_id);
+
+-- Durable, idempotent queue shared by inventory reconciliation and native
+-- provider event adapters.
+CREATE TABLE IF NOT EXISTS photo_import_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    connection_id TEXT NOT NULL REFERENCES storage_connections(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    provider_event_id TEXT,
+    object_key TEXT NOT NULL,
+    etag TEXT,
+    version_id TEXT,
+    object_fingerprint TEXT NOT NULL,
+    size BIGINT,
+    occurred_at TIMESTAMPTZ,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (connection_id, object_key, object_fingerprint)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_photo_import_jobs_provider_event
+    ON photo_import_jobs (connection_id, provider_event_id)
+    WHERE provider_event_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_photo_import_jobs_pending
+    ON photo_import_jobs (next_attempt_at, created_at)
+    WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_photo_import_jobs_status
+    ON photo_import_jobs (connection_id, status, updated_at);
+
 -- Durable queue for accepted managed webhook work. The worker discovers active
 -- workspaces through the control plane and claims rows with SKIP LOCKED.
 CREATE TABLE IF NOT EXISTS processing_jobs (
@@ -399,6 +500,62 @@ CREATE TABLE IF NOT EXISTS processing_jobs (
 
 CREATE INDEX IF NOT EXISTS idx_processing_jobs_pending
     ON processing_jobs (next_attempt_at, created_at)
+    WHERE status = 'pending';
+
+-- Durable queue for user-triggered photo reprocessing. The selected photos are
+-- snapshotted into item rows so retries (including forced reprocessing) resume
+-- only unfinished work instead of re-running the whole selection.
+CREATE TABLE IF NOT EXISTS reprocess_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    gpu_log_id UUID UNIQUE REFERENCES gpu_logs(id) ON DELETE SET NULL,
+    mode TEXT NOT NULL CHECK (mode IN ('all', 'caption', 'faces')),
+    gpu_mode TEXT NOT NULL CHECK (gpu_mode IN ('all', 'caption-only', 'faces-only', 'skip')),
+    provider TEXT NOT NULL CHECK (provider IN ('modal', 'vastai', 'local')),
+    force BOOLEAN NOT NULL DEFAULT FALSE,
+    path_prefix TEXT,
+    filters JSONB,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+    photo_count INTEGER NOT NULL CHECK (photo_count >= 0),
+    photos_succeeded INTEGER NOT NULL DEFAULT 0,
+    photos_failed INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    lease_owner TEXT,
+    lease_expires_at TIMESTAMPTZ,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS reprocess_job_items (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_id UUID NOT NULL REFERENCES reprocess_jobs(id) ON DELETE CASCADE,
+    photo_id UUID NOT NULL,
+    s3_path TEXT NOT NULL,
+    s3_bucket TEXT,
+    s3_key TEXT,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (job_id, photo_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reprocess_jobs_pending
+    ON reprocess_jobs (next_attempt_at, created_at)
+    WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_reprocess_jobs_lease
+    ON reprocess_jobs (lease_expires_at)
+    WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_reprocess_job_items_pending
+    ON reprocess_job_items (job_id, created_at)
     WHERE status = 'pending';
 
 -- Smart tags: user-defined rule-based tags evaluated at query time

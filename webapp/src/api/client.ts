@@ -140,7 +140,7 @@ export interface GpuLog {
   gpuMode: string | null;
   photoId: string | null;
   s3Path: string | null;
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'completed' | 'failed' | 'queued' | 'duplicate' | 'baseline' | 'unsupported';
   photoCount: number | null;
   photosSucceeded: number | null;
   photosFailed: number | null;
@@ -233,6 +233,32 @@ export interface StorageBrowseCountsResponse {
   }>;
 }
 
+export interface AutomaticImportStatus {
+  connection: {
+    provider: string;
+    bucket: string;
+    allowedPrefixes: string[];
+    enabled: boolean;
+    initialImportMode: 'new_only' | 'all';
+    gpuMode: 'all' | 'caption-only' | 'faces-only' | 'skip';
+    scanIntervalMinutes: number;
+    baselineCompleted: boolean;
+    lastReconciledAt: string | null;
+    nextReconciliationAt: string | null;
+    lastError: string | null;
+  } | null;
+  jobs: Partial<Record<'pending' | 'running' | 'completed' | 'failed', number>>;
+  lastRun: {
+    id: string;
+    status: 'running' | 'completed' | 'failed';
+    startedAt: string;
+    completedAt: string | null;
+    objectCount: number;
+    queuedCount: number;
+    error: string | null;
+  } | null;
+}
+
 export interface ImportOptions {
   prefix: string;
   limit?: number;
@@ -288,7 +314,13 @@ export interface ReprocessStatsResponse {
 }
 
 export interface ReprocessTriggerResponse {
+  jobId: string | null;
+  logId: string | null;
+  status: 'queued' | 'completed';
   mode: string;
+  gpuMode: string;
+  provider?: string;
+  photoCount: number;
   currentVersions: {
     process: string;
     caption: string;
@@ -303,6 +335,22 @@ export interface ReprocessTriggerResponse {
     success: boolean;
     error?: string;
   }>;
+}
+
+export interface ReprocessJobResponse {
+  id: string;
+  logId: string | null;
+  mode: string;
+  gpuMode: string;
+  provider: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  photoCount: number;
+  photosSucceeded: number;
+  photosFailed: number;
+  lastError: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
 }
 
 type S3ConfigResponse = Record<
@@ -705,15 +753,15 @@ export const api = {
       if (filters.limit) params.set('limit', String(filters.limit));
 
       const query = params.toString();
-      return fetchApiJson<GpuLogListResponse>(`${API_BASE}/gpu-logs${query ? `?${query}` : ''}`);
+      return fetchApiJson<GpuLogListResponse>(`${API_BASE}/logs${query ? `?${query}` : ''}`);
     },
 
     get: (id: string): Promise<GpuLogDetailResponse> => {
-      return fetchApiJson<GpuLogDetailResponse>(`${API_BASE}/gpu-logs/${id}`);
+      return fetchApiJson<GpuLogDetailResponse>(`${API_BASE}/logs/${id}`);
     },
 
     getChildren: (id: string): Promise<{ children: GpuLog[] }> => {
-      return fetchApiJson<{ children: GpuLog[] }>(`${API_BASE}/gpu-logs/${id}/children`);
+      return fetchApiJson<{ children: GpuLog[] }>(`${API_BASE}/logs/${id}/children`);
     },
   },
 
@@ -754,6 +802,16 @@ export const api = {
   },
 
   storage: {
+    automaticImportStatus: (): Promise<AutomaticImportStatus> => {
+      return fetchApiJson<AutomaticImportStatus>(`${API_BASE}/storage/automatic-import`);
+    },
+
+    reconcile: (): Promise<{ status: string }> => {
+      return fetchApiJson<{ status: string }>(`${API_BASE}/storage/automatic-import/reconcile`, {
+        method: 'POST',
+      });
+    },
+
     browse: (prefix: string = ''): Promise<StorageBrowseResponse> => {
       const params = new URLSearchParams();
       if (prefix) params.set('prefix', prefix);
@@ -839,6 +897,10 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(options),
       });
+    },
+
+    getJob: (jobId: string): Promise<ReprocessJobResponse> => {
+      return fetchApiJson<ReprocessJobResponse>(`${API_BASE}/photos/reprocess/jobs/${jobId}`);
     },
   },
 };

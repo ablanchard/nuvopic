@@ -17,11 +17,19 @@ import { getDeployMode, isManagedMode } from "./config/runtime.js";
 import { getSetting } from "./db/settings.js";
 import { closePool, runWithWorkspaceContext } from "./db/client.js";
 import {
-  enqueueS3WebhookJob,
-  processPendingJobsInCurrentWorkspace,
   startProcessingJobWorker,
   stopProcessingJobWorker,
 } from "./jobs/processing-jobs.js";
+import {
+  enqueueAwsS3Webhook,
+  processPendingAutomaticImports,
+  startAutomaticImportWorker,
+  stopAutomaticImportWorker,
+} from "./jobs/automatic-imports.js";
+import {
+  startReprocessJobWorker,
+  stopReprocessJobWorker,
+} from "./jobs/reprocess-jobs.js";
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const SHUTDOWN_TIMEOUT_MS = parseInt(
@@ -31,46 +39,6 @@ const SHUTDOWN_TIMEOUT_MS = parseInt(
 const activeBackgroundJobs = new Set<Promise<void>>();
 let isShuttingDown = false;
 
-interface NormalizedS3EventRecord {
-  s3: {
-    bucket: {
-      name: string;
-    };
-    object: {
-      key: string;
-    };
-  };
-}
-
-interface NormalizedS3Event {
-  Records: NormalizedS3EventRecord[];
-}
-
-function normalizeS3Event(event: unknown): NormalizedS3Event {
-  if (
-    typeof event === "object" &&
-    event !== null &&
-    "Records" in event &&
-    Array.isArray((event as { Records?: unknown[] }).Records)
-  ) {
-    return event as NormalizedS3Event;
-  }
-
-  if (Array.isArray(event)) {
-    return { Records: event as NormalizedS3EventRecord[] };
-  }
-
-  if (
-    typeof event === "object" &&
-    event !== null &&
-    "s3" in event
-  ) {
-    return { Records: [event as NormalizedS3EventRecord] };
-  }
-
-  throw new Error("Unsupported webhook payload");
-}
-
 function getWebhookToken(c: Context): string | null {
   return c.req.query("token") ?? c.req.header("x-nuvopic-webhook-secret") ?? null;
 }
@@ -79,32 +47,15 @@ async function processWebhookEvent(
   c: Context,
   event: unknown
 ): Promise<Response> {
-  const s3Event = normalizeS3Event(event);
-
-  const job = handler(s3Event)
-    .then((result) => {
-      const body = JSON.parse(result.body);
-      logger.info(`Webhook processing complete: ${body.processed} photos processed`);
-    })
+  const result = await enqueueAwsS3Webhook(event);
+  const job = processPendingAutomaticImports(5)
+    .then(() => undefined)
     .catch((error) => {
-      logger.error("Webhook processing error:", error);
+      logger.error("Immediate automatic-import run failed:", error);
     });
   activeBackgroundJobs.add(job);
   void job.finally(() => activeBackgroundJobs.delete(job));
-
-  return c.json({ status: "accepted" }, 202);
-}
-
-async function queueManagedWebhookEvent(c: Context, event: unknown): Promise<Response> {
-  // Validate the shape before committing an accepted job to the durable queue.
-  normalizeS3Event(event);
-  const jobId = await enqueueS3WebhookJob(event);
-  const job = processPendingJobsInCurrentWorkspace(1).catch((error) => {
-    logger.error(`Immediate processing-job run failed after enqueueing ${jobId}:`, error);
-  });
-  activeBackgroundJobs.add(job);
-  void job.finally(() => activeBackgroundJobs.delete(job));
-  return c.json({ status: "accepted", jobId }, 202);
+  return c.json({ status: "accepted", ...result }, 202);
 }
 
 const app = new Hono();
@@ -164,7 +115,7 @@ app.post("/webhook/s3/:workspaceId", async (c) => {
       logger.info(
         `Managed webhook received for workspace=${workspaceId}: ${JSON.stringify(event).slice(0, 200)}`
       );
-      return await queueManagedWebhookEvent(c, event);
+      return await processWebhookEvent(c, event);
     });
   } catch (error) {
     logger.error("Managed webhook error:", error);
@@ -212,6 +163,8 @@ const server = serve({ fetch: app.fetch, port: PORT }, () => {
   logger.info(`API: http://localhost:${PORT}/api/v1`);
   logger.info(`Process endpoint: http://localhost:${PORT}/process`);
   startProcessingJobWorker();
+  startAutomaticImportWorker();
+  startReprocessJobWorker();
 });
 
 function closeServer(): Promise<void> {
@@ -246,6 +199,8 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   try {
     await closeServer();
     await stopProcessingJobWorker();
+    await stopAutomaticImportWorker();
+    await stopReprocessJobWorker();
 
     if (activeBackgroundJobs.size > 0) {
       logger.info(

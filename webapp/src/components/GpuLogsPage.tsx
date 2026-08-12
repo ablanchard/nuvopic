@@ -3,7 +3,7 @@ import { api } from '../api/client';
 import type { GpuLog, GpuLogFilters } from '../api/client';
 import { SettingsSidebar } from './SettingsSidebar';
 import type { RoutableProps } from 'preact-router';
-import { GPU_LOGS_PATH } from '../routes';
+import { LOGS_PATH } from '../routes';
 
 /** Format a duration in ms to a human-readable string. */
 function formatDuration(ms: number | null): string {
@@ -34,16 +34,22 @@ function StatusBadge({ status }: { status: string }) {
   const cls =
     status === 'completed'
       ? 'gpu-log-badge gpu-log-badge--completed'
+      : status === 'queued'
+        ? 'gpu-log-badge gpu-log-badge--queued'
       : status === 'failed'
         ? 'gpu-log-badge gpu-log-badge--failed'
-        : 'gpu-log-badge gpu-log-badge--running';
+        : status === 'duplicate'
+          ? 'gpu-log-badge gpu-log-badge--duplicate'
+          : status === 'baseline' || status === 'unsupported'
+            ? 'gpu-log-badge gpu-log-badge--neutral'
+            : 'gpu-log-badge gpu-log-badge--running';
 
   return <span class={cls}>{status}</span>;
 }
 
 /** Type badge component. */
 function TypeBadge({ type }: { type: string }) {
-  return <span class="gpu-log-type-badge">{type}</span>;
+  return <span class="gpu-log-type-badge">{type === 'inventory' ? 'inventory scan' : type}</span>;
 }
 
 /** Single expanded row showing children (per-photo logs). */
@@ -60,7 +66,7 @@ function ChildrenRows({ parentId }: { parentId: string }) {
   }, [parentId]);
 
   if (loading) return <tr><td colSpan={8} class="gpu-log-children-loading">Loading...</td></tr>;
-  if (children.length === 0) return <tr><td colSpan={8} class="gpu-log-children-loading">No per-photo logs</td></tr>;
+  if (children.length === 0) return <tr><td colSpan={8} class="gpu-log-children-loading">No item details</td></tr>;
 
   return (
     <>
@@ -75,7 +81,17 @@ function ChildrenRows({ parentId }: { parentId: string }) {
           <td><StatusBadge status={child.status} /></td>
           <td>{formatDuration(child.durationMs)}</td>
           <td class="gpu-log-error" title={child.error ?? ''}>
-            {child.error ? child.error.substring(0, 80) : '-'}
+            {child.error
+              ? child.error.substring(0, 80)
+              : child.status === 'duplicate'
+                ? 'Already present; no new job created'
+                : child.status === 'queued'
+                  ? 'Added to the import queue'
+                  : child.status === 'baseline'
+                    ? 'Recorded as part of the initial baseline'
+                    : child.status === 'unsupported'
+                      ? 'Not a supported photo type'
+                      : '-'}
           </td>
           <td>{formatDate(child.startedAt)}</td>
         </tr>
@@ -105,7 +121,7 @@ export function GpuLogsPage(_props: RoutableProps) {
       setLogs(res.logs);
       setTotal(res.pagination.total);
     } catch (err) {
-      console.error('Failed to load GPU logs:', err);
+      console.error('Failed to load logs:', err);
     } finally {
       setLoading(false);
     }
@@ -123,7 +139,7 @@ export function GpuLogsPage(_props: RoutableProps) {
 
    return (
     <div class="app-content">
-      <SettingsSidebar activePath={GPU_LOGS_PATH}>
+      <SettingsSidebar activePath={LOGS_PATH}>
         <h3 class="sidebar-heading" style="margin-top: 1.25rem;">Filters</h3>
         <div class="gpu-log-filters">
           <label class="gpu-log-filter-label">Type</label>
@@ -133,6 +149,7 @@ export function GpuLogsPage(_props: RoutableProps) {
             onChange={(e) => { setFilterType((e.target as HTMLSelectElement).value); setPage(1); }}
           >
             <option value="">All</option>
+            <option value="inventory">Inventory scan</option>
             <option value="import">Import</option>
             <option value="reprocess">Reprocess</option>
             <option value="single">Single</option>
@@ -146,6 +163,7 @@ export function GpuLogsPage(_props: RoutableProps) {
           >
             <option value="">All</option>
             <option value="running">Running</option>
+            <option value="queued">Queued</option>
             <option value="completed">Completed</option>
             <option value="failed">Failed</option>
           </select>
@@ -157,11 +175,12 @@ export function GpuLogsPage(_props: RoutableProps) {
       </SettingsSidebar>
 
       <main class="main-content">
+        <h2 class="settings-section-title">Logs</h2>
         {loading ? (
-          <div class="loading">Loading GPU logs...</div>
+          <div class="loading">Loading logs...</div>
         ) : logs.length === 0 ? (
           <div class="gpu-log-empty">
-            No GPU logs found.
+            No logs found.
             {(filterType || filterStatus) && ' Try clearing the filters.'}
           </div>
         ) : (
@@ -172,7 +191,7 @@ export function GpuLogsPage(_props: RoutableProps) {
                   <tr>
                     <th class="gpu-log-expand-col"></th>
                     <th>Type</th>
-                    <th>Photos</th>
+                    <th>Items</th>
                     <th>Provider</th>
                     <th>Status</th>
                     <th>Duration</th>
@@ -197,18 +216,35 @@ export function GpuLogsPage(_props: RoutableProps) {
                         </td>
                         <td><TypeBadge type={log.type} /></td>
                         <td>
-                          {log.photoCount ?? '-'}
-                          {log.photosSucceeded !== null && log.photosFailed !== null && (
-                            <span class="gpu-log-photo-counts">
-                              {' '}({log.photosSucceeded} ok / {log.photosFailed} err)
-                            </span>
+                          {log.type === 'inventory' ? (
+                            <>
+                              {log.photoCount ?? 0} found
+                              {log.photosSucceeded !== null && (
+                                <span class="gpu-log-photo-counts"> ({log.photosSucceeded} queued)</span>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              {log.photoCount ?? '-'}
+                              {log.photosSucceeded !== null && log.photosFailed !== null && (
+                                <span class="gpu-log-photo-counts">
+                                  {' '}({log.photosSucceeded} ok / {log.photosFailed} err)
+                                </span>
+                              )}
+                            </>
                           )}
                         </td>
                         <td>{log.provider ?? '-'}</td>
                         <td><StatusBadge status={log.status} /></td>
                         <td>{formatDuration(log.durationMs)}</td>
                         <td class="gpu-log-error" title={log.error ?? ''}>
-                          {log.error ? log.error.substring(0, 80) : log.status === 'completed' ? 'Success' : '-'}
+                          {log.error
+                            ? log.error.substring(0, 80)
+                            : log.status === 'completed'
+                              ? 'Success'
+                              : log.status === 'queued'
+                                ? 'Waiting for worker'
+                                : '-'}
                         </td>
                         <td>{formatDate(log.startedAt)}</td>
                       </tr>

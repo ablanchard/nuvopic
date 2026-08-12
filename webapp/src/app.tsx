@@ -13,7 +13,8 @@ import { api, configureApiRuntime, type RuntimeConfig, type RuntimeSession } fro
 import {
   APP_PATH,
   FACES_PATH,
-  GPU_LOGS_PATH,
+  LEGACY_GPU_LOGS_PATH,
+  LOGS_PATH,
   PHOTOS_PATH,
   REPROCESS_PATH,
   SETTINGS_PATH,
@@ -185,7 +186,8 @@ export function App() {
           session={session}
           onStorageConfigured={handleStorageConfigured}
         />
-        <GpuLogsPage path={GPU_LOGS_PATH} />
+        <GpuLogsPage path={LOGS_PATH} />
+        <GpuLogsPage path={LEGACY_GPU_LOGS_PATH} />
         <SmartTagsSettingsPage path={SMART_TAGS_PATH} />
         <StorageBrowserPage path={STORAGE_PATH} />
         <ReprocessPage path={REPROCESS_PATH} />

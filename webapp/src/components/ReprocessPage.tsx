@@ -3,7 +3,7 @@ import { api } from '../api/client';
 import type { ReprocessStatsResponse, PipelineStats, PathFacetEntry, GpuWalletEstimate } from '../api/client';
 import { SettingsSidebar } from './SettingsSidebar';
 import type { RoutableProps } from 'preact-router';
-import { GPU_LOGS_PATH, REPROCESS_PATH } from '../routes';
+import { LOGS_PATH, REPROCESS_PATH } from '../routes';
 
 /* =========================================================================
    Path tree helpers (shared pattern from SmartTagsSettingsPage)
@@ -289,6 +289,32 @@ export function ReprocessPage(_props: RoutableProps) {
     refresh();
   }, [refresh]);
 
+  const monitorQueuedJob = async (jobId: string) => {
+    for (;;) {
+      await new Promise((resolve) => window.setTimeout(resolve, 3000));
+      try {
+        const job = await api.reprocess.getJob(jobId);
+        if (job.status === 'completed') {
+          setStatus({
+            type: job.photosFailed > 0 ? 'error' : 'success',
+            message: `Reprocess completed: ${job.photosSucceeded} succeeded, ${job.photosFailed} failed out of ${job.photoCount} photos.`,
+          });
+          await refresh();
+          return;
+        }
+        if (job.status === 'failed') {
+          setStatus({
+            type: 'error',
+            message: `Reprocess failed: ${job.lastError ?? 'Unknown error'}`,
+          });
+          return;
+        }
+      } catch {
+        // The persisted job keeps running even if this status poll fails.
+      }
+    }
+  };
+
   // Handle reprocess trigger
   const handleTrigger = async (mode: string, force = false) => {
     if (force) {
@@ -307,13 +333,19 @@ export function ReprocessPage(_props: RoutableProps) {
       if (pathPrefix) options.pathPrefix = pathPrefix;
 
       const result = await api.reprocess.trigger(options);
-      const total = result.reprocessed + result.failed;
-      setStatus({
-        type: result.failed > 0 ? 'error' : 'success',
-        message: `Reprocess completed: ${result.reprocessed} succeeded, ${result.failed} failed out of ${total} photos (${result.elapsedSeconds.toFixed(1)}s).`,
-      });
-      // Refresh stats after reprocess
-      await refresh();
+      if (result.status === 'queued') {
+        setStatus({
+          type: 'success',
+          message: `Queued ${result.photoCount} photo${result.photoCount === 1 ? '' : 's'} for durable reprocessing. The job will continue after a restart.`,
+        });
+        if (result.jobId) void monitorQueuedJob(result.jobId);
+      } else {
+        setStatus({
+          type: 'success',
+          message: 'All selected photos are already up to date.',
+        });
+        await refresh();
+      }
     } catch (err) {
       setStatus({
         type: 'error',
@@ -430,7 +462,7 @@ export function ReprocessPage(_props: RoutableProps) {
                 <div class={`settings-status settings-status--${status.type}`}>
                   {status.message}
                   {' '}
-                  <a href={GPU_LOGS_PATH} class="reprocess-logs-link">View GPU Logs</a>
+                  <a href={LOGS_PATH} class="reprocess-logs-link">View Logs</a>
                 </div>
               )}
 

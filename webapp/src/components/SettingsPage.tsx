@@ -7,20 +7,42 @@ import { SETTINGS_PATH } from '../routes';
 const MASKED_VALUE = '__MASKED__';
 const SECRET_KEYS = new Set(['s3_secret_access_key']);
 const FACE_PAGE_SETTING_KEYS = new Set(['face_min_confidence', 'face_min_size']);
+const AUTOMATIC_IMPORT_SETTING_KEYS = new Set([
+  'auto_import_enabled',
+  'auto_import_prefixes',
+  'auto_import_initial_mode',
+  'auto_import_gpu_mode',
+  'auto_import_scan_interval_minutes',
+]);
 const STORAGE_SECTION = 'S3 Storage';
 
 type SettingDef = {
   label: string;
   description: string;
   section: string;
-  type: 'range' | 'number' | 'text' | 'password' | 'boolean';
+  type: 'range' | 'number' | 'text' | 'password' | 'boolean' | 'select';
   min?: number;
   max?: number;
   step?: number;
   placeholder?: string;
+  options?: Array<{ value: string; label: string }>;
 };
 
 const SETTING_DEFS: Record<string, SettingDef> = {
+  storage_provider: {
+    label: 'Storage Provider',
+    description: 'Used to identify events and select provider-specific notification support.',
+    section: STORAGE_SECTION,
+    type: 'select',
+    options: [
+      { value: 's3-compatible', label: 'S3-compatible' },
+      { value: 'amazon-s3', label: 'Amazon S3' },
+      { value: 'scaleway', label: 'Scaleway Object Storage' },
+      { value: 'cloudflare-r2', label: 'Cloudflare R2' },
+      { value: 'backblaze-b2', label: 'Backblaze B2' },
+      { value: 'google-cloud-storage', label: 'Google Cloud Storage' },
+    ],
+  },
   s3_bucket: {
     label: 'S3 Bucket',
     description: 'The bucket name NuvoPic should read and process in place.',
@@ -195,7 +217,7 @@ export function SettingsPage(props: SettingsPageProps) {
   };
 
   const allKeys = Array.from(new Set([...Object.keys(SETTING_DEFS), ...Object.keys(draft)]))
-    .filter((key) => !FACE_PAGE_SETTING_KEYS.has(key));
+    .filter((key) => !FACE_PAGE_SETTING_KEYS.has(key) && !AUTOMATIC_IMPORT_SETTING_KEYS.has(key));
   const groupedSections = groupBySection(allKeys);
   const sections = onboarding
     ? Object.entries(groupedSections).filter(([section]) => section === STORAGE_SECTION)
@@ -304,6 +326,17 @@ export function SettingsPage(props: SettingsPageProps) {
                               />
                               <span class="setting-toggle-label">{value === 'true' ? 'Enabled' : 'Disabled'}</span>
                             </label>
+                          ) : def.type === 'select' ? (
+                            <select
+                              id={`setting-${key}`}
+                              value={value}
+                              onChange={(e) => handleChange(key, (e.target as HTMLSelectElement).value)}
+                              class="setting-text-input"
+                            >
+                              {def.options?.map((option) => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </select>
                           ) : (
                             <input
                               type="number"

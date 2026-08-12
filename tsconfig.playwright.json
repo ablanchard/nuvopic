@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["playwright.config.ts", "tests/playwright/**/*.ts"],
+  "exclude": ["node_modules", "dist", "webapp/dist"]
+}

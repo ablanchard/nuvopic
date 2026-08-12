@@ -1,0 +1,99 @@
+name: Playwright
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pages:
+    name: Pages, storage, and GPU import
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: nuvopic_playwright
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d nuvopic_playwright"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      E2E_FULL_STACK: "true"
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/nuvopic_playwright
+      DATABASE_SSL: "false"
+      SETTINGS_KEK: playwright-settings-encryption-key
+      PROCESSING_MODE: modal
+      BATCH_GPU_PROVIDER: modal
+      MODAL_ENDPOINT_URL: http://127.0.0.1:9090/analyze
+      E2E_INFERENCE_URL: http://127.0.0.1:9090
+      E2E_S3_BUCKET: nuvopic-playwright
+      E2E_S3_REGION: us-east-1
+      E2E_S3_ENDPOINT: http://127.0.0.1:9000
+      E2E_S3_ACCESS_KEY_ID: minioadmin
+      E2E_S3_SECRET_ACCESS_KEY: minioadmin
+      E2E_S3_OBJECT_KEY: playwright/seed-photo.jpg
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install backend dependencies
+        run: npm ci
+
+      - name: Install webapp dependencies
+        run: npm ci
+        working-directory: webapp
+
+      - name: Build webapp
+        run: npm run webapp:build
+
+      - name: Build backend
+        run: npm run build
+
+      - name: Start isolated MinIO
+        run: >-
+          docker run --detach --name nuvopic-playwright-minio
+          --publish 9000:9000
+          --env MINIO_ROOT_USER=minioadmin
+          --env MINIO_ROOT_PASSWORD=minioadmin
+          minio/minio server /data
+
+      - name: Wait for MinIO
+        run: >-
+          curl --fail --retry 30 --retry-delay 1 --retry-all-errors
+          http://127.0.0.1:9000/minio/health/live
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Type-check Playwright tests
+        run: npm run test:e2e:typecheck
+
+      - name: Run browser and infrastructure tests
+        run: npm run test:e2e
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14

@@ -15,13 +15,28 @@ import { logger } from "../logger.js";
 
 export type GpuLogType =
   | "import"
+  | "inventory"
+  | "inventory-item"
   | "reprocess"
   | "caption"
   | "faces"
   | "analyze"
   | "single";
 
-export type GpuLogStatus = "running" | "completed" | "failed";
+export type GpuLogStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "queued"
+  | "duplicate"
+  | "baseline"
+  | "unsupported";
+
+export type InventoryItemLogStatus =
+  | "queued"
+  | "duplicate"
+  | "baseline"
+  | "unsupported";
 
 export interface CreateGpuLogInput {
   parentId?: string | null;
@@ -86,6 +101,7 @@ export async function createGpuLog(input: CreateGpuLogInput): Promise<string> {
 export async function completeGpuLog(
   id: string,
   opts?: {
+    photoCount?: number;
     photosSucceeded?: number;
     photosFailed?: number;
   }
@@ -95,25 +111,44 @@ export async function completeGpuLog(
      SET status = 'completed',
          completed_at = NOW(),
          duration_ms = EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000,
-         photos_succeeded = COALESCE($2, photos_succeeded),
-         photos_failed = COALESCE($3, photos_failed)
+         photo_count = COALESCE($2, photo_count),
+         photos_succeeded = COALESCE($3, photos_succeeded),
+         photos_failed = COALESCE($4, photos_failed)
      WHERE id = $1`,
-    [id, opts?.photosSucceeded ?? null, opts?.photosFailed ?? null]
+    [
+      id,
+      opts?.photoCount ?? null,
+      opts?.photosSucceeded ?? null,
+      opts?.photosFailed ?? null,
+    ]
   );
 }
 
 /**
  * Mark a gpu_logs entry as failed.
  */
-export async function failGpuLog(id: string, error: string): Promise<void> {
+export async function failGpuLog(
+  id: string,
+  error: string,
+  opts?: { photoCount?: number; photosSucceeded?: number; photosFailed?: number }
+): Promise<void> {
   await query(
     `UPDATE gpu_logs
      SET status = 'failed',
          completed_at = NOW(),
          duration_ms = EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000,
-         error = $2
+         error = $2,
+         photo_count = COALESCE($3, photo_count),
+         photos_succeeded = COALESCE($4, photos_succeeded),
+         photos_failed = COALESCE($5, photos_failed)
      WHERE id = $1`,
-    [id, error]
+    [
+      id,
+      error,
+      opts?.photoCount ?? null,
+      opts?.photosSucceeded ?? null,
+      opts?.photosFailed ?? null,
+    ]
   );
 }
 
@@ -140,7 +175,7 @@ export async function safeCreateGpuLog(
  */
 export async function safeCompleteGpuLog(
   id: string | null,
-  opts?: { photosSucceeded?: number; photosFailed?: number }
+  opts?: { photoCount?: number; photosSucceeded?: number; photosFailed?: number }
 ): Promise<void> {
   if (!id) return;
   try {
@@ -155,13 +190,54 @@ export async function safeCompleteGpuLog(
  */
 export async function safeFailGpuLog(
   id: string | null,
-  error: string
+  error: string,
+  opts?: { photoCount?: number; photosSucceeded?: number; photosFailed?: number }
 ): Promise<void> {
   if (!id) return;
   try {
-    await failGpuLog(id, error);
+    await failGpuLog(id, error, opts);
   } catch (err) {
     logger.error("Failed to fail GPU log:", err);
+  }
+}
+
+/** Record the final outcome for one object observed during an inventory scan. */
+export async function safeRecordInventoryItemLog(input: {
+  parentId: string | null;
+  provider: string;
+  s3Path: string;
+  status: InventoryItemLogStatus;
+}): Promise<void> {
+  if (!input.parentId) return;
+  try {
+    await query(
+      `INSERT INTO gpu_logs (
+         parent_id, type, provider, s3_path, status, started_at,
+         completed_at, duration_ms
+       ) VALUES ($1, 'inventory-item', $2, $3, $4, NOW(), NOW(), 0)`,
+      [input.parentId, input.provider, input.s3Path, input.status]
+    );
+  } catch (err) {
+    logger.error("Failed to record inventory item log:", err);
+  }
+}
+
+/** Keep detailed object rows for only the most recent inventory scans. */
+export async function safePruneInventoryLogs(retainScans = 20): Promise<void> {
+  try {
+    await query(
+      `DELETE FROM gpu_logs
+       WHERE parent_id IS NULL AND type = 'inventory'
+         AND id NOT IN (
+           SELECT id FROM gpu_logs
+           WHERE parent_id IS NULL AND type = 'inventory'
+           ORDER BY started_at DESC
+           LIMIT $1
+         )`,
+      [retainScans]
+    );
+  } catch (err) {
+    logger.error("Failed to prune inventory logs:", err);
   }
 }
 

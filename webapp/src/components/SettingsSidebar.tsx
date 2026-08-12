@@ -1,6 +1,6 @@
 import type { ComponentChildren } from 'preact';
 import {
-  GPU_LOGS_PATH,
+  LOGS_PATH,
   REPROCESS_PATH,
   SETTINGS_PATH,
   SMART_TAGS_PATH,
@@ -14,7 +14,7 @@ interface SettingsSidebarProps {
 
 const NAV_LINKS = [
   { href: SETTINGS_PATH, label: 'General' },
-  { href: GPU_LOGS_PATH, label: 'GPU Logs' },
+  { href: LOGS_PATH, label: 'Logs' },
   { href: SMART_TAGS_PATH, label: 'Smart Tags' },
   { href: STORAGE_PATH, label: 'Storage' },
   { href: REPROCESS_PATH, label: 'Reprocess' },

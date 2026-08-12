@@ -56,6 +56,33 @@ export function FilteredPhotoActions({ photoCount, onPhotosChanged }: FilteredPh
     return ` · up to ${amount}`;
   };
 
+  const monitorQueuedJob = async (jobId: string, refreshFromStorage: boolean) => {
+    for (;;) {
+      await new Promise((resolve) => window.setTimeout(resolve, 3000));
+      try {
+        const job = await api.reprocess.getJob(jobId);
+        if (job.status === 'completed') {
+          setStatus({
+            type: job.photosFailed > 0 ? 'error' : 'success',
+            message: `${refreshFromStorage ? 'Refresh' : 'Reprocess'} completed: ${job.photosSucceeded} succeeded, ${job.photosFailed} failed.`,
+          });
+          onPhotosChanged?.();
+          filterVersion.value++;
+          return;
+        }
+        if (job.status === 'failed') {
+          setStatus({
+            type: 'error',
+            message: `${refreshFromStorage ? 'Refresh' : 'Reprocess'} failed: ${job.lastError ?? 'Unknown error'}`,
+          });
+          return;
+        }
+      } catch {
+        // The job is durable; a transient status request failure should not stop monitoring it.
+      }
+    }
+  };
+
   const handleTrigger = async (action: PhotoAction) => {
     const refreshFromStorage = action === 'refresh';
     if (refreshFromStorage) {
@@ -77,26 +104,20 @@ export function FilteredPhotoActions({ photoCount, onPhotosChanged }: FilteredPh
         skipModal: refreshFromStorage || undefined,
         filters: { ...filters.value },
       });
-      const processed = result.reprocessed + result.failed;
-
-      if (processed === 0) {
+      if (result.status === 'queued') {
+        setStatus({
+          type: 'success',
+          message: `${refreshFromStorage ? 'Refresh' : 'Reprocess'} queued for ${result.photoCount} photo${result.photoCount === 1 ? '' : 's'}. It will continue after a restart.`,
+        });
+        if (result.jobId) void monitorQueuedJob(result.jobId, refreshFromStorage);
+      } else {
         setStatus({
           type: 'success',
           message: refreshFromStorage
             ? 'No matching photos were available to refresh.'
             : 'All matching photos are already up to date.',
         });
-      } else {
-        setStatus({
-          type: result.failed > 0 ? 'error' : 'success',
-          message: refreshFromStorage
-            ? `${result.reprocessed} refreshed from storage, ${result.failed} failed.`
-            : `${result.reprocessed} reprocessed, ${result.failed} failed.`,
-        });
       }
-
-      onPhotosChanged?.();
-      filterVersion.value++;
     } catch (err) {
       setStatus({
         type: 'error',

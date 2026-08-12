@@ -95,10 +95,19 @@ export class ModalGpuClient implements GpuClient {
     // before .modal.run) with the target method name.
     // e.g., "...-analyze.modal.run" → "...-caption.modal.run"
     const method = path.replace(/^\//, ""); // "/faces" → "faces"
-    const endpointUrl =
-      method === "analyze"
-        ? baseUrl
-        : baseUrl.replace(/-analyze\.modal\.run/, `-${method}.modal.run`);
+    let endpointUrl = baseUrl;
+    if (method !== "analyze") {
+      if (baseUrl.includes("-analyze.modal.run")) {
+        endpointUrl = baseUrl.replace(
+          /-analyze\.modal\.run/,
+          `-${method}.modal.run`
+        );
+      } else {
+        const parsed = new URL(baseUrl);
+        parsed.pathname = parsed.pathname.replace(/\/analyze\/?$/, `/${method}`);
+        endpointUrl = parsed.toString();
+      }
+    }
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",

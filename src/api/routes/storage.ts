@@ -10,6 +10,11 @@ import {
 } from "../../db/queries.js";
 import { getS3Bucket } from "../../db/settings.js";
 import { logger } from "../../logger.js";
+import {
+  getAutomaticImportStatus,
+  getInventoryFolderCounts,
+  requestReconciliation,
+} from "../../jobs/automatic-imports.js";
 
 const storage = new Hono();
 
@@ -83,9 +88,30 @@ storage.get("/browse-counts", async (c) => {
 
   const prefix = c.req.query("prefix") ?? "";
   const forceRefresh = c.req.query("refresh") === "1";
+  if (!forceRefresh) {
+    const inventoryCounts = await getInventoryFolderCounts(bucket, prefix);
+    if (inventoryCounts) return c.json(inventoryCounts);
+  }
   const result = await getFolderImageCounts(bucket, prefix, forceRefresh);
 
   return c.json(result);
+});
+
+/** Current inventory, schedule, and durable import-queue health. */
+storage.get("/automatic-import", async (c) => {
+  return c.json(await getAutomaticImportStatus());
+});
+
+/** Schedule an immediate scan without starting a duplicate concurrent run. */
+storage.post("/automatic-import/reconcile", async (c) => {
+  const scheduled = await requestReconciliation();
+  if (!scheduled) {
+    return c.json(
+      { error: "Automatic import is disabled or storage is not configured" },
+      409
+    );
+  }
+  return c.json({ status: "scheduled" }, 202);
 });
 
 export default storage;

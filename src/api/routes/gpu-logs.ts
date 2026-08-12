@@ -3,7 +3,7 @@ import { getGpuLogs, getGpuLogById, getGpuLogChildren, type GpuLogRow } from "..
 
 const gpuLogs = new Hono();
 
-// GET /api/v1/gpu-logs — list job-level GPU logs (paginated, filterable)
+// GET /api/v1/gpu-logs — list job-level process logs (paginated, filterable)
 gpuLogs.get("/", async (c) => {
   const page = parseInt(c.req.query("page") ?? "1", 10);
   const limit = parseInt(c.req.query("limit") ?? "50", 10);
@@ -35,7 +35,7 @@ gpuLogs.get("/:id", async (c) => {
   const log = await getGpuLogById(id);
 
   if (!log) {
-    return c.json({ error: "GPU log not found" }, 404);
+    return c.json({ error: "Log not found" }, 404);
   }
 
   const children = await getGpuLogChildren(id);

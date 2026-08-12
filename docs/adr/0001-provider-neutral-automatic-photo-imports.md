@@ -1,6 +1,6 @@
 # ADR 0001: Provider-neutral automatic photo imports
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-10
 - Owners: NuvoPic maintainers
 
@@ -399,6 +399,20 @@ This ADR does not authorize or include implementation. The intended sequence is:
 - Should native-notification provisioning be managed by NuvoPic, supplied as
   infrastructure templates, or both?
 - How long should processed event records and failed jobs be retained?
+
+## Implementation status
+
+The provider-neutral baseline was implemented on 2026-08-12 for the current
+single, settings-backed storage connection. It includes persistent inventory,
+scheduled reconciliation with jitter, initial-baseline behavior, a durable
+idempotent photo-import queue, overwrite detection, retries, status and manual
+refresh APIs, and an enqueue-only AWS-shaped webhook adapter. S3-compatible
+providers without native notifications use reconciliation.
+
+The remaining provider-native transports (Backblaze webhook, Amazon SQS,
+Google Pub/Sub, Cloudflare Queue, and optional Scaleway Cockpit events) remain
+follow-up adapters. They must normalize into the same canonical queue and do
+not change the inventory's role as source of truth.
 
 ## References
 

@@ -1,9 +1,11 @@
 import {
   S3Client,
   GetObjectCommand,
+  HeadObjectCommand,
   ListObjectsV2Command,
   HeadBucketCommand,
   type GetObjectCommandOutput,
+  type HeadObjectCommandOutput,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { getResolvedS3Config } from "../db/settings.js";
@@ -149,6 +151,74 @@ export interface ListObjectsResult {
   keys: string[];
   nextContinuationToken?: string;
   isTruncated: boolean;
+}
+
+export interface StorageObject {
+  key: string;
+  etag?: string;
+  size?: number;
+  lastModified?: Date;
+  versionId?: string;
+  contentType?: string;
+}
+
+function normalizeEtag(etag: string | undefined): string | undefined {
+  return etag?.replace(/^"|"$/g, "") || undefined;
+}
+
+/**
+ * Stream an object listing page by page. Reconciliation uses this instead of
+ * accumulating an entire bucket in memory.
+ */
+export async function* iterateObjects(
+  bucket: string,
+  prefix?: string,
+  onPage?: () => void
+): AsyncGenerator<StorageObject> {
+  const client = await getS3Client();
+  let continuationToken: string | undefined;
+
+  do {
+    const response = await client.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix || undefined,
+        MaxKeys: 1000,
+        ContinuationToken: continuationToken,
+      })
+    );
+    onPage?.();
+
+    for (const object of response.Contents ?? []) {
+      if (!object.Key) continue;
+      yield {
+        key: object.Key,
+        etag: normalizeEtag(object.ETag),
+        size: object.Size,
+        lastModified: object.LastModified,
+      };
+    }
+
+    continuationToken = response.NextContinuationToken;
+  } while (continuationToken);
+}
+
+export async function headObject(
+  bucket: string,
+  key: string
+): Promise<StorageObject> {
+  const client = await getS3Client();
+  const response: HeadObjectCommandOutput = await client.send(
+    new HeadObjectCommand({ Bucket: bucket, Key: key })
+  );
+  return {
+    key,
+    etag: normalizeEtag(response.ETag),
+    size: response.ContentLength,
+    lastModified: response.LastModified,
+    versionId: response.VersionId,
+    contentType: response.ContentType,
+  };
 }
 
 /**

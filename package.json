@@ -16,8 +16,12 @@
     "docker:down": "docker-compose down",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install chromium",
+    "test:e2e:typecheck": "tsc --noEmit -p tsconfig.playwright.json",
     "webapp:dev": "npm run dev --prefix webapp",
     "webapp:build": "npm run build --prefix webapp",
+    "webapp:preview": "npm run preview --prefix webapp -- --host 127.0.0.1 --port 4173",
     "build:all": "npm run build && npm run webapp:build"
   },
   "dependencies": {
@@ -31,6 +35,7 @@
     "sharp": "^0.33.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/node": "^22.10.0",
     "@types/pg": "^8.11.10",
     "tsx": "^4.19.0",

@@ -460,6 +460,7 @@ For the current managed integration and its target multi-tenant design, see
 | `GPU_METERING_MODE` | No | `disabled`, `shadow`, or `enforce` | `shadow` when metering is configured |
 | `GPU_METERING_REQUEST_TIMEOUT_MS` | No | Control-plane request timeout | `10000` |
 | `PROCESSING_JOB_POLL_INTERVAL_MS` | No | Durable managed-webhook queue poll interval | `10000` |
+| `AUTO_IMPORT_POLL_INTERVAL_MS` | No | How often the worker checks schedules and durable photo jobs | `10000` |
 | `MANAGED_TOKEN_ENDPOINT` | Managed only | Same-origin endpoint the SPA uses to fetch a short-lived workspace token | `/managed/session/token` |
 | `MANAGED_PROFILE_PATH` | Managed only | Profile/account path served by the SaaS app | `/profile` |
 | `MANAGED_ADMIN_PATH` | Managed only | Admin dashboard path served by the SaaS app | `/admin` |
@@ -486,6 +487,29 @@ provider. Real-time, webhook, and single-photo work always uses the real-time
 provider (normally Modal).
 
 ## Usage
+
+### Process new photos automatically
+
+Open **Settings → Storage**, select the bucket or folders in the storage tree,
+and choose **Monitor Selected**. You can choose whether the first scan imports
+existing photos or only establishes a baseline. NuvoPic inventories the saved
+paths on the selected interval, queues new and overwritten supported images in
+PostgreSQL, and retries failed work after restarts. Use **Stop Automatic
+Import** to disable monitoring explicitly. Inventory scans and their discovered
+and queued object counts appear under **Settings → Logs**.
+
+Provider notifications are accelerators, not the source of truth. Existing
+AWS-shaped notifications can be sent to `POST /webhook/s3` (or
+`/webhook/s3/{workspaceId}` in managed mode); the handler durably enqueues the
+event before returning `202`. Providers without notification support are fully
+supported through scheduled reconciliation.
+
+Current status is available from `GET /api/v1/storage/automatic-import`. An
+immediate non-duplicating scan can be scheduled with:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/storage/automatic-import/reconcile
+```
 
 ### Process a photo via HTTP
 
