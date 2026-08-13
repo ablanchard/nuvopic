@@ -8,10 +8,12 @@ import {
   withTransaction,
 } from "../db/client.js";
 import { getAllSettings } from "../db/settings.js";
+import { invalidatePhotoProcessingVersions } from "../db/queries.js";
 import {
   safeCompleteGpuLog,
   safeCreateGpuLog,
   safeFailGpuLog,
+  safeUpdateGpuLogOutcome,
   safePruneInventoryLogs,
   safeRecordInventoryItemLog,
   type InventoryItemLogStatus,
@@ -761,6 +763,24 @@ async function processClaimedJob(job: ImportJobRow): Promise<boolean> {
       photoCount: 1,
     });
 
+    // An object may have changed at the same S3 path. Clear the old stage
+    // checkpoints once, then later queue attempts can safely resume only the
+    // stages that did not finish.
+    if (job.attempts === 1) {
+      await invalidatePhotoProcessingVersions(
+        `s3://${connection.bucket}/${job.object_key}`,
+        {
+          cpu: true,
+          caption:
+            connection.gpuMode === "all" ||
+            connection.gpuMode === "caption-only",
+          faces:
+            connection.gpuMode === "all" ||
+            connection.gpuMode === "faces-only",
+        }
+      );
+    }
+
     const [result] = await processPhotoBatch(
       [
         {
@@ -776,22 +796,37 @@ async function processClaimedJob(job: ImportJobRow): Promise<boolean> {
         externalJobId: job.id,
       }
     );
-    if (!result || (!result.photoId && result.errors.length > 0)) {
+    if (result?.gpuStatus === "failed" && !result.gpuRetryable) {
+      const message = result.errors.join("; ") || "Permanent GPU input failure";
+      await completeImportJob(job, message);
+      await safeUpdateGpuLogOutcome(importLogId, {
+        photoCount: 1,
+        photosSucceeded: 0,
+        photosFailed: 1,
+        error: message,
+        fallbackStatus: "failed",
+      });
+      return false;
+    }
+    if (!result || !result.photoId || result.gpuStatus === "failed") {
       throw new Error(result?.errors.join("; ") || "Photo processing failed");
     }
     await completeImportJob(job);
-    await safeCompleteGpuLog(importLogId, {
+    await safeUpdateGpuLogOutcome(importLogId, {
       photosSucceeded: 1,
       photosFailed: 0,
+      fallbackStatus: "completed",
     });
     return connection.gpuMode === "all" || connection.gpuMode === "faces-only";
   } catch (error) {
     await failImportJob(job, error, error instanceof GpuPaymentRequiredError);
-    await safeFailGpuLog(
-      importLogId,
-      error instanceof Error ? error.message : String(error),
-      { photoCount: 1, photosSucceeded: 0, photosFailed: 1 }
-    );
+    await safeUpdateGpuLogOutcome(importLogId, {
+      photoCount: 1,
+      photosSucceeded: 0,
+      photosFailed: 1,
+      error: error instanceof Error ? error.message : String(error),
+      fallbackStatus: "failed",
+    });
     logger.warn(
       `Automatic photo import ${job.id} failed: ${error instanceof Error ? error.message : error}`
     );

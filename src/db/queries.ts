@@ -152,6 +152,61 @@ export async function getPhotoById(id: string): Promise<PhotoRecord | null> {
   return result.rows[0] ?? null;
 }
 
+export interface UpdatePhotoGpuParams {
+  s3Path: string;
+  updateCaption: boolean;
+  description: string | null;
+  captionVersion: string | null;
+  updateFacesVersion: boolean;
+  facesVersion: string | null;
+}
+
+/**
+ * Persist only GPU-owned photo columns. CPU checkpoint fields are deliberately
+ * untouched so a GPU retry cannot roll back completed local extraction.
+ */
+export async function updatePhotoGpuFields(
+  params: UpdatePhotoGpuParams
+): Promise<string> {
+  const result = await query<{ id: string }>(
+    `UPDATE photos
+     SET description = CASE WHEN $2 THEN $3 ELSE description END,
+         caption_version = CASE WHEN $2 THEN $4 ELSE caption_version END,
+         faces_version = CASE WHEN $5 THEN $6 ELSE faces_version END,
+         updated_at = NOW()
+     WHERE s3_path = $1
+     RETURNING id`,
+    [
+      params.s3Path,
+      params.updateCaption,
+      params.description,
+      params.captionVersion,
+      params.updateFacesVersion,
+      params.facesVersion,
+    ]
+  );
+  if (!result.rows[0]) {
+    throw new Error(`CPU checkpoint is missing for ${params.s3Path}`);
+  }
+  return result.rows[0].id;
+}
+
+/** Mark selected stages stale before the first forced/object-update attempt. */
+export async function invalidatePhotoProcessingVersions(
+  s3Path: string,
+  stages: { cpu?: boolean; caption?: boolean; faces?: boolean }
+): Promise<void> {
+  await query(
+    `UPDATE photos
+     SET process_version = CASE WHEN $2 THEN NULL ELSE process_version END,
+         caption_version = CASE WHEN $3 THEN NULL ELSE caption_version END,
+         faces_version = CASE WHEN $4 THEN NULL ELSE faces_version END,
+         updated_at = NOW()
+     WHERE s3_path = $1`,
+    [s3Path, stages.cpu === true, stages.caption === true, stages.faces === true]
+  );
+}
+
 export async function getFacesByPhotoId(photoId: string): Promise<FaceRecord[]> {
   const result = await query<FaceRecord>(
     "SELECT * FROM faces WHERE photo_id = $1",

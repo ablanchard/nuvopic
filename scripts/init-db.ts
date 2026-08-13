@@ -28,6 +28,29 @@ async function main(): Promise<void> {
     await pool.query("SELECT 1");
     console.log("Connected!");
 
+    const identity = await pool.query<{
+      database_name: string;
+      current_role: string;
+      database_owner: string;
+    }>(
+      `SELECT current_database() AS database_name,
+              current_user AS current_role,
+              pg_get_userbyid(datdba) AS database_owner
+       FROM pg_database
+       WHERE datname = current_database()`
+    );
+    const databaseIdentity = identity.rows[0];
+    if (
+      databaseIdentity?.database_name.startsWith("nuvopic_ws_") &&
+      databaseIdentity.current_role !== databaseIdentity.database_owner
+    ) {
+      throw new Error(
+        `Refusing to migrate workspace database as ${databaseIdentity.current_role}; ` +
+          `use its owning runtime role ${databaseIdentity.database_owner}. ` +
+          `Running as an administrator would create tables the data plane cannot access.`
+      );
+    }
+
     // Read schema file
     const schemaPath = path.join(process.cwd(), "src", "db", "schema.sql");
     const schema = fs.readFileSync(schemaPath, "utf-8");

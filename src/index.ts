@@ -118,11 +118,19 @@ export async function handler(
       };
     }
 
+    const gpuFailures = results.filter((result) => result.gpuStatus === "failed");
+    const retryableGpuFailures = gpuFailures.filter((result) => result.gpuRetryable);
     return {
-      statusCode: 200,
+      // Durable webhook workers retry this payload. CPU and successful GPU
+      // checkpoints make the retry incremental rather than duplicative.
+      statusCode: retryableGpuFailures.length > 0 ? 503 : 200,
       body: JSON.stringify({
         processed: results.length,
         results,
+        message:
+          gpuFailures.length > 0
+            ? `${gpuFailures.length} photo GPU stage(s) need retry`
+            : undefined,
         errors: errors.length > 0 ? errors : undefined,
       }),
     };

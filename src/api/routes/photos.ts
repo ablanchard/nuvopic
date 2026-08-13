@@ -16,7 +16,7 @@ import {
 import { getPhotosToReprocess, getPhotosToReprocessCaption, getPhotosToReprocessFaces, getAllPhotosForReprocess, getExistingS3Paths, getVersionStats } from "../../db/queries.js";
 import { getPhotoById } from "../../db/queries.js";
 import { getFaceById, getFacesByPhotoId } from "../../db/queries.js";
-import { processPhoto, processPhotoBatch, type GpuMode } from "../../processor.js";
+import { processPhoto, type GpuMode } from "../../processor.js";
 import {
   isGpuEnabled,
   selectBatchGpuProvider,
@@ -24,9 +24,7 @@ import {
 import { PROCESS_VERSION, CAPTION_VERSION, FACES_VERSION, PROCESS_CHANGELOG, CAPTION_CHANGELOG, FACES_CHANGELOG, compareSemver } from "../../version.js";
 import { listAllObjects, getS3Path, getPresignedImageUrl, getObjectAsBuffer, isSupportedImage } from "../../s3/client.js";
 import { logger } from "../../logger.js";
-import { clusterUnassignedFaces } from "../../db/clusters.js";
 import { getS3Bucket } from "../../db/settings.js";
-import { safeCreateGpuLog, safeCompleteGpuLog, safeFailGpuLog } from "../../db/gpu-logs.js";
 import type { PhotoDatePrecision, PhotoDateSource } from "../../extractors/exif.js";
 import { getGpuJobEstimate, type GpuJobEstimate } from "../../metering/gpu-metering.js";
 import {
@@ -34,6 +32,10 @@ import {
   getReprocessJob,
   type ReprocessMode,
 } from "../../jobs/reprocess-jobs.js";
+import {
+  enqueueManualImportJob,
+  getManualImportJob,
+} from "../../jobs/manual-import-jobs.js";
 
 const photos = new Hono();
 const THUMBNAIL_CACHE_DIR = path.join(os.tmpdir(), "nuvopic-thumbnails");
@@ -662,29 +664,65 @@ photos.get("/import", async (c) => {
   });
 });
 
-// Import photos from S3 bucket
+photos.get("/import/jobs/:jobId", async (c) => {
+  const job = await getManualImportJob(c.req.param("jobId"));
+  if (!job) return c.json({ error: "Manual import job not found" }, 404);
+  return c.json({
+    id: job.id,
+    logId: job.gpuLogId,
+    bucket: job.bucket,
+    prefix: job.prefix,
+    sort: job.sort,
+    gpuMode: job.gpuMode,
+    provider: job.provider,
+    status: job.status,
+    totalImages: job.totalImages,
+    alreadyImported: job.alreadyImported,
+    photoCount: job.photoCount,
+    photosSucceeded: job.photosSucceeded,
+    photosFailed: job.photosFailed,
+    remaining: job.remaining,
+    lastError: job.lastError,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+    completedAt: job.completedAt,
+  });
+});
+
+// Snapshot a one-time import into the durable queue. Processing happens only
+// in the background worker; the HTTP request never owns a GPU resource.
 photos.post("/import", async (c) => {
   const bucket = await getS3Bucket();
   if (!bucket) {
     return c.json({ error: "S3 bucket not configured. Complete storage setup in Settings." }, 500);
   }
 
-  const body = await c.req.json().catch(() => ({}));
-  const prefix: string = body.prefix ?? "";
-  const limit: number = body.limit ?? 100;
-  const sort: string = body.sort ?? "recent";
+  const body: Record<string, unknown> = await c.req
+    .json<Record<string, unknown>>()
+    .catch(() => ({}));
+  const prefix = typeof body.prefix === "string" ? body.prefix : "";
+  const requestedLimit = typeof body.limit === "number" ? body.limit : 100;
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.min(1_000_000, Math.max(1, Math.trunc(requestedLimit)))
+    : 100;
+  const sort = body.sort === "oldest" ? "oldest" : "recent";
   const skipModal: boolean = body.skipModal === true;
 
   // Granular GPU mode: accept explicit gpuMode, or derive from legacy skipModal flag
   // Supported: "all" | "caption-only" | "faces-only" | "skip"
   let gpuMode: GpuMode;
-  if (body.gpuMode) {
-    gpuMode = body.gpuMode as GpuMode;
+  if (
+    body.gpuMode === "all" ||
+    body.gpuMode === "caption-only" ||
+    body.gpuMode === "faces-only" ||
+    body.gpuMode === "skip"
+  ) {
+    gpuMode = body.gpuMode;
   } else {
     gpuMode = skipModal ? "skip" : "all";
   }
 
-  logger.info(`Import started: bucket=${bucket}, prefix=${prefix}, limit=${limit}, sort=${sort}, gpuMode=${gpuMode}`);
+  logger.info(`Manual import enqueue started: bucket=${bucket}, prefix=${prefix}, limit=${limit}, sort=${sort}, gpuMode=${gpuMode}`);
 
   // List all objects under prefix
   const allKeys = await listAllObjects(bucket, prefix || undefined);
@@ -701,68 +739,64 @@ photos.post("/import", async (c) => {
   const newKeys = imageKeys.filter((key) => !existing.has(getS3Path(bucket, key)));
   const toProcess = newKeys.slice(0, limit);
 
-  logger.info(`Found ${imageKeys.length} images, ${existing.size} already imported, processing ${toProcess.length}`);
-
-  const startTime = Date.now();
-
-  // Create a job-level GPU log entry for this import
-  const importProvider = selectBatchGpuProvider(toProcess.length, gpuMode);
-  const jobLogId = await safeCreateGpuLog({
-    type: "import",
-    provider: importProvider,
-    gpuMode,
-    photoCount: toProcess.length,
-  });
-
-  const batchInputs = toProcess.map((key) => ({ s3Bucket: bucket, s3Key: key, gpuMode }));
-  const batchResults = await processPhotoBatch(
-    batchInputs,
-    (completed, total) => {
-      if (completed % 10 === 0 || completed === total) {
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        const rate = (completed / parseFloat(elapsed)).toFixed(2);
-        logger.info(`Import progress: ${completed}/${total} (${elapsed}s, ${rate} photos/s)`);
-      }
-    },
-    jobLogId,
-    { provider: importProvider, externalJobId: jobLogId ?? undefined }
+  logger.info(
+    `Manual import snapshot: ${imageKeys.length} images, ${existing.size} already imported, ` +
+      `${toProcess.length} selected`
   );
 
-  const results = toProcess.map((key, i) => ({
-    key,
-    success: batchResults[i].errors.length === 0 || batchResults[i].photoId !== "",
-    error: batchResults[i].errors.length > 0 ? batchResults[i].errors.join("; ") : undefined,
-  }));
-
-  const succeeded = results.filter((r) => r.success).length;
-  const failed = results.filter((r) => !r.success).length;
-  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-  // Complete the job-level GPU log
-  await safeCompleteGpuLog(jobLogId, { photosSucceeded: succeeded, photosFailed: failed });
-
-  logger.info(`Import complete: ${succeeded} succeeded, ${failed} failed in ${elapsed}s`);
-
-  // Auto-cluster newly detected faces
-  try {
-    const clusterResult = await clusterUnassignedFaces({ threshold: 0.6, strategy: "first" });
-    logger.info(`Auto-clustered ${clusterResult.clustered} faces into ${clusterResult.newClusters} new clusters`);
-  } catch (err) {
-    logger.error("Auto-clustering failed:", err);
+  if (toProcess.length === 0) {
+    return c.json({
+      jobId: null,
+      logId: null,
+      status: "completed",
+      provider: "local",
+      bucket,
+      prefix: prefix || "(root)",
+      totalImages: imageKeys.length,
+      alreadyImported: existing.size,
+      photoCount: 0,
+      processed: 0,
+      failed: 0,
+      remaining: 0,
+      elapsedSeconds: 0,
+      photosPerSecond: 0,
+      results: [],
+    });
   }
 
+  const importProvider = selectBatchGpuProvider(toProcess.length, gpuMode);
+  const job = await enqueueManualImportJob({
+    bucket,
+    prefix,
+    sort,
+    gpuMode,
+    provider: importProvider,
+    totalImages: imageKeys.length,
+    alreadyImported: existing.size,
+    objectKeys: toProcess,
+  });
+  logger.info(
+    `Queued manual import ${job.id} for ${job.photoCount} photos ` +
+      `(gpuMode=${gpuMode}, provider=${importProvider})`
+  );
+
   return c.json({
+    jobId: job.id,
+    logId: job.gpuLogId,
+    status: "queued",
+    provider: importProvider,
     bucket,
     prefix: prefix || "(root)",
     totalImages: imageKeys.length,
     alreadyImported: existing.size,
-    processed: succeeded,
-    failed,
-    remaining: newKeys.length - toProcess.length,
-    elapsedSeconds: parseFloat(elapsed),
-    photosPerSecond: parseFloat((succeeded / parseFloat(elapsed)).toFixed(2)),
-    results,
-  });
+    photoCount: job.photoCount,
+    processed: 0,
+    failed: 0,
+    remaining: job.remaining,
+    elapsedSeconds: 0,
+    photosPerSecond: 0,
+    results: [],
+  }, 202);
 });
 
 // Get single photo details

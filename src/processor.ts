@@ -35,13 +35,21 @@ import {
   insertFace,
   deleteFacesByPhotoId,
   getPhotoByS3Path,
+  updatePhotoGpuFields,
+  type PhotoRecord,
 } from "./db/queries.js";
 import {
-  safeCreateGpuLog,
   safeCompleteGpuLog,
   safeFailGpuLog,
+  safeQueuePhotoStageLogs,
+  safeStartPhotoStageLog,
+  type PhotoStageLogRef,
 } from "./db/gpu-logs.js";
 import { logger } from "./logger.js";
+import {
+  createGpuResourceLifecycleHandlers,
+  renewGpuResourceLeases,
+} from "./jobs/gpu-resource-leases.js";
 import { PROCESS_VERSION, CAPTION_VERSION, FACES_VERSION } from "./version.js";
 import sharp from "sharp";
 
@@ -70,6 +78,10 @@ export interface ProcessPhotoInput {
   skipModal?: boolean;
   /** Controls which GPU work to run. Defaults to "all". Overrides skipModal when set. */
   gpuMode?: GpuMode;
+  /** Force the CPU phase once even when its version checkpoint is current. */
+  forceCpu?: boolean;
+  /** Force requested GPU stages even when their version checkpoints are current. */
+  forceGpu?: boolean;
 }
 
 export interface ProcessPhotoOutput {
@@ -88,6 +100,10 @@ export interface ProcessPhotoOutput {
   description: string | null;
   facesDetected: number;
   errors: string[];
+  /** Explicit completion state so durable workers never treat CPU-only data as GPU success. */
+  gpuStatus: "completed" | "failed" | "skipped";
+  /** Failed GPU work should be attempted again on a fresh provider resource. */
+  gpuRetryable: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +127,7 @@ interface ExtractedData {
   /** Version strings to write to DB. null = don't update (COALESCE preserves). */
   captionVersion?: string | null;
   facesVersion?: string | null;
+  gpuStatus?: ProcessPhotoOutput["gpuStatus"];
 }
 
 async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
@@ -194,6 +211,8 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
     description: caption,
     facesDetected: faces.length,
     errors,
+    gpuStatus: data.gpuStatus ?? "skipped",
+    gpuRetryable: false,
   };
 
   logger.info(`Processed ${s3Path}:`, {
@@ -292,235 +311,274 @@ function parsePlaceholderResult(
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// Single-photo processing (realtime — used by S3 webhook, single import)
-// ---------------------------------------------------------------------------
-export async function processPhoto(
+interface CpuPreparedPhoto {
+  input: ProcessPhotoInput;
+  photo: PhotoRecord;
+  output: ProcessPhotoOutput;
+}
+
+function outputFromPhoto(
+  photo: PhotoRecord,
+  errors: string[] = [],
+  gpuStatus: ProcessPhotoOutput["gpuStatus"] = "skipped"
+): ProcessPhotoOutput {
+  return {
+    photoId: photo.id,
+    s3Path: photo.s3_path,
+    takenAt: photo.taken_at,
+    takenAtPrecision: photo.taken_at_precision ?? "unknown",
+    takenAtSource: photo.taken_at_source ?? "unknown",
+    location:
+      photo.location_lat !== null && photo.location_lng !== null
+        ? {
+            lat: photo.location_lat,
+            lng: photo.location_lng,
+            name: photo.location_name,
+            region: photo.location_region,
+            country: photo.location_country,
+          }
+        : null,
+    description: photo.description,
+    facesDetected: 0,
+    errors,
+    gpuStatus,
+    gpuRetryable: false,
+  };
+}
+
+function isRetryableGpuFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  // Invalid/corrupt image bytes and other client errors are deterministic.
+  if (/Could not decode image|unsupported image|invalid image/i.test(message)) {
+    return false;
+  }
+  const status = message.match(/returned (\d{3})/i)?.[1];
+  if (status) {
+    const code = Number.parseInt(status, 10);
+    if (code >= 400 && code < 500 && code !== 408 && code !== 429) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Complete and commit all local/CPU work before any GPU is allocated. */
+async function prepareCpuPhoto(
   input: ProcessPhotoInput,
-  /** Optional pre-created GPU client (used by batch processor to share a client). */
-  gpuClient?: GpuClient,
-  /** Optional parent job log ID — child photo logs will reference this. */
-  jobLogId?: string | null
-): Promise<ProcessPhotoOutput> {
+  cpuLog?: PhotoStageLogRef
+): Promise<CpuPreparedPhoto> {
   const { s3Bucket, s3Key } = input;
   const s3Path = getS3Path(s3Bucket, s3Key);
-  const errors: string[] = [];
-  const gpuEnabled = !!gpuClient || isGpuEnabled();
-  const gpuMode = resolveGpuMode(input);
-  const t0 = Date.now();
+  const logStarted = await safeStartPhotoStageLog(cpuLog);
+  logger.info(`[CPU import] starting ${s3Path}`);
 
-  logger.info(`Processing photo: ${s3Path} (gpuMode=${gpuMode})`);
-
-  // Create a per-photo GPU log entry (fire-and-forget safe)
-  const realtimeProvider = getRealtimeGpuProvider();
-  const photoLogId = gpuMode !== "skip"
-    ? await safeCreateGpuLog({
-        parentId: jobLogId,
-        type: gpuMode === "caption-only" ? "caption" : gpuMode === "faces-only" ? "faces" : "single",
-        provider: gpuClient?.provider ?? realtimeProvider,
-        gpuMode,
-        s3Path,
-      })
-    : null;
-
-  const tDownloadStart = Date.now();
-  const imageBuffer = await getObjectAsBuffer(s3Bucket, s3Key);
-  const tDownloadMs = Date.now() - tDownloadStart;
-  const fileSizeKB = (imageBuffer.length / 1024).toFixed(0);
-  logger.info(`[perf] ${s3Key}: download=${tDownloadMs}ms size=${fileSizeKB}KB`);
-
-  // Extract original image dimensions
-  const tMetaStart = Date.now();
-  let width: number | null = null;
-  let height: number | null = null;
   try {
-    const meta = await sharp(imageBuffer).metadata();
-    width = meta.width ?? null;
-    height = meta.height ?? null;
-  } catch (err) {
-    errors.push(`Dimensions: ${err}`);
-    logger.error("Dimensions error:", err);
-  }
-  const tMetaMs = Date.now() - tMetaStart;
-  logger.info(`[perf] ${s3Key}: sharpMeta=${tMetaMs}ms dims=${width}x${height}`);
+    const current = await getPhotoByS3Path(s3Path);
+    if (!input.forceCpu && current?.process_version === PROCESS_VERSION) {
+      logger.info(`[CPU import] checkpoint current ${s3Path}`);
+      if (logStarted && cpuLog) {
+        await safeCompleteGpuLog(cpuLog.id);
+        cpuLog.status = "completed";
+      }
+      return { input, photo: current, output: outputFromPhoto(current) };
+    }
 
-  let exif: ExtractedData["exif"];
-  let placeholder: string | null = null;
-  let caption: string | null;
-  let faces: ExtractedData["faces"];
-  let skipFaces = false;
-  let skipCaption = false;
-  let captionVersion: string | null = null;
-  let facesVersion: string | null = null;
+    const errors: string[] = [];
+    const startedAt = Date.now();
+    const imageBuffer = await getObjectAsBuffer(s3Bucket, s3Key);
+    let width: number | null = null;
+    let height: number | null = null;
+    try {
+      const metadata = await sharp(imageBuffer).metadata();
+      width = metadata.width ?? null;
+      height = metadata.height ?? null;
+    } catch (error) {
+      errors.push(`Dimensions: ${error}`);
+      logger.error("Dimensions error:", error);
+    }
 
-  if (gpuMode === "skip") {
-    // Skip all GPU work: only run local extraction (EXIF + placeholder + dimensions)
-    const tLocalStart = Date.now();
     const [exifResult, placeholderResult] = await Promise.allSettled([
       extractExif(imageBuffer),
       generatePlaceholder(imageBuffer),
     ]);
-    const tLocalMs = Date.now() - tLocalStart;
-
-    exif = parseExifResult(exifResult, errors);
-    placeholder = parsePlaceholderResult(placeholderResult, errors);
-    caption = null;
-    faces = [];
-    skipFaces = true;
-    skipCaption = true;
-
-    // Log individual task results
-    const exifMs = exifResult.status === "fulfilled" ? "ok" : "err";
-    const placeholderMs = placeholderResult.status === "fulfilled" ? "ok" : "err";
-    logger.info(`[perf] ${s3Key}: localExtract=${tLocalMs}ms (exif=${exifMs} placeholder=${placeholderMs})`);
-  } else if (gpuEnabled) {
-    // Get or create a GPU client
-    const client =
-      gpuClient ?? (await createGpuClient(getRealtimeGpuProvider()));
-
-    if (gpuMode === "caption-only") {
-      // Caption only — skip face detection
-      const [exifResult, placeholderResult, captionResult] =
-        await Promise.allSettled([
-          extractExif(imageBuffer),
-          generatePlaceholder(imageBuffer),
-          client.caption(imageBuffer),
-        ]);
-
-      exif = parseExifResult(exifResult, errors);
-      placeholder = parsePlaceholderResult(placeholderResult, errors);
-      caption = parseCaptionResult(captionResult, errors);
-      faces = [];
-      skipFaces = true;
-      // Only stamp version if GPU call succeeded
-      captionVersion = captionResult.status === "fulfilled" ? CAPTION_VERSION : null;
-    } else if (gpuMode === "faces-only") {
-      // Face detection only — skip captioning
-      const [exifResult, placeholderResult, facesResult] =
-        await Promise.allSettled([
-          extractExif(imageBuffer),
-          generatePlaceholder(imageBuffer),
-          client.faces(imageBuffer),
-        ]);
-
-      exif = parseExifResult(exifResult, errors);
-      placeholder = parsePlaceholderResult(placeholderResult, errors);
-      caption = null;
-      skipCaption = true;
-      faces = parseFacesResult(facesResult, errors);
-      // Only stamp version if GPU call succeeded
-      facesVersion = facesResult.status === "fulfilled" ? FACES_VERSION : null;
-    } else {
-      // Full processing: both caption + faces (separate calls for independent versioning)
-      const [exifResult, placeholderResult, captionResult, facesResult] =
-        await Promise.allSettled([
-          extractExif(imageBuffer),
-          generatePlaceholder(imageBuffer),
-          client.caption(imageBuffer),
-          client.faces(imageBuffer),
-        ]);
-
-      exif = parseExifResult(exifResult, errors);
-      placeholder = parsePlaceholderResult(placeholderResult, errors);
-      caption = parseCaptionResult(captionResult, errors);
-      faces = parseFacesResult(facesResult, errors);
-      // Only stamp version if the respective GPU call succeeded
-      captionVersion = captionResult.status === "fulfilled" ? CAPTION_VERSION : null;
-      facesVersion = facesResult.status === "fulfilled" ? FACES_VERSION : null;
+    const output = await saveToDb({
+      s3Path,
+      s3Key,
+      width,
+      height,
+      exif: parseExifResult(exifResult, errors),
+      placeholder: parsePlaceholderResult(placeholderResult, errors),
+      caption: null,
+      faces: [],
+      errors,
+      provider: "local",
+      skipCaption: true,
+      skipFaces: true,
+      gpuStatus: "skipped",
+    });
+    const photo = await getPhotoByS3Path(s3Path);
+    if (!photo) throw new Error(`CPU checkpoint was not persisted for ${s3Path}`);
+    logger.info(
+      `[CPU import] completed ${s3Path} in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`
+    );
+    if (logStarted && cpuLog) {
+      await safeCompleteGpuLog(cpuLog.id);
+      cpuLog.status = "completed";
     }
-  } else {
-    // Local mode (no GPU): use CPU-based extractors
-    if (gpuMode === "caption-only") {
-      const [exifResult, placeholderResult, captionResult] =
-        await Promise.allSettled([
-          extractExif(imageBuffer),
-          generatePlaceholder(imageBuffer),
-          generateCaption(imageBuffer),
-        ]);
-
-      exif = parseExifResult(exifResult, errors);
-      placeholder = parsePlaceholderResult(placeholderResult, errors);
-      caption =
-        captionResult.status === "fulfilled"
-          ? captionResult.value
-          : (errors.push(`Caption: ${captionResult.reason}`), logger.error("Caption error:", captionResult.reason), null);
-      faces = [];
-      skipFaces = true;
-      captionVersion = captionResult.status === "fulfilled" ? CAPTION_VERSION : null;
-    } else if (gpuMode === "faces-only") {
-      const [exifResult, placeholderResult, facesResult] =
-        await Promise.allSettled([
-          extractExif(imageBuffer),
-          generatePlaceholder(imageBuffer),
-          detectFaces(imageBuffer),
-        ]);
-
-      exif = parseExifResult(exifResult, errors);
-      placeholder = parsePlaceholderResult(placeholderResult, errors);
-      caption = null;
-      skipCaption = true;
-      faces =
-        facesResult.status === "fulfilled"
-          ? facesResult.value
-          : (errors.push(`Faces: ${facesResult.reason}`), logger.error("Faces error:", facesResult.reason), []);
-      facesVersion = facesResult.status === "fulfilled" ? FACES_VERSION : null;
-    } else {
-      const [exifResult, placeholderResult, captionResult, facesResult] =
-        await Promise.allSettled([
-          extractExif(imageBuffer),
-          generatePlaceholder(imageBuffer),
-          generateCaption(imageBuffer),
-          detectFaces(imageBuffer),
-        ]);
-
-      exif = parseExifResult(exifResult, errors);
-      placeholder = parsePlaceholderResult(placeholderResult, errors);
-
-      caption =
-        captionResult.status === "fulfilled"
-          ? captionResult.value
-          : (errors.push(`Caption: ${captionResult.reason}`), logger.error("Caption error:", captionResult.reason), null);
-
-      faces =
-        facesResult.status === "fulfilled"
-          ? facesResult.value
-          : (errors.push(`Faces: ${facesResult.reason}`), logger.error("Faces error:", facesResult.reason), []);
-
-      captionVersion = captionResult.status === "fulfilled" ? CAPTION_VERSION : null;
-      facesVersion = facesResult.status === "fulfilled" ? FACES_VERSION : null;
+    return { input, photo, output };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error(`[CPU import] failed ${s3Path}:`, error);
+    if (logStarted && cpuLog) {
+      await safeFailGpuLog(cpuLog.id, message);
+      cpuLog.status = "failed";
     }
+    throw error;
   }
+}
 
-  const tSaveStart = Date.now();
-  const result = await saveToDb({
-    s3Path,
-    s3Key,
-    width,
-    height,
-    exif,
-    placeholder,
-    caption,
-    faces,
-    errors,
-    provider: gpuMode === "skip" ? "local" : gpuClient?.provider ?? realtimeProvider,
-    skipFaces,
-    skipCaption,
-    captionVersion,
-    facesVersion,
+function requiredGpuMode(
+  requested: GpuMode,
+  photo: PhotoRecord,
+  force = false
+): GpuMode {
+  if (requested === "skip") return "skip";
+  const needsCaption =
+    (requested === "all" || requested === "caption-only") &&
+    (force || photo.caption_version !== CAPTION_VERSION);
+  const needsFaces =
+    (requested === "all" || requested === "faces-only") &&
+    (force || photo.faces_version !== FACES_VERSION);
+  if (needsCaption && needsFaces) return "all";
+  if (needsCaption) return "caption-only";
+  if (needsFaces) return "faces-only";
+  return "skip";
+}
+
+// ---------------------------------------------------------------------------
+// Single-photo processing. CPU checkpointing always precedes GPU dispatch.
+// ---------------------------------------------------------------------------
+export async function processPhoto(
+  input: ProcessPhotoInput,
+  gpuClient?: GpuClient,
+  jobLogId?: string | null
+): Promise<ProcessPhotoOutput> {
+  const s3Path = getS3Path(input.s3Bucket, input.s3Key);
+  const cpuLogs = await safeQueuePhotoStageLogs({
+    parentId: jobLogId,
+    type: "cpu-import",
+    provider: "local",
+    gpuMode: resolveGpuMode(input),
+    s3Paths: [s3Path],
   });
-  const tSaveMs = Date.now() - tSaveStart;
-
-  const totalMs = Date.now() - t0;
-  logger.info(`[perf] ${s3Key}: saveToDb=${tSaveMs}ms TOTAL=${totalMs}ms (download=${tDownloadMs} meta=${tMetaMs} save=${tSaveMs}) ${memoryMB()}`);
-
-  // Complete or fail the per-photo GPU log
-  if (result.errors.length > 0) {
-    await safeFailGpuLog(photoLogId, result.errors.join("; "));
-  } else {
-    await safeCompleteGpuLog(photoLogId);
+  const prepared = await prepareCpuPhoto(input, cpuLogs.get(s3Path));
+  const requestedMode = resolveGpuMode(input);
+  const mode = requiredGpuMode(requestedMode, prepared.photo, input.forceGpu);
+  if (mode === "skip") {
+    return {
+      ...prepared.output,
+      gpuStatus: requestedMode === "skip" ? "skipped" : "completed",
+    };
   }
 
-  return result;
+  if (gpuClient || isGpuEnabled()) {
+    const client = gpuClient ?? (await createGpuClient(getRealtimeGpuProvider()));
+    const captionLogs = await safeQueuePhotoStageLogs({
+      parentId: jobLogId,
+      type: "caption",
+      provider: client.provider,
+      gpuMode: mode,
+      s3Paths: mode === "all" || mode === "caption-only" ? [s3Path] : [],
+    });
+    const facesLogs = await safeQueuePhotoStageLogs({
+      parentId: jobLogId,
+      type: "faces",
+      provider: client.provider,
+      gpuMode: mode,
+      s3Paths: mode === "all" || mode === "faces-only" ? [s3Path] : [],
+    });
+    const [result] = await processGpuChunk(
+      [{ ...input, gpuMode: mode, forceCpu: false, forceGpu: false }],
+      client,
+      { caption: captionLogs, faces: facesLogs }
+    );
+    return result;
+  }
+
+  // Development/local fallback: these model calls are still sequenced after
+  // the committed CPU checkpoint.
+  const captionLogs = await safeQueuePhotoStageLogs({
+    parentId: jobLogId,
+    type: "caption",
+    provider: "local",
+    gpuMode: mode,
+    s3Paths: mode === "all" || mode === "caption-only" ? [s3Path] : [],
+  });
+  const facesLogs = await safeQueuePhotoStageLogs({
+    parentId: jobLogId,
+    type: "faces",
+    provider: "local",
+    gpuMode: mode,
+    s3Paths: mode === "all" || mode === "faces-only" ? [s3Path] : [],
+  });
+  const captionLog = captionLogs.get(s3Path);
+  const facesLog = facesLogs.get(s3Path);
+  const captionLogStarted = mode === "all" || mode === "caption-only"
+    ? await safeStartPhotoStageLog(captionLog)
+    : false;
+  const facesLogStarted = mode === "all" || mode === "faces-only"
+    ? await safeStartPhotoStageLog(facesLog)
+    : false;
+  const imageBuffer = await getObjectAsBuffer(input.s3Bucket, input.s3Key);
+  const captionSettled =
+    mode === "all" || mode === "caption-only"
+      ? (await Promise.allSettled([generateCaption(imageBuffer)]))[0]
+      : null;
+  const facesSettled =
+    mode === "all" || mode === "faces-only"
+      ? (await Promise.allSettled([detectFaces(imageBuffer)]))[0]
+      : null;
+  const normalizedCaption = captionSettled
+    ? captionSettled.status === "fulfilled"
+      ? { status: "fulfilled" as const, value: { caption: captionSettled.value } }
+      : captionSettled
+    : null;
+  const normalizedFaces = facesSettled
+    ? facesSettled.status === "fulfilled"
+      ? {
+          status: "fulfilled" as const,
+          value: {
+            faces: facesSettled.value.map((face) => ({
+              bbox: face.boundingBox,
+              embedding: face.embedding,
+              confidence: face.confidence,
+            })),
+          },
+        }
+      : facesSettled
+    : null;
+  try {
+    const output = await saveGpuResults(
+      input,
+      "local",
+      normalizedCaption,
+      normalizedFaces
+    );
+    if (normalizedCaption && captionLogStarted && captionLog) {
+      if (normalizedCaption.status === "fulfilled") await safeCompleteGpuLog(captionLog.id);
+      else await safeFailGpuLog(captionLog.id, String(normalizedCaption.reason));
+    }
+    if (normalizedFaces && facesLogStarted && facesLog) {
+      if (normalizedFaces.status === "fulfilled") await safeCompleteGpuLog(facesLog.id);
+      else await safeFailGpuLog(facesLog.id, String(normalizedFaces.reason));
+    }
+    return output;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (captionLogStarted && captionLog) await safeFailGpuLog(captionLog.id, message);
+    if (facesLogStarted && facesLog) await safeFailGpuLog(facesLog.id, message);
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -584,18 +642,90 @@ export async function processPhotoBatch(
     });
   }
 
+  // Phase 1 is intentionally global: every CPU checkpoint must commit before
+  // a GPU reservation or provider resource is created.
+  logger.info(`CPU phase starting for ${total} photos; GPU provisioning is blocked until it completes`);
+  const cpuLogs = await safeQueuePhotoStageLogs({
+    parentId: jobLogId,
+    type: "cpu-import",
+    provider: "local",
+    gpuMode,
+    s3Paths: inputs.map((input) => getS3Path(input.s3Bucket, input.s3Key)),
+  });
+  const cpuPrepared = await runLocalConcurrency(
+    inputs,
+    LOCAL_CONCURRENCY,
+    (input) => {
+      const s3Path = getS3Path(input.s3Bucket, input.s3Key);
+      return prepareCpuPhoto(input, cpuLogs.get(s3Path));
+    }
+  );
+  logger.info(`CPU phase complete for ${total} photos; evaluating GPU checkpoints`);
+
+  const allResults: ProcessPhotoOutput[] = [];
+  const gpuInputs: ProcessPhotoInput[] = [];
+  for (const prepared of cpuPrepared) {
+    const requested = resolveGpuMode(prepared.input);
+    const required = requiredGpuMode(
+      requested,
+      prepared.photo,
+      prepared.input.forceGpu
+    );
+    if (required === "skip") {
+      allResults.push({
+        ...prepared.output,
+        gpuStatus: requested === "skip" ? "skipped" : "completed",
+      });
+      completed += 1;
+      onProgress?.(completed, total);
+    } else {
+      gpuInputs.push({
+        ...prepared.input,
+        gpuMode: required,
+        forceCpu: false,
+        forceGpu: false,
+      });
+    }
+  }
+
+  if (gpuInputs.length === 0) {
+    logger.info(`GPU phase skipped: all ${total} photos already satisfy their GPU checkpoints`);
+    return allResults;
+  }
+
+  const captionLogs = await safeQueuePhotoStageLogs({
+    parentId: jobLogId,
+    type: "caption",
+    provider: batchProvider,
+    gpuMode,
+    s3Paths: gpuInputs
+      .filter((input) => input.gpuMode === "all" || input.gpuMode === "caption-only")
+      .map((input) => getS3Path(input.s3Bucket, input.s3Key)),
+  });
+  const facesLogs = await safeQueuePhotoStageLogs({
+    parentId: jobLogId,
+    type: "faces",
+    provider: batchProvider,
+    gpuMode,
+    s3Paths: gpuInputs
+      .filter((input) => input.gpuMode === "all" || input.gpuMode === "faces-only")
+      .map((input) => getS3Path(input.s3Bucket, input.s3Key)),
+  });
+
   // --- GPU mode: reserve funds, create client, manage lifecycle, and meter usage ---
   const externalJobId = options?.externalJobId ?? jobLogId ?? crypto.randomUUID();
   const meteringContext = await beginMeteredGpuJob({
     externalJobId,
     provider: batchProvider,
     gpuMode,
-    photoCount: total,
+    photoCount: gpuInputs.length,
     routingPolicyVersion: GPU_ROUTING_POLICY_VERSION,
     routingThreshold: getGpuProviderBatchThreshold(),
   });
   let gpuClient: GpuClient | null = null;
+  let resourceHeartbeat: ReturnType<typeof setInterval> | null = null;
   const batchStartTime = Date.now();
+  let provisionMs = 0;
 
   try {
     gpuClient = await createGpuClient(batchProvider);
@@ -605,18 +735,48 @@ export async function processPhotoBatch(
         externalJobId: meteringContext.externalJobId,
       });
     }
-    // Start the GPU backend (no-op for Modal, provisions instance for Vast.ai)
+    if (batchProvider === "vastai") {
+      gpuClient.setResourceLifecycleHandlers?.(
+        createGpuResourceLifecycleHandlers(externalJobId)
+      );
+      resourceHeartbeat = setInterval(() => {
+        void renewGpuResourceLeases(externalJobId).catch((error) =>
+          logger.warn(`GPU resource lease heartbeat failed for ${externalJobId}:`, error)
+        );
+      }, 30_000);
+      resourceHeartbeat.unref();
+    }
+    // A bad/stuck offer is retried here before the durable queue needs another
+    // attempt. VastGpuClient switches to a different/on-demand offer after an
+    // interruptible allocation fails.
     const provisionStart = Date.now();
-    await gpuClient.start();
-    const provisionMs = Date.now() - provisionStart;
+    let startAttempt = 0;
+    while (true) {
+      try {
+        if (startAttempt === 0) await gpuClient.start();
+        else await gpuClient.reprovision();
+        break;
+      } catch (error) {
+        if (startAttempt >= MAX_REPROVISIONS) throw error;
+        startAttempt += 1;
+        logger.warn(
+          `GPU provisioning failed; retrying with a fresh offer ` +
+            `(${startAttempt}/${MAX_REPROVISIONS}): ${error instanceof Error ? error.message : error}`
+        );
+        await recordGpuResourceUsage(
+          meteringContext,
+          gpuClient.drainResourceUsage?.() ?? []
+        );
+      }
+    }
+    provisionMs = Date.now() - provisionStart;
     logger.info(`GPU provisioning took ${(provisionMs / 1000).toFixed(1)}s`);
 
-    const allResults: ProcessPhotoOutput[] = [];
     const inferenceStart = Date.now();
-    let reprovisionCount = 0;
+    let reprovisionCount = startAttempt;
 
     // Build the initial list of inputs to process
-    let remainingInputs = [...inputs];
+    let remainingInputs = [...gpuInputs];
 
     while (remainingInputs.length > 0) {
       const numChunks = Math.ceil(remainingInputs.length / CHUNK_SIZE);
@@ -634,10 +794,10 @@ export async function processPhotoBatch(
           `Processing chunk ${chunkIdx + 1}/${numChunks} (${chunkInputs.length} photos)`
         );
 
-        const chunkResults = await processChunk(
+        const chunkResults = await processGpuChunk(
           chunkInputs,
           gpuClient,
-          jobLogId,
+          { caption: captionLogs, faces: facesLogs },
           meteringContext,
           reprovisionCount
         );
@@ -651,18 +811,17 @@ export async function processPhotoBatch(
         // Partition results: completed (has caption or faces depending on mode) vs failed
         for (let i = 0; i < chunkResults.length; i++) {
           const result = chunkResults[i];
-          const hasGpuFailure =
-            result.errors.some(
-              (e) =>
-                e.includes("GPU") ||
-                e.includes("Vast.ai") ||
-                e.includes("instance is dead") ||
-                e.includes("InstanceDead")
-            );
+          const hasGpuFailure = result.gpuStatus === "failed";
 
           if (hasGpuFailure) {
-            failedInputs.push(chunkInputs[i]);
-            // Don't add to allResults yet — we'll retry these
+            if (result.gpuRetryable) {
+              failedInputs.push(chunkInputs[i]);
+              // Don't add to allResults yet — we'll retry these
+            } else {
+              allResults.push(result);
+              completed++;
+              onProgress?.(completed, total);
+            }
           } else {
             allResults.push(result);
             completed++;
@@ -672,7 +831,7 @@ export async function processPhotoBatch(
 
         // If instance died mid-chunk, don't process more chunks — break out to reprovision
         if (
-          gpuClient.isInterruptible &&
+          gpuClient.provider === "vastai" &&
           failedInputs.length > 0 &&
           chunkResults.some((r) =>
             r.errors.some(
@@ -707,7 +866,7 @@ export async function processPhotoBatch(
       }
 
       // Check if we can reprovision
-      if (!gpuClient.isInterruptible) {
+      if (gpuClient.provider !== "vastai") {
         // Non-interruptible provider — no point reprovisioning, just log and save partial results
         logger.warn(
           `${failedInputs.length} photos failed GPU analysis (non-interruptible provider, no retry).`
@@ -724,6 +883,8 @@ export async function processPhotoBatch(
             description: null,
             facesDetected: 0,
             errors: ["GPU analysis failed — non-interruptible, no retry"],
+            gpuStatus: "failed",
+            gpuRetryable: false,
           });
           completed++;
           onProgress?.(completed, total);
@@ -749,6 +910,8 @@ export async function processPhotoBatch(
             errors: [
               `GPU analysis failed — max reprovisions (${MAX_REPROVISIONS}) exhausted`,
             ],
+            gpuStatus: "failed",
+            gpuRetryable: false,
           });
           completed++;
           onProgress?.(completed, total);
@@ -774,15 +937,32 @@ export async function processPhotoBatch(
         `Reprovisioning took ${(reprovisionMs / 1000).toFixed(1)}s`
       );
 
-      // Loop again with only the failed inputs
-      remainingInputs = failedInputs;
+      // Loop again with only missing GPU sub-stages. A caption that completed
+      // before a face request was interrupted is not billed or executed twice.
+      remainingInputs = [];
+      for (const failedInput of failedInputs) {
+        const s3Path = getS3Path(failedInput.s3Bucket, failedInput.s3Key);
+        const photo = await getPhotoByS3Path(s3Path);
+        if (!photo) {
+          remainingInputs.push(failedInput);
+          continue;
+        }
+        const mode = requiredGpuMode(resolveGpuMode(failedInput), photo);
+        if (mode === "skip") {
+          allResults.push(outputFromPhoto(photo, [], "completed"));
+          completed += 1;
+          onProgress?.(completed, total);
+        } else {
+          remainingInputs.push({ ...failedInput, gpuMode: mode });
+        }
+      }
     }
 
     const inferenceMs = Date.now() - inferenceStart;
     const totalMs = Date.now() - batchStartTime;
 
     logger.info(
-      `Batch complete: ${total} photos in ${(totalMs / 1000).toFixed(1)}s total ` +
+      `Batch complete: ${total} photos (${gpuInputs.length} GPU) in ${(totalMs / 1000).toFixed(1)}s total ` +
         `(provisioning=${(provisionMs / 1000).toFixed(1)}s, ` +
         `inference=${(inferenceMs / 1000).toFixed(1)}s, ` +
         `avg=${(inferenceMs / total / 1000).toFixed(2)}s/photo` +
@@ -794,37 +974,108 @@ export async function processPhotoBatch(
 
     return allResults;
   } finally {
-    // Always tear down the GPU backend (destroys Vast.ai instance, no-op for Modal)
-    const teardownStart = Date.now();
     try {
-      await gpuClient?.stop();
-      logger.info(`GPU teardown took ${((Date.now() - teardownStart) / 1000).toFixed(1)}s`);
-    } catch (err) {
-      logger.error("Failed to stop GPU client:", err);
+      // Always tear down the GPU backend (destroys Vast.ai instance, no-op for Modal).
+      // Keep the durable resource heartbeat alive while bounded teardown retries run.
+      const teardownStart = Date.now();
+      try {
+        await gpuClient?.stop();
+        logger.info(`GPU teardown took ${((Date.now() - teardownStart) / 1000).toFixed(1)}s`);
+      } catch (err) {
+        logger.error("Failed to stop GPU client; durable cleanup has been scheduled:", err);
+      }
+      if (gpuClient) {
+        await recordGpuResourceUsage(
+          meteringContext,
+          gpuClient.drainResourceUsage?.() ?? []
+        );
+      }
+      await completeMeteredGpuJob(meteringContext);
+      const totalMs = Date.now() - batchStartTime;
+      logger.info(`Batch wall time: ${(totalMs / 1000).toFixed(1)}s`);
+    } finally {
+      if (resourceHeartbeat) clearInterval(resourceHeartbeat);
     }
-    if (gpuClient) {
-      await recordGpuResourceUsage(
-        meteringContext,
-        gpuClient.drainResourceUsage?.() ?? []
-      );
-    }
-    await completeMeteredGpuJob(meteringContext);
-    const totalMs = Date.now() - batchStartTime;
-    logger.info(`Batch wall time: ${(totalMs / 1000).toFixed(1)}s`);
   }
 }
 
-/**
- * Process a single chunk of photos through the GPU pipeline.
- * Phase 1: Download + dispatch GPU calls eagerly.
- * Phase 2: Await results + save to DB.
- *
- * Dispatches caption and faces as independent calls based on gpuMode.
- */
-async function processChunk(
+async function saveGpuResults(
+  input: ProcessPhotoInput,
+  provider: string,
+  captionResult: PromiseSettledResult<GpuCaptionResult> | null,
+  facesResult: PromiseSettledResult<GpuFacesResult> | null
+): Promise<ProcessPhotoOutput> {
+  const s3Path = getS3Path(input.s3Bucket, input.s3Key);
+  const errors: string[] = [];
+  const caption = captionResult ? parseCaptionResult(captionResult, errors) : null;
+  const faces = facesResult ? parseFacesResult(facesResult, errors) : [];
+  const captionSucceeded = captionResult?.status === "fulfilled";
+  const facesSucceeded = facesResult?.status === "fulfilled";
+
+  // Commit successful sub-stages independently. Failed face inference must not
+  // delete faces from an earlier successful attempt.
+  if (captionSucceeded) {
+    await updatePhotoGpuFields({
+      s3Path,
+      updateCaption: true,
+      description: caption,
+      captionVersion: CAPTION_VERSION,
+      updateFacesVersion: false,
+      facesVersion: null,
+    });
+  }
+  if (facesSucceeded) {
+    const current = await getPhotoByS3Path(s3Path);
+    if (!current) throw new Error(`CPU checkpoint is missing for ${s3Path}`);
+    await deleteFacesByPhotoId(current.id);
+    for (const face of faces) {
+      await insertFace({
+        photoId: current.id,
+        boundingBox: face.boundingBox,
+        embedding: face.embedding,
+        confidence: face.confidence,
+      });
+    }
+    await updatePhotoGpuFields({
+      s3Path,
+      updateCaption: false,
+      description: null,
+      captionVersion: null,
+      updateFacesVersion: true,
+      facesVersion: FACES_VERSION,
+    });
+  }
+
+  const photo = await getPhotoByS3Path(s3Path);
+  if (!photo) throw new Error(`CPU checkpoint is missing for ${s3Path}`);
+  const requestedSucceeded =
+    (captionResult === null || captionSucceeded) &&
+    (facesResult === null || facesSucceeded);
+  const output = outputFromPhoto(
+    photo,
+    errors,
+    requestedSucceeded ? "completed" : "failed"
+  );
+  output.gpuRetryable = !requestedSucceeded && [captionResult, facesResult]
+    .some((result) => result?.status === "rejected" && isRetryableGpuFailure(result.reason));
+  output.facesDetected = facesSucceeded ? faces.length : 0;
+  logger.info(`GPU phase ${output.gpuStatus} for ${s3Path}`, {
+    provider,
+    caption: captionResult?.status ?? "skipped",
+    faces: facesResult?.status ?? "skipped",
+    errorCount: errors.length,
+  });
+  return output;
+}
+
+/** Process a GPU-only chunk after all CPU checkpoints have committed. */
+async function processGpuChunk(
   inputs: ProcessPhotoInput[],
   gpuClient: GpuClient,
-  jobLogId?: string | null,
+  stageLogs?: {
+    caption: Map<string, PhotoStageLogRef>;
+    faces: Map<string, PhotoStageLogRef>;
+  },
   meteringContext?: MeteringJobContext | null,
   reprovision = 0
 ): Promise<ProcessPhotoOutput[]> {
@@ -833,18 +1084,16 @@ async function processChunk(
     s3Path: string;
     imageBuffer: Buffer;
     gpuMode: GpuMode;
+    captionLog: PhotoStageLogRef | undefined;
+    facesLog: PhotoStageLogRef | undefined;
+    captionLogStarted: boolean;
+    facesLogStarted: boolean;
     captionPromise: Promise<GpuCaptionResult> | null;
     facesPromise: Promise<GpuFacesResult> | null;
-    localPromise: Promise<{
-      exif: PromiseSettledResult<ExtractedData["exif"]>;
-      placeholder: PromiseSettledResult<string>;
-    }>;
   }
 
-  const pending: PendingPhoto[] = [];
-
-  // Phase 1: Download + dispatch (bounded concurrency for downloads)
-  await runLocalConcurrency(inputs, LOCAL_CONCURRENCY, async (input) => {
+  // Download + dispatch with stable input ordering. CPU work is forbidden here.
+  const pending = await runLocalConcurrency(inputs, LOCAL_CONCURRENCY, async (input): Promise<PendingPhoto> => {
     const { s3Bucket, s3Key } = input;
     const s3Path = getS3Path(s3Bucket, s3Key);
     const mode = resolveGpuMode(input);
@@ -856,8 +1105,14 @@ async function processChunk(
     // Dispatch GPU calls based on mode
     let captionPromise: Promise<GpuCaptionResult> | null = null;
     let facesPromise: Promise<GpuFacesResult> | null = null;
+    const captionLog = stageLogs?.caption.get(s3Path);
+    const facesLog = stageLogs?.faces.get(s3Path);
+    let captionLogStarted = false;
+    let facesLogStarted = false;
 
     if (mode === "all" || mode === "caption-only") {
+      captionLogStarted = await safeStartPhotoStageLog(captionLog);
+      logger.info(`[GPU caption] starting ${s3Path}`, { provider: gpuClient.provider });
       const startedAt = Date.now();
       captionPromise = gpuClient.caption(imageBuffer).then(
         async (result) => {
@@ -882,6 +1137,8 @@ async function processChunk(
       captionPromise.catch(() => {}); // suppress unhandled rejection
     }
     if (mode === "all" || mode === "faces-only") {
+      facesLogStarted = await safeStartPhotoStageLog(facesLog);
+      logger.info(`[GPU faces] starting ${s3Path}`, { provider: gpuClient.provider });
       const startedAt = Date.now();
       facesPromise = gpuClient.faces(imageBuffer).then(
         async (result) => {
@@ -906,13 +1163,18 @@ async function processChunk(
       facesPromise.catch(() => {}); // suppress unhandled rejection
     }
 
-    // Start local work (EXIF + placeholder) in parallel
-    const localPromise = Promise.allSettled([
-      extractExif(imageBuffer),
-      generatePlaceholder(imageBuffer),
-    ]).then(([exif, placeholder]) => ({ exif, placeholder }));
-
-    pending.push({ input, s3Path, imageBuffer, gpuMode: mode, captionPromise, facesPromise, localPromise });
+    return {
+      input,
+      s3Path,
+      imageBuffer,
+      gpuMode: mode,
+      captionLog,
+      facesLog,
+      captionLogStarted,
+      facesLogStarted,
+      captionPromise,
+      facesPromise,
+    };
   });
 
   const dispatchedCaption = pending.filter((p) => p.captionPromise).length;
@@ -923,94 +1185,63 @@ async function processChunk(
   const results: ProcessPhotoOutput[] = [];
 
   for (const item of pending) {
-    const errors: string[] = [];
     const { s3Path } = item;
-    const s3Key = item.input.s3Key;
-
-    // Create a per-photo GPU log entry
-    const mode = item.gpuMode;
-    const photoLogId = mode !== "skip"
-      ? await safeCreateGpuLog({
-          parentId: jobLogId,
-          type: mode === "caption-only" ? "caption" : mode === "faces-only" ? "faces" : "analyze",
-          provider: gpuClient.provider,
-          gpuMode: mode,
-          s3Path,
-        })
-      : null;
 
     try {
-      // Extract original image dimensions
-      let width: number | null = null;
-      let height: number | null = null;
-      try {
-        const meta = await sharp(item.imageBuffer).metadata();
-        width = meta.width ?? null;
-        height = meta.height ?? null;
-      } catch (err) {
-        errors.push(`Dimensions: ${err}`);
-        logger.error("Dimensions error:", err);
-      }
-
-      // Await local results
-      const local = await item.localPromise;
-      const exif = parseExifResult(local.exif, errors);
-      const placeholder = parsePlaceholderResult(local.placeholder, errors);
-
-      // Await GPU results based on mode
-      let caption: string | null = null;
-      let faces: ExtractedData["faces"] = [];
-      let skipFaces = false;
-      let skipCaption = false;
-      let captionVersion: string | null = null;
-      let facesVersion: string | null = null;
-
-      if (item.captionPromise) {
-        const [captionSettled] = await Promise.allSettled([item.captionPromise]);
-        caption = parseCaptionResult(captionSettled, errors);
-        // Only stamp version if GPU call succeeded
-        captionVersion = captionSettled.status === "fulfilled" ? CAPTION_VERSION : null;
-      } else {
-        skipCaption = true;
-      }
-
-      if (item.facesPromise) {
-        const [facesSettled] = await Promise.allSettled([item.facesPromise]);
-        faces = parseFacesResult(facesSettled, errors);
-        // Only stamp version if GPU call succeeded
-        facesVersion = facesSettled.status === "fulfilled" ? FACES_VERSION : null;
-      } else {
-        skipFaces = true;
-      }
-
-      const output = await saveToDb({
-        s3Path,
-        s3Key,
-        width,
-        height,
-        exif,
-        placeholder,
-        caption,
-        faces,
-        errors,
-        provider: gpuClient.provider,
-        skipFaces,
-        skipCaption,
-        captionVersion,
-        facesVersion,
-      });
+      const [captionSettled, facesSettled] = await Promise.all([
+        item.captionPromise
+          ? Promise.allSettled([item.captionPromise]).then(([result]) => result)
+          : Promise.resolve(null),
+        item.facesPromise
+          ? Promise.allSettled([item.facesPromise]).then(([result]) => result)
+          : Promise.resolve(null),
+      ]);
+      const output = await saveGpuResults(
+        item.input,
+        gpuClient.provider,
+        captionSettled,
+        facesSettled
+      );
       results.push(output);
-
-      // Complete or fail the per-photo GPU log
-      if (output.errors.length > 0) {
-        await safeFailGpuLog(photoLogId, output.errors.join("; "));
-      } else {
-        await safeCompleteGpuLog(photoLogId);
+      if (captionSettled && item.captionLogStarted && item.captionLog) {
+        if (captionSettled.status === "fulfilled") {
+          logger.info(`[GPU caption] completed ${s3Path}`, { provider: gpuClient.provider });
+          await safeCompleteGpuLog(item.captionLog.id);
+          item.captionLog.status = "completed";
+        } else {
+          const message = captionSettled.reason instanceof Error
+            ? captionSettled.reason.message
+            : String(captionSettled.reason);
+          logger.error(`[GPU caption] failed ${s3Path}: ${message}`);
+          await safeFailGpuLog(item.captionLog.id, message);
+          item.captionLog.status = "failed";
+        }
+      }
+      if (facesSettled && item.facesLogStarted && item.facesLog) {
+        if (facesSettled.status === "fulfilled") {
+          logger.info(`[GPU faces] completed ${s3Path}`, { provider: gpuClient.provider });
+          await safeCompleteGpuLog(item.facesLog.id);
+          item.facesLog.status = "completed";
+        } else {
+          const message = facesSettled.reason instanceof Error
+            ? facesSettled.reason.message
+            : String(facesSettled.reason);
+          logger.error(`[GPU faces] failed ${s3Path}: ${message}`);
+          await safeFailGpuLog(item.facesLog.id, message);
+          item.facesLog.status = "failed";
+        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.error(`Batch item failed for ${s3Path}:`, err);
-      await safeFailGpuLog(photoLogId, message);
+      if (item.captionLogStarted && item.captionLog) {
+        await safeFailGpuLog(item.captionLog.id, message);
+        item.captionLog.status = "failed";
+      }
+      if (item.facesLogStarted && item.facesLog) {
+        await safeFailGpuLog(item.facesLog.id, message);
+        item.facesLog.status = "failed";
+      }
       results.push({
         photoId: "",
         s3Path,
@@ -1021,6 +1252,8 @@ async function processChunk(
         description: null,
         facesDetected: 0,
         errors: [message],
+        gpuStatus: "failed",
+        gpuRetryable: isRetryableGpuFailure(err),
       });
     }
   }

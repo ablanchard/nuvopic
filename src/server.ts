@@ -30,6 +30,14 @@ import {
   startReprocessJobWorker,
   stopReprocessJobWorker,
 } from "./jobs/reprocess-jobs.js";
+import {
+  startManualImportJobWorker,
+  stopManualImportJobWorker,
+} from "./jobs/manual-import-jobs.js";
+import {
+  startGpuResourceCleanupWorker,
+  stopGpuResourceCleanupWorker,
+} from "./jobs/gpu-resource-leases.js";
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const SHUTDOWN_TIMEOUT_MS = parseInt(
@@ -165,6 +173,8 @@ const server = serve({ fetch: app.fetch, port: PORT }, () => {
   startProcessingJobWorker();
   startAutomaticImportWorker();
   startReprocessJobWorker();
+  startManualImportJobWorker();
+  startGpuResourceCleanupWorker();
 });
 
 function closeServer(): Promise<void> {
@@ -201,6 +211,8 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     await stopProcessingJobWorker();
     await stopAutomaticImportWorker();
     await stopReprocessJobWorker();
+    await stopManualImportJobWorker();
+    await stopGpuResourceCleanupWorker();
 
     if (activeBackgroundJobs.size > 0) {
       logger.info(

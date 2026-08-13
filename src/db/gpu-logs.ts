@@ -18,6 +18,7 @@ export type GpuLogType =
   | "inventory"
   | "inventory-item"
   | "reprocess"
+  | "cpu-import"
   | "caption"
   | "faces"
   | "analyze"
@@ -67,6 +68,13 @@ export interface GpuLogRow {
   created_at: string;
   /** Only present when fetching job-level logs with children count. */
   children_count?: number;
+}
+
+export type PhotoStageLogType = "cpu-import" | "caption" | "faces";
+
+export interface PhotoStageLogRef {
+  id: string;
+  status: GpuLogStatus;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +206,139 @@ export async function safeFailGpuLog(
     await failGpuLog(id, error, opts);
   } catch (err) {
     logger.error("Failed to fail GPU log:", err);
+  }
+}
+
+/** Update group counters/error without overriding its child-derived lifecycle. */
+export async function safeUpdateGpuLogOutcome(
+  id: string | null,
+  opts: {
+    photoCount?: number;
+    photosSucceeded?: number;
+    photosFailed?: number;
+    error?: string | null;
+    /** Used only if logging failed before any stage child could be created. */
+    fallbackStatus?: "completed" | "failed";
+  }
+): Promise<void> {
+  if (!id) return;
+  try {
+    await query(
+      `UPDATE gpu_logs
+       SET photo_count = COALESCE($2, photo_count),
+           photos_succeeded = COALESCE($3, photos_succeeded),
+           photos_failed = COALESCE($4, photos_failed),
+           error = $5,
+           status = CASE WHEN $6 IS NOT NULL AND NOT EXISTS (
+               SELECT 1 FROM gpu_logs child
+               WHERE child.parent_id = gpu_logs.id
+                 AND child.type IN ('cpu-import', 'caption', 'faces')
+             ) THEN $6 ELSE status END,
+           completed_at = CASE WHEN $6 IS NOT NULL AND NOT EXISTS (
+               SELECT 1 FROM gpu_logs child
+               WHERE child.parent_id = gpu_logs.id
+                 AND child.type IN ('cpu-import', 'caption', 'faces')
+             ) THEN NOW() ELSE completed_at END,
+           duration_ms = CASE WHEN $6 IS NOT NULL AND NOT EXISTS (
+               SELECT 1 FROM gpu_logs child
+               WHERE child.parent_id = gpu_logs.id
+                 AND child.type IN ('cpu-import', 'caption', 'faces')
+             ) THEN EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000
+             ELSE duration_ms END
+       WHERE id = $1`,
+      [
+        id,
+        opts.photoCount ?? null,
+        opts.photosSucceeded ?? null,
+        opts.photosFailed ?? null,
+        opts.error ?? null,
+        opts.fallbackStatus ?? null,
+      ]
+    );
+  } catch (err) {
+    logger.error("Failed to update GPU log outcome:", err);
+  }
+}
+
+/**
+ * Ensure one durable child log exists for every photo/stage in a job group.
+ * Existing completed children are never reopened; failed/queued children are
+ * reused by queue retries so the UI shows one coherent operation per stage.
+ */
+export async function safeQueuePhotoStageLogs(input: {
+  parentId?: string | null;
+  type: PhotoStageLogType;
+  provider: string;
+  gpuMode?: string | null;
+  s3Paths: string[];
+}): Promise<Map<string, PhotoStageLogRef>> {
+  if (!input.parentId || input.s3Paths.length === 0) return new Map();
+  try {
+    const paths = [...new Set(input.s3Paths)];
+    await query(
+      `INSERT INTO gpu_logs (
+         parent_id, type, provider, gpu_mode, s3_path, status, started_at
+       )
+       SELECT $1, $2, $3, $4, paths.s3_path, 'queued', NOW()
+       FROM UNNEST($5::text[]) AS paths(s3_path)
+       WHERE NOT EXISTS (
+         SELECT 1 FROM gpu_logs existing
+         WHERE existing.parent_id = $1
+           AND existing.type = $2
+           AND existing.s3_path = paths.s3_path
+       )`,
+      [
+        input.parentId,
+        input.type,
+        input.provider,
+        input.gpuMode ?? null,
+        paths,
+      ]
+    );
+    await query(
+      `UPDATE gpu_logs
+       SET status = 'queued', completed_at = NULL
+       WHERE parent_id = $1 AND type = $2 AND s3_path = ANY($3::text[])
+         AND status = 'failed'`,
+      [input.parentId, input.type, paths]
+    );
+    const result = await query<Pick<GpuLogRow, "id" | "s3_path" | "status">>(
+      `SELECT DISTINCT ON (s3_path) id, s3_path, status
+       FROM gpu_logs
+       WHERE parent_id = $1 AND type = $2 AND s3_path = ANY($3::text[])
+       ORDER BY s3_path, created_at DESC`,
+      [input.parentId, input.type, paths]
+    );
+    return new Map(
+      result.rows.flatMap((row) =>
+        row.s3_path ? [[row.s3_path, { id: row.id, status: row.status }]] : []
+      )
+    );
+  } catch (err) {
+    logger.error(`Failed to queue ${input.type} photo-stage logs:`, err);
+    return new Map();
+  }
+}
+
+/** Start or resume an individual stage without losing its first real start. */
+export async function safeStartPhotoStageLog(
+  ref: PhotoStageLogRef | undefined
+): Promise<boolean> {
+  if (!ref || ref.status === "completed") return false;
+  try {
+    await query(
+      `UPDATE gpu_logs
+       SET status = 'running',
+           started_at = CASE WHEN duration_ms IS NULL THEN NOW() ELSE started_at END,
+           completed_at = NULL, duration_ms = NULL, error = NULL
+       WHERE id = $1 AND status <> 'completed'`,
+      [ref.id]
+    );
+    ref.status = "running";
+    return true;
+  } catch (err) {
+    logger.error("Failed to start photo-stage log:", err);
+    return false;
   }
 }
 

@@ -49,10 +49,19 @@ function StatusBadge({ status }: { status: string }) {
 
 /** Type badge component. */
 function TypeBadge({ type }: { type: string }) {
-  return <span class="gpu-log-type-badge">{type === 'inventory' ? 'inventory scan' : type}</span>;
+  const label = type === 'inventory'
+    ? 'inventory scan'
+    : type === 'cpu-import'
+      ? 'CPU import'
+      : type === 'caption'
+        ? 'GPU caption'
+        : type === 'faces'
+          ? 'GPU faces'
+          : type;
+  return <span class="gpu-log-type-badge">{label}</span>;
 }
 
-/** Single expanded row showing children (per-photo logs). */
+/** Expanded rows show the explicit per-photo CPU/caption/faces operations. */
 function ChildrenRows({ parentId }: { parentId: string }) {
   const [children, setChildren] = useState<GpuLog[]>([]);
   const [loading, setLoading] = useState(true);

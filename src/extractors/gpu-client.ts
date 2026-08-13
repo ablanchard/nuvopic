@@ -50,6 +50,15 @@ export interface GpuResourceUsage {
   metadata?: Record<string, unknown>;
 }
 
+export interface GpuResourceLifecycleHandlers {
+  acquired(resource: { provider: "vastai"; resourceId: string }): Promise<void>;
+  released(resource: { provider: "vastai"; resourceId: string }): Promise<void>;
+  releaseFailed(
+    resource: { provider: "vastai"; resourceId: string },
+    error: unknown
+  ): Promise<void>;
+}
+
 // ---------------------------------------------------------------------------
 // GPU client interface
 // ---------------------------------------------------------------------------
@@ -102,6 +111,9 @@ export interface GpuClient {
 
   /** Attach non-sensitive workspace/job identifiers to provider resources. */
   setMeteringContext?(context: { workspaceId: string; externalJobId: string }): void;
+
+  /** Persist provider allocation/release state for crash-safe cleanup. */
+  setResourceLifecycleHandlers?(handlers: GpuResourceLifecycleHandlers): void;
 }
 
 // ---------------------------------------------------------------------------

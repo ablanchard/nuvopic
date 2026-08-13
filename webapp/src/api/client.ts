@@ -284,15 +284,41 @@ export interface ImportOptions {
 }
 
 export interface ImportResult {
+  jobId: string | null;
+  logId: string | null;
+  status: 'queued' | 'completed';
+  provider: string;
   bucket: string;
   prefix: string;
   totalImages: number;
   alreadyImported: number;
+  photoCount: number;
   processed: number;
   failed: number;
   remaining: number;
   elapsedSeconds: number;
   photosPerSecond: number;
+}
+
+export interface ManualImportJobResponse {
+  id: string;
+  logId: string | null;
+  bucket: string;
+  prefix: string;
+  sort: 'recent' | 'oldest';
+  gpuMode: 'all' | 'caption-only' | 'faces-only' | 'skip';
+  provider: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  totalImages: number;
+  alreadyImported: number;
+  photoCount: number;
+  photosSucceeded: number;
+  photosFailed: number;
+  remaining: number;
+  lastError: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
 }
 
 export interface PipelineStats {
@@ -874,6 +900,10 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(options),
       });
+    },
+
+    getImportJob: (jobId: string): Promise<ManualImportJobResponse> => {
+      return fetchApiJson<ManualImportJobResponse>(`${API_BASE}/photos/import/jobs/${jobId}`);
     },
 
     importPreview: (prefix: string = '', limit: number = 100): Promise<{

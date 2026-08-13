@@ -339,7 +339,7 @@ CREATE TABLE IF NOT EXISTS gpu_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     -- Self-referencing: parent_id IS NULL = job-level, otherwise photo-level child
     parent_id UUID REFERENCES gpu_logs(id) ON DELETE CASCADE,
-    -- Log type: 'inventory' | 'inventory-item' | 'import' | 'reprocess' | 'caption' | 'faces' | 'analyze' | 'single'
+    -- Log type: 'inventory' | 'inventory-item' | 'import' | 'reprocess' | 'cpu-import' | 'caption' | 'faces' | 'analyze' | 'single'
     type TEXT NOT NULL,
     -- GPU provider used: 'modal' | 'vastai' | 'local'
     provider TEXT,
@@ -405,6 +405,29 @@ CREATE INDEX IF NOT EXISTS idx_gpu_metering_outbox_pending
     WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_gpu_metering_jobs_status
     ON gpu_metering_jobs (status, updated_at);
+
+-- Provider resources are recorded as soon as they are allocated. A short,
+-- renewable lease lets a separate cleanup worker destroy resources left
+-- behind by a crashed worker or a failed provider API call.
+CREATE TABLE IF NOT EXISTS gpu_resource_leases (
+    provider TEXT NOT NULL CHECK (provider IN ('vastai')),
+    resource_id TEXT NOT NULL,
+    external_job_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'releasing', 'cleanup_pending', 'released')),
+    release_attempts INTEGER NOT NULL DEFAULT 0,
+    lease_expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '2 minutes',
+    next_release_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    released_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (provider, resource_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_gpu_resource_leases_cleanup
+    ON gpu_resource_leases (next_release_at, lease_expires_at)
+    WHERE status IN ('active', 'releasing', 'cleanup_pending');
 
 -- Provider-neutral object-storage connection used by automatic imports. The
 -- first product version has one settings-backed connection per workspace, but
@@ -577,6 +600,61 @@ CREATE INDEX IF NOT EXISTS idx_reprocess_job_items_pending
     ON reprocess_job_items (job_id, created_at)
     WHERE status = 'pending';
 
+-- One-time/manual imports are request-independent durable jobs. Object keys
+-- are snapshotted before the API returns, then processed in leased batches by
+-- the same worker model used for filtered reprocessing.
+CREATE TABLE IF NOT EXISTS manual_import_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    gpu_log_id UUID UNIQUE REFERENCES gpu_logs(id) ON DELETE SET NULL,
+    bucket TEXT NOT NULL,
+    prefix TEXT NOT NULL DEFAULT '',
+    sort TEXT NOT NULL DEFAULT 'recent' CHECK (sort IN ('recent', 'oldest')),
+    gpu_mode TEXT NOT NULL CHECK (gpu_mode IN ('all', 'caption-only', 'faces-only', 'skip')),
+    provider TEXT NOT NULL CHECK (provider IN ('modal', 'vastai', 'local')),
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+    total_images INTEGER NOT NULL CHECK (total_images >= 0),
+    already_imported INTEGER NOT NULL DEFAULT 0 CHECK (already_imported >= 0),
+    photo_count INTEGER NOT NULL CHECK (photo_count > 0),
+    photos_succeeded INTEGER NOT NULL DEFAULT 0,
+    photos_failed INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    lease_owner TEXT,
+    lease_expires_at TIMESTAMPTZ,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS manual_import_job_items (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_id UUID NOT NULL REFERENCES manual_import_jobs(id) ON DELETE CASCADE,
+    object_key TEXT NOT NULL,
+    s3_path TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (job_id, object_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_manual_import_jobs_pending
+    ON manual_import_jobs (next_attempt_at, created_at)
+    WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_manual_import_jobs_lease
+    ON manual_import_jobs (lease_expires_at)
+    WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_manual_import_job_items_pending
+    ON manual_import_job_items (job_id, created_at)
+    WHERE status = 'pending';
+
 -- Smart tags: user-defined rule-based tags evaluated at query time
 CREATE TABLE IF NOT EXISTS smart_tags (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -603,6 +681,87 @@ CREATE INDEX IF NOT EXISTS idx_gpu_logs_parent_id ON gpu_logs(parent_id);
 CREATE INDEX IF NOT EXISTS idx_gpu_logs_type ON gpu_logs(type);
 CREATE INDEX IF NOT EXISTS idx_gpu_logs_status ON gpu_logs(status);
 CREATE INDEX IF NOT EXISTS idx_gpu_logs_started_at ON gpu_logs(started_at);
+
+-- A top-level import/reprocess log is a group. Its lifecycle is derived from
+-- the explicit per-photo CPU/caption/faces children, never from an unrelated
+-- worker clock. This keeps retries and partial GPU completion observable.
+CREATE OR REPLACE FUNCTION refresh_gpu_log_group(group_id UUID)
+RETURNS VOID AS $$
+BEGIN
+    WITH child_summary AS (
+        SELECT
+            COUNT(*)::INTEGER AS child_count,
+            BOOL_AND(status = 'queued') AS all_queued,
+            BOOL_OR(status = 'queued') AS any_queued,
+            BOOL_OR(status = 'running') AS any_running,
+            BOOL_AND(status IN ('completed', 'failed')) AS all_terminal,
+            BOOL_OR(status = 'failed') AS any_failed,
+            COALESCE(
+                MIN(started_at) FILTER (WHERE status <> 'queued'),
+                MIN(started_at)
+            ) AS first_started_at,
+            MAX(completed_at) AS last_completed_at
+        FROM gpu_logs
+        WHERE parent_id = group_id
+          AND type IN ('cpu-import', 'caption', 'faces')
+    )
+    UPDATE gpu_logs parent
+       SET status = CASE
+               WHEN summary.all_queued THEN 'queued'
+               WHEN summary.any_running OR summary.any_queued THEN 'running'
+               WHEN summary.all_terminal AND summary.any_failed THEN 'failed'
+               WHEN summary.all_terminal THEN 'completed'
+               ELSE parent.status
+           END,
+           started_at = summary.first_started_at,
+           completed_at = CASE
+               WHEN summary.all_terminal THEN summary.last_completed_at
+               ELSE NULL
+           END,
+           duration_ms = CASE
+               WHEN summary.all_terminal
+                 AND summary.first_started_at IS NOT NULL
+                 AND summary.last_completed_at IS NOT NULL
+               THEN ROUND(EXTRACT(EPOCH FROM (
+                    summary.last_completed_at - summary.first_started_at
+               )) * 1000)::INTEGER
+               ELSE NULL
+           END
+      FROM child_summary summary
+     WHERE parent.id = group_id
+       AND summary.child_count > 0;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION refresh_gpu_log_group_from_child()
+RETURNS TRIGGER AS $$
+DECLARE
+    group_id UUID;
+    child_type TEXT;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        group_id := OLD.parent_id;
+        child_type := OLD.type;
+    ELSE
+        group_id := NEW.parent_id;
+        child_type := NEW.type;
+    END IF;
+    IF group_id IS NOT NULL
+       AND child_type IN ('cpu-import', 'caption', 'faces') THEN
+        PERFORM refresh_gpu_log_group(group_id);
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS refresh_gpu_log_group_after_child ON gpu_logs;
+CREATE TRIGGER refresh_gpu_log_group_after_child
+    AFTER INSERT OR UPDATE OR DELETE ON gpu_logs
+    FOR EACH ROW
+    EXECUTE FUNCTION refresh_gpu_log_group_from_child();
 
 -- HNSW index for fast cosine similarity search on face embeddings
 CREATE INDEX IF NOT EXISTS idx_faces_embedding_cosine

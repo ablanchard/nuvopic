@@ -1,0 +1,14 @@
+# Thin production release for source-only changes.
+# BASE_IMAGE is the currently deployed and verified NuvoPic image, so native
+# dependencies are reused while all compiled application code is replaced.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+USER root
+
+COPY --chown=appuser:appuser dist ./dist
+COPY --chown=appuser:appuser webapp/dist ./webapp/dist
+COPY --chown=appuser:appuser src/db/schema.sql ./src/db/schema.sql
+COPY --chown=appuser:appuser scripts/init-db.ts ./scripts/init-db.ts
+
+USER appuser

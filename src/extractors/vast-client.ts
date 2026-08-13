@@ -20,6 +20,9 @@
  *   VAST_DISK_GB              — Disk space in GB (default: 20)
  *   VAST_USE_INTERRUPTIBLE    — Use bid/spot instances (default: "true")
  *   VAST_BID_PRICE            — Override bid price $/hr (default: offer's dph_total)
+ *   VAST_BID_MARGIN_PERCENT   — Margin above the current minimum bid (default: 10)
+ *   VAST_INTERRUPTIBLE_ALLOCATIONS — Spot allocations before on-demand fallback (default: 1)
+ *   VAST_MAX_PROVISION_TIME_MS — Abandon a stuck allocation after this long (default: 300000)
  */
 
 import { logger } from "../logger.js";
@@ -28,6 +31,7 @@ import type {
   GpuAnalysisResult,
   GpuCaptionResult,
   GpuFacesResult,
+  GpuResourceLifecycleHandlers,
   GpuResourceUsage,
 } from "./gpu-client.js";
 
@@ -62,6 +66,14 @@ function getConfig() {
     bidPrice: process.env.VAST_BID_PRICE
       ? parseFloat(process.env.VAST_BID_PRICE)
       : null,
+    bidMarginPercent: Math.max(
+      0,
+      parseFloat(process.env.VAST_BID_MARGIN_PERCENT ?? "10")
+    ),
+    maxInterruptibleAllocations: Math.max(
+      0,
+      parseInt(process.env.VAST_INTERRUPTIBLE_ALLOCATIONS ?? "1", 10)
+    ),
   };
 }
 
@@ -89,6 +101,31 @@ interface VastInstance {
   ports: Record<string, Array<{ HostIp: string; HostPort: string }>>;
   status_msg: string;
   cur_state: string;
+}
+
+export function calculateProtectedBidPrice(input: {
+  configuredBid: number | null;
+  listedPrice: number;
+  minimumBid: number;
+  marginPercent: number;
+  maximumPrice: number;
+}): number {
+  const protectedMinimum = Math.max(
+    input.listedPrice,
+    input.minimumBid * (1 + input.marginPercent / 100)
+  );
+  return Math.min(
+    input.maximumPrice,
+    Math.max(input.configuredBid ?? input.listedPrice, protectedMinimum)
+  );
+}
+
+export function shouldUseInterruptibleAllocation(
+  enabled: boolean,
+  allocationSequence: number,
+  maximumAllocations: number
+): boolean {
+  return enabled && allocationSequence < maximumAllocations;
 }
 
 // ---------------------------------------------------------------------------
@@ -288,8 +325,8 @@ async function destroyInstance(
 
   if (!response.ok && response.status !== 404) {
     const text = await response.text().catch(() => "");
-    logger.warn(
-      `Vast.ai destroy instance warning (${response.status}): ${text.substring(0, 200)}`
+    throw new Error(
+      `Vast.ai destroy instance failed (${response.status}): ${text.substring(0, 200)}`
     );
   }
 }
@@ -299,12 +336,40 @@ async function destroyInstance(
 // ---------------------------------------------------------------------------
 
 const POLL_INTERVAL_MS = 10_000; // 10s between status checks
-const MAX_PROVISION_TIME_MS = 10 * 60 * 1000; // 10 minutes max for provisioning (image is ~15GB)
+const MAX_PROVISION_TIME_MS = Math.max(
+  60_000,
+  parseInt(process.env.VAST_MAX_PROVISION_TIME_MS ?? "300000", 10)
+);
 const HEALTH_CHECK_INTERVAL_MS = 5_000; // 5s between health checks
 const MAX_HEALTH_WAIT_MS = 3 * 60 * 1000; // 3 minutes max for models to load
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Destroy a Vast resource with bounded retries. Safe when it is already gone. */
+export async function destroyVastInstanceById(
+  instanceId: number,
+  maxAttempts = 5
+): Promise<void> {
+  const apiKey = process.env.VAST_API_KEY;
+  if (!apiKey) throw new Error("VAST_API_KEY is not configured");
+
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await destroyInstance(apiKey, instanceId);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxAttempts) {
+        await sleep(Math.min(10_000, 1_000 * 2 ** (attempt - 1)));
+      }
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`Unable to destroy Vast.ai instance ${instanceId}`);
 }
 
 /**
@@ -436,10 +501,15 @@ export class VastGpuClient implements GpuClient {
   } | null = null;
   private completedResourceUsage: GpuResourceUsage[] = [];
   private resourceLabel = "nuvopic-inference";
+  private resourceLifecycle: GpuResourceLifecycleHandlers | null = null;
 
   setMeteringContext(context: { workspaceId: string; externalJobId: string }): void {
     const safe = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 12);
     this.resourceLabel = `nuvopic-${safe(context.workspaceId)}-${safe(context.externalJobId)}`;
+  }
+
+  setResourceLifecycleHandlers(handlers: GpuResourceLifecycleHandlers): void {
+    this.resourceLifecycle = handlers;
   }
 
   /** Whether the current instance is interruptible (bid/spot). */
@@ -467,7 +537,11 @@ export class VastGpuClient implements GpuClient {
     let offer: VastOffer;
     let bidPrice: number | null = null;
 
-    if (config.useInterruptible) {
+    if (shouldUseInterruptibleAllocation(
+      config.useInterruptible,
+      this.reprovisionSequence,
+      config.maxInterruptibleAllocations
+    )) {
       logger.info(
         `Vast.ai: searching for interruptible ${config.gpuType} offers (max $${config.maxPricePerHour}/hr)...`
       );
@@ -483,8 +557,15 @@ export class VastGpuClient implements GpuClient {
         // Sort by price, pick cheapest
         interruptibleOffers.sort((a, b) => a.dph_total - b.dph_total);
         offer = interruptibleOffers[0];
-        // Bid price: explicit override, or the offer's listed price (dph_total)
-        bidPrice = config.bidPrice ?? offer.dph_total;
+        // Never submit a stale override below the host's current minimum bid.
+        // A small margin materially reduces immediate spot reclamation.
+        bidPrice = calculateProtectedBidPrice({
+          configuredBid: config.bidPrice,
+          listedPrice: offer.dph_total,
+          minimumBid: offer.min_bid,
+          marginPercent: config.bidMarginPercent,
+          maximumPrice: config.maxPricePerHour,
+        });
         this._isInterruptible = true;
 
         logger.info(
@@ -527,7 +608,10 @@ export class VastGpuClient implements GpuClient {
     } else {
       // Interruptible disabled — use on-demand directly
       logger.info(
-        `Vast.ai: searching for on-demand ${config.gpuType} offers (max $${config.maxPricePerHour}/hr)...`
+        `Vast.ai: searching for on-demand ${config.gpuType} offers ` +
+          `(max $${config.maxPricePerHour}/hr` +
+          (config.useInterruptible ? ", interruptible fallback exhausted" : "") +
+          `)...`
       );
 
       const offers = await searchOffers({
@@ -579,6 +663,26 @@ export class VastGpuClient implements GpuClient {
       succeeded: true,
     };
 
+    try {
+      await this.resourceLifecycle?.acquired({
+        provider: "vastai",
+        resourceId: String(this.instanceId),
+      });
+    } catch (error) {
+      const untrackedId = this.instanceId;
+      if (this.activeLease) this.activeLease.succeeded = false;
+      try {
+        await destroyVastInstanceById(untrackedId);
+      } finally {
+        this.instanceId = null;
+        this.finishActiveLease();
+      }
+      throw new Error(
+        `Could not persist Vast.ai resource ${untrackedId}; allocation was aborted`,
+        { cause: error }
+      );
+    }
+
     logger.info(
       `Vast.ai: instance ${this.instanceId} created` +
         (this._isInterruptible ? " (interruptible)" : " (on-demand)") +
@@ -616,8 +720,6 @@ export class VastGpuClient implements GpuClient {
 
     const id = this.instanceId;
     const apiKey = this.apiKey;
-    this.instanceId = null;
-    this.endpointUrl = null;
 
     if (!apiKey) {
       logger.warn(
@@ -630,10 +732,34 @@ export class VastGpuClient implements GpuClient {
 
     logger.info(`Vast.ai: destroying instance ${id}...`);
     try {
-      await destroyInstance(apiKey, id);
+      await destroyVastInstanceById(id);
+      this.instanceId = null;
+      this.endpointUrl = null;
+      try {
+        await this.resourceLifecycle?.released({
+          provider: "vastai",
+          resourceId: String(id),
+        });
+      } catch (error) {
+        logger.warn(
+          `Vast.ai instance ${id} was destroyed but its durable lease could not be updated:`,
+          error
+        );
+      }
       logger.info(`Vast.ai: instance ${id} destroyed.`);
     } catch (error) {
       if (this.activeLease) this.activeLease.succeeded = false;
+      try {
+        await this.resourceLifecycle?.releaseFailed(
+          { provider: "vastai", resourceId: String(id) },
+          error
+        );
+      } catch (recordError) {
+        logger.error(
+          `Could not persist cleanup failure for Vast.ai instance ${id}:`,
+          recordError
+        );
+      }
       throw error;
     } finally {
       this.finishActiveLease();

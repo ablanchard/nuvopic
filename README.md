@@ -256,6 +256,9 @@ VAST_DISK_GB=20
 # Interruptible/spot instances (optional — enabled by default)
 VAST_USE_INTERRUPTIBLE=true        # Use bid/spot instances (~68% cheaper)
 VAST_BID_PRICE=                    # Max bid $/hr (default: offer's listed price)
+VAST_BID_MARGIN_PERCENT=10         # Protect spot bid above the current minimum
+VAST_INTERRUPTIBLE_ALLOCATIONS=1   # Then fall back to on-demand for this batch
+VAST_MAX_PROVISION_TIME_MS=300000  # Abandon a stuck host after 5 minutes
 VAST_MAX_REPROVISIONS=3            # Max re-provisions per batch on eviction
 ```
 
@@ -329,6 +332,9 @@ Interruptible instances are Vast.ai's equivalent of AWS spot instances — signi
 |---|---|---|
 | `VAST_USE_INTERRUPTIBLE` | `true` | Use bid/spot instances instead of on-demand |
 | `VAST_BID_PRICE` | Offer's listed price | Max bid in $/hr (override for aggressive bidding) |
+| `VAST_BID_MARGIN_PERCENT` | `10` | Minimum percentage above the host's current minimum bid |
+| `VAST_INTERRUPTIBLE_ALLOCATIONS` | `1` | Interruptible allocations before on-demand fallback |
+| `VAST_MAX_PROVISION_TIME_MS` | `300000` | Maximum wait for a stuck allocation to start |
 | `VAST_MAX_REPROVISIONS` | `3` | Max re-provisions per batch on eviction |
 
 To disable interruptible instances and always use on-demand:
@@ -417,6 +423,8 @@ Any S3-compatible object storage works:
 
 For the current managed integration and its target multi-tenant design, see
 [NuvoPic Control Plane Architecture](docs/control-plane-architecture.md).
+For the evaluated PGlite tradeoffs and the recommended cold workspace tier, see
+[PGlite and cold workspace storage feasibility study](docs/pglite-cold-storage-study.md).
 
 ## Configuration
 
@@ -447,6 +455,9 @@ For the current managed integration and its target multi-tenant design, see
 | `VAST_DISK_GB` | No | Disk space (GB) for Vast.ai instance | `20` |
 | `VAST_USE_INTERRUPTIBLE` | No | Use bid/spot instances (cheaper, may be evicted) | `true` |
 | `VAST_BID_PRICE` | No | Max bid $/hr for interruptible instances | Offer's listed price |
+| `VAST_BID_MARGIN_PERCENT` | No | Margin above the current minimum interruptible bid | `10` |
+| `VAST_INTERRUPTIBLE_ALLOCATIONS` | No | Spot allocations before falling back to on-demand | `1` |
+| `VAST_MAX_PROVISION_TIME_MS` | No | Maximum provisioning wait before trying another offer | `300000` |
 | `VAST_MAX_REPROVISIONS` | No | Max re-provisions per batch on eviction | `3` |
 | `AUTH_PASSWORD` | No | Password for app access | Disabled |
 | `JWT_SECRET` | No*** | Secret for session tokens | Required if AUTH_PASSWORD is set |
@@ -461,6 +472,10 @@ For the current managed integration and its target multi-tenant design, see
 | `GPU_METERING_REQUEST_TIMEOUT_MS` | No | Control-plane request timeout | `10000` |
 | `PROCESSING_JOB_POLL_INTERVAL_MS` | No | Durable managed-webhook queue poll interval | `10000` |
 | `AUTO_IMPORT_POLL_INTERVAL_MS` | No | How often the worker checks schedules and durable photo jobs | `10000` |
+| `MANUAL_IMPORT_JOB_POLL_INTERVAL_MS` | No | How often the durable one-time import worker polls | `2000` |
+| `MANUAL_IMPORT_BATCH_SIZE` | No | Maximum photos held by one leased manual-import batch | `1000` |
+| `REPROCESS_BATCH_SIZE` | No | Maximum photos held by one leased filtered-reprocess batch | `1000` |
+| `GPU_RESOURCE_CLEANUP_POLL_INTERVAL_MS` | No | How often expired provider-resource leases are cleaned | `30000` |
 | `MANAGED_TOKEN_ENDPOINT` | Managed only | Same-origin endpoint the SPA uses to fetch a short-lived workspace token | `/managed/session/token` |
 | `MANAGED_PROFILE_PATH` | Managed only | Profile/account path served by the SaaS app | `/profile` |
 | `MANAGED_ADMIN_PATH` | Managed only | Admin dashboard path served by the SaaS app | `/admin` |
@@ -498,6 +513,13 @@ PostgreSQL, and retries failed work after restarts. Use **Stop Automatic
 Import** to disable monitoring explicitly. Inventory scans and their discovered
 and queued object counts appear under **Settings → Logs**.
 
+Import and reprocess entries in **Settings → Logs** are job groups. Expanding a
+group shows distinct per-photo `CPU import`, `GPU caption`, and `GPU faces`
+operations. A retry reuses the same operation row. The group's status, actual
+start, completion, and wall duration are derived from those child operations,
+so GPU provisioning time and partial failures cannot leave a misleading parent
+timestamp or status.
+
 Provider notifications are accelerators, not the source of truth. Existing
 AWS-shaped notifications can be sent to `POST /webhook/s3` (or
 `/webhook/s3/{workspaceId}` in managed mode); the handler durably enqueues the
@@ -510,6 +532,12 @@ immediate non-duplicating scan can be scheduled with:
 ```bash
 curl -X POST http://localhost:8080/api/v1/storage/automatic-import/reconcile
 ```
+
+One-time folder imports and filtered reprocessing also snapshot their selected
+photos into PostgreSQL queues before returning `202`. Closing the browser or
+restarting the data plane does not lose the selection. Vast.ai allocations are
+tracked in `gpu_resource_leases`; failed teardown calls are retried and expired
+leases are reclaimed by a separate cleanup worker.
 
 ### Process a photo via HTTP
 

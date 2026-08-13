@@ -248,28 +248,68 @@ export function StorageBrowserPage(_props: RoutableProps) {
     setStatus({ type: 'info', message: 'Import started...' });
 
     const gpuMode = getGpuMode();
-    let totalProcessed = 0;
-    let totalFailed = 0;
-    let totalElapsed = 0;
 
     try {
+      const queuedJobIds: string[] = [];
+      let immediatelyProcessed = 0;
+      let immediatelyFailed = 0;
       for (const prefix of selectedPrefixes) {
-        setStatus({ type: 'info', message: `Importing ${prefix || '(root)'}...` });
+        setStatus({ type: 'info', message: `Queueing ${prefix || '(root)'}...` });
         const result = await api.storage.import({
           prefix,
           limit: limitEnabled ? importLimit : 999999,
           sort: 'recent',
           gpuMode,
         });
-        totalProcessed += result.processed;
-        totalFailed += result.failed;
-        totalElapsed += result.elapsedSeconds;
+        if (result.jobId) queuedJobIds.push(result.jobId);
+        immediatelyProcessed += result.processed;
+        immediatelyFailed += result.failed;
       }
 
-      setStatus({
-        type: totalFailed > 0 ? 'error' : 'success',
-        message: `Import complete: ${totalProcessed} processed, ${totalFailed} failed (${totalElapsed.toFixed(1)}s)`,
-      });
+      if (queuedJobIds.length === 0) {
+        setStatus({
+          type: immediatelyFailed > 0 ? 'error' : 'success',
+          message: immediatelyProcessed > 0
+            ? `Import complete: ${immediatelyProcessed} processed, ${immediatelyFailed} failed`
+            : 'All selected photos are already imported.',
+        });
+        await refresh();
+        return;
+      }
+
+      // Polling is presentation only: jobs continue from their durable queue
+      // if this page is closed, the request disconnects, or the app restarts.
+      while (true) {
+        const jobs = await Promise.all(
+          queuedJobIds.map((jobId) => api.storage.getImportJob(jobId))
+        );
+        const processed = jobs.reduce((sum, job) => sum + job.photosSucceeded, 0);
+        const failed = jobs.reduce((sum, job) => sum + job.photosFailed, 0);
+        const total = jobs.reduce((sum, job) => sum + job.photoCount, 0);
+        const terminal = jobs.every(
+          (job) => job.status === 'completed' || job.status === 'failed'
+        );
+
+        if (terminal) {
+          const terminalErrors = jobs
+            .filter((job) => job.status === 'failed' && job.lastError)
+            .map((job) => job.lastError);
+          setStatus({
+            type: failed > 0 || terminalErrors.length > 0 ? 'error' : 'success',
+            message: terminalErrors.length > 0
+              ? `Import stopped: ${processed} processed, ${failed} failed. ${terminalErrors[0]}`
+              : `Import complete: ${processed} processed, ${failed} failed`,
+          });
+          break;
+        }
+
+        const running = jobs.filter((job) => job.status === 'running').length;
+        setStatus({
+          type: 'info',
+          message: `Durable import ${running > 0 ? 'processing' : 'queued'}: ${processed + failed}/${total}`,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+      }
 
       // Refresh to update counts
       await refresh();
