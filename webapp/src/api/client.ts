@@ -611,9 +611,15 @@ export const api = {
       return fetchApiBlob(`${API_BASE}/photos/${id}/thumbnail?size=${size}`);
     },
 
-    getFaceThumbnail: (photoId: string, faceId: string, size = 96): Promise<Blob> => {
+    getFaceThumbnail: (
+      photoId: string,
+      faceId: string,
+      size = 96,
+      signal?: AbortSignal,
+    ): Promise<Blob> => {
       return fetchApiBlob(
         `${API_BASE}/photos/${photoId}/faces/${faceId}/thumbnail?size=${size}`,
+        { signal },
       );
     },
 

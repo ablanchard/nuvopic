@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState } from 'preact/hooks';
-import { api } from '../api/client';
 import { whenNearViewport } from '../lib/nearViewport';
+import { loadFaceThumbnail } from '../lib/faceThumbnailLoader';
 
 interface FaceCropProps {
   faceId: string;
@@ -27,12 +27,13 @@ export function FaceCrop({ faceId, photoId, size = 80 }: FaceCropProps) {
 
   useEffect(() => {
     if (!nearViewport) return;
+    const controller = new AbortController();
     let cancelled = false;
     let objectUrl: string | null = null;
     setLoaded(false);
     setSrc(null);
 
-    api.photos.getFaceThumbnail(photoId, faceId, Math.max(size, 96))
+    loadFaceThumbnail(photoId, faceId, Math.max(size, 96), controller.signal)
       .then((blob) => {
         objectUrl = URL.createObjectURL(blob);
         if (cancelled) {
@@ -47,6 +48,7 @@ export function FaceCrop({ faceId, photoId, size = 80 }: FaceCropProps) {
 
     return () => {
       cancelled = true;
+      controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [nearViewport, photoId, faceId, size]);
@@ -57,6 +59,7 @@ export function FaceCrop({ faceId, photoId, size = 80 }: FaceCropProps) {
       class={`face-crop ${loaded ? 'face-crop--loaded' : ''}`}
       src={src ?? undefined}
       alt="Face"
+      decoding="async"
       width={size}
       height={size}
       style={{ width: `${size}px`, height: `${size}px` }}

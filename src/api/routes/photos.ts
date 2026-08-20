@@ -44,6 +44,7 @@ const faceSourcePromises = new Map<
   string,
   Promise<{ data: Buffer; width: number; height: number }>
 >();
+const faceThumbnailPromises = new Map<string, Promise<Buffer>>();
 
 function clampThumbnailSize(raw: string | undefined): number {
   const parsed = parseInt(raw ?? "512", 10);
@@ -955,14 +956,28 @@ photos.get("/:id/faces/:faceId/thumbnail", async (c) => {
     Math.max(0, Math.min(imageHeight - cropSize, centerY - cropSize / 2))
   );
 
-  const thumbnail = await sharp(faceSource.data, { failOn: "none" })
-    .extract({ left, top, width: cropSize, height: cropSize })
-    .resize(size, size, { fit: "fill", withoutEnlargement: false })
-    .webp({ quality: 78, effort: 4 })
-    .toBuffer();
+  const existingGeneration = faceThumbnailPromises.get(cachePath);
+  if (existingGeneration) {
+    return thumbnailResponse(await existingGeneration, "HIT");
+  }
 
-  await writeCachedThumbnail(cachePath, thumbnail);
-  return thumbnailResponse(thumbnail, "MISS");
+  const generation = (async () => {
+    const thumbnail = await sharp(faceSource.data, { failOn: "none" })
+      .extract({ left, top, width: cropSize, height: cropSize })
+      .resize(size, size, { fit: "fill", withoutEnlargement: false })
+      .webp({ quality: 78, effort: 4 })
+      .toBuffer();
+
+    await writeCachedThumbnail(cachePath, thumbnail);
+    return thumbnail;
+  })();
+
+  faceThumbnailPromises.set(cachePath, generation);
+  try {
+    return thumbnailResponse(await generation, "MISS");
+  } finally {
+    faceThumbnailPromises.delete(cachePath);
+  }
 });
 
 // Get faces for a photo
