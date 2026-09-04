@@ -237,4 +237,42 @@ test.describe("current NuvoPic pages", () => {
     await expect(page.getByRole("button", { name: "Connect Bucket" })).toBeVisible();
     expect(unexpectedRequests).toEqual([]);
   });
+
+  test("keeps mobile navigation and settings controls readable", async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 800 });
+    const unexpectedRequests = await mockApi(page);
+    await page.goto("/app/settings");
+
+    const nav = page.locator(".nav-links");
+    await nav.evaluate((element) => {
+      for (const label of ["Profile", "Admin"]) {
+        const link = document.createElement("a");
+        link.className = "nav-link";
+        link.textContent = label;
+        element.append(link);
+      }
+    });
+    const firstNavLink = nav.locator(".nav-link").first();
+    const lastNavLink = nav.locator(".nav-link").last();
+    const firstRow = page.locator(".setting-row").first();
+    const firstInfo = firstRow.locator(".setting-info");
+    const firstControl = firstRow.locator(".setting-control");
+    const providerSelect = page.locator("#setting-storage_provider");
+
+    const [firstLinkBox, lastLinkBox, rowBox, infoBox, controlBox] = await Promise.all([
+      firstNavLink.boundingBox(),
+      lastNavLink.boundingBox(),
+      firstRow.boundingBox(),
+      firstInfo.boundingBox(),
+      firstControl.boundingBox(),
+    ]);
+
+    expect(firstLinkBox?.x).toBeGreaterThanOrEqual(16);
+    expect((lastLinkBox?.x ?? 0) + (lastLinkBox?.width ?? 0)).toBeLessThanOrEqual(344);
+    expect(controlBox?.y).toBeGreaterThanOrEqual((infoBox?.y ?? 0) + (infoBox?.height ?? 0));
+    expect(controlBox?.width).toBeCloseTo(rowBox?.width ?? 0, 0);
+    await expect(providerSelect).toHaveCSS("background-color", "rgb(255, 255, 255)");
+    await expect(providerSelect).toHaveCSS("color", "rgb(34, 34, 34)");
+    expect(unexpectedRequests).toEqual([]);
+  });
 });
