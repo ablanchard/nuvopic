@@ -317,33 +317,58 @@ export async function getClusterFaces(
 /** Get faces that are effectively unassigned: no cluster, or in an automatic
  *  single-face unnamed cluster. Manually created singletons are assigned.
  *  Only returns faces that pass quality thresholds. */
-export async function getUnclusteredFaces(): Promise<ClusterFaceRecord[]> {
+export async function getUnclusteredFaces(
+  limit = 40,
+  offset = 0
+): Promise<{ faces: ClusterFaceRecord[]; total: number; hasMore: boolean }> {
   const fqSettings = await getFaceQualitySettings();
   const fqFilter = faceQualityFilter("f", fqSettings);
   const unassignedFilter = effectivelyUnassignedFilter("f");
+  const normalizedLimit = Number.isFinite(limit) ? Math.trunc(limit) : 40;
+  const normalizedOffset = Number.isFinite(offset) ? Math.trunc(offset) : 0;
+  const safeLimit = Math.min(Math.max(normalizedLimit, 1), 100);
+  const safeOffset = Math.max(normalizedOffset, 0);
 
-  const result = await query<ClusterFaceRecord>(
-    `SELECT
-       f.id,
-       f.photo_id,
-       f.bounding_box,
-       ph.width AS photo_width,
-       ph.height AS photo_height,
-       f.confidence,
-       (f.bounding_box->>'width')::int * (f.bounding_box->>'height')::int AS area
-     FROM faces f
-     JOIN photos ph ON ph.id = f.photo_id
-     WHERE f.embedding IS NOT NULL
-       AND ${fqFilter}
-       AND ${unassignedFilter}
-       AND NOT EXISTS (
-         SELECT 1 FROM face_assignment_exclusions x WHERE x.face_id = f.id
-       )
-     ORDER BY f.created_at DESC
-     LIMIT 200`
-  );
+  const [facesResult, countResult] = await Promise.all([
+    query<ClusterFaceRecord>(
+      `SELECT
+         f.id,
+         f.photo_id,
+         f.bounding_box,
+         ph.width AS photo_width,
+         ph.height AS photo_height,
+         f.confidence,
+         (f.bounding_box->>'width')::int * (f.bounding_box->>'height')::int AS area
+       FROM faces f
+       JOIN photos ph ON ph.id = f.photo_id
+       WHERE f.embedding IS NOT NULL
+         AND ${fqFilter}
+         AND ${unassignedFilter}
+         AND NOT EXISTS (
+           SELECT 1 FROM face_assignment_exclusions x WHERE x.face_id = f.id
+         )
+       ORDER BY f.created_at DESC, f.id DESC
+       LIMIT $1 OFFSET $2`,
+      [safeLimit, safeOffset]
+    ),
+    query<{ count: number }>(
+      `SELECT COUNT(*)::int AS count
+       FROM faces f
+       WHERE f.embedding IS NOT NULL
+         AND ${fqFilter}
+         AND ${unassignedFilter}
+         AND NOT EXISTS (
+           SELECT 1 FROM face_assignment_exclusions x WHERE x.face_id = f.id
+         )`
+    ),
+  ]);
 
-  return result.rows;
+  const total = countResult.rows[0]?.count ?? 0;
+  return {
+    faces: facesResult.rows,
+    total,
+    hasMore: safeOffset + facesResult.rows.length < total,
+  };
 }
 
 /** Get faces excluded specifically by the current confidence or area gate. */

@@ -42,7 +42,9 @@ clusters.get("/", async (c) => {
 
 // List unassigned faces
 clusters.get("/unassigned", async (c) => {
-  const faces = await getUnclusteredFaces();
+  const limit = Number.parseInt(c.req.query("limit") ?? "40", 10);
+  const offset = Number.parseInt(c.req.query("offset") ?? "0", 10);
+  const { faces, total, hasMore } = await getUnclusteredFaces(limit, offset);
   return c.json({
     faces: faces.map((f) => ({
       id: f.id,
@@ -53,6 +55,8 @@ clusters.get("/unassigned", async (c) => {
       confidence: f.confidence,
       area: f.area,
     })),
+    total,
+    hasMore,
   });
 });
 

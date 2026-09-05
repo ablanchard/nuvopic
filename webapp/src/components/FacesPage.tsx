@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'preact/hooks';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'preact/hooks';
 import { api } from '../api/client';
 import type { Cluster, ClusterFace, ClusterStrategy } from '../api/client';
 import { ClusterCard } from './ClusterCard';
@@ -8,6 +8,7 @@ import type { RoutableProps } from 'preact-router';
 
 const DEFAULT_MIN_CONFIDENCE = '0.7';
 const DEFAULT_MIN_AREA = '2500';
+const UNASSIGNED_PAGE_SIZE = 40;
 
 /** Stable sort: named clusters first (alphabetical), then unnamed (by id). */
 function sortClusters(clusters: Cluster[]): Cluster[] {
@@ -27,6 +28,9 @@ export function FacesPage(_props: RoutableProps) {
   // Data
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [unassigned, setUnassigned] = useState<ClusterFace[]>([]);
+  const [unassignedTotal, setUnassignedTotal] = useState(0);
+  const [unassignedLoadingMore, setUnassignedLoadingMore] = useState(false);
+  const [unassignedLoadError, setUnassignedLoadError] = useState<string | null>(null);
   const [filteredOut, setFilteredOut] = useState<ClusterFace[]>([]);
   const [filteredOutTotal, setFilteredOutTotal] = useState(0);
   const [wontAssign, setWontAssign] = useState<ClusterFace[]>([]);
@@ -47,6 +51,9 @@ export function FacesPage(_props: RoutableProps) {
   const [clustering, setClustering] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [changingWontAssignFaceId, setChangingWontAssignFaceId] = useState<string | null>(null);
+  const unassignedLoadMoreRef = useRef<HTMLDivElement>(null);
+  const unassignedLoadingMoreRef = useRef(false);
+  const unassignedRequestVersionRef = useRef(0);
 
   // Assign popover state
   const [assignPopover, setAssignPopover] = useState<{ faceId: string; x: number; y: number } | null>(null);
@@ -56,15 +63,22 @@ export function FacesPage(_props: RoutableProps) {
 
   const refresh = useCallback(async (options: { initial?: boolean } = {}) => {
     if (options.initial) setLoading(true);
+    const unassignedRequestVersion = ++unassignedRequestVersionRef.current;
+    unassignedLoadingMoreRef.current = false;
+    setUnassignedLoadingMore(false);
+    setUnassignedLoadError(null);
     try {
       const [clustersRes, unassignedRes, filteredOutRes, wontAssignRes] = await Promise.all([
         api.clusters.list(),
-        api.clusters.getUnassigned(),
+        api.clusters.getUnassigned(UNASSIGNED_PAGE_SIZE, 0),
         api.clusters.getFilteredOut(),
         api.clusters.getWontAssign(),
       ]);
       setClusters(clustersRes.clusters);
-      setUnassigned(unassignedRes.faces);
+      if (unassignedRequestVersion === unassignedRequestVersionRef.current) {
+        setUnassigned(unassignedRes.faces);
+        setUnassignedTotal(unassignedRes.total);
+      }
       setFilteredOut(filteredOutRes.faces);
       setFilteredOutTotal(filteredOutRes.total);
       setWontAssign(wontAssignRes.faces);
@@ -76,6 +90,52 @@ export function FacesPage(_props: RoutableProps) {
       if (options.initial) setLoading(false);
     }
   }, []);
+
+  const loadMoreUnassigned = useCallback(async () => {
+    if (unassignedLoadingMoreRef.current || unassigned.length >= unassignedTotal) return;
+
+    const requestVersion = unassignedRequestVersionRef.current;
+    const offset = unassigned.length;
+    unassignedLoadingMoreRef.current = true;
+    setUnassignedLoadingMore(true);
+    setUnassignedLoadError(null);
+    try {
+      const response = await api.clusters.getUnassigned(UNASSIGNED_PAGE_SIZE, offset);
+      if (requestVersion !== unassignedRequestVersionRef.current) return;
+
+      setUnassigned((current) => {
+        const existingIds = new Set(current.map((face) => face.id));
+        return [...current, ...response.faces.filter((face) => !existingIds.has(face.id))];
+      });
+      setUnassignedTotal(response.total);
+    } catch (err) {
+      if (requestVersion === unassignedRequestVersionRef.current) {
+        setUnassignedLoadError(err instanceof Error ? err.message : 'Failed to load more faces');
+      }
+    } finally {
+      if (requestVersion === unassignedRequestVersionRef.current) {
+        unassignedLoadingMoreRef.current = false;
+        setUnassignedLoadingMore(false);
+      }
+    }
+  }, [unassigned.length, unassignedTotal]);
+
+  const hasMoreUnassigned = unassigned.length < unassignedTotal;
+
+  useEffect(() => {
+    const sentinel = unassignedLoadMoreRef.current;
+    if (!sentinel || !hasMoreUnassigned || typeof IntersectionObserver === 'undefined') return;
+
+    const root = sentinel.closest('.sidebar');
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) void loadMoreUnassigned();
+    }, {
+      root,
+      rootMargin: '160px 0px',
+    });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMoreUnassigned, loadMoreUnassigned]);
 
   useEffect(() => {
     void refresh({ initial: true });
@@ -250,7 +310,7 @@ export function FacesPage(_props: RoutableProps) {
     <div class="app-content">
       {/* Left Sidebar: Unassigned Faces */}
       <aside class="sidebar" style={{ maxHeight: 'calc(100vh - 96px)', overflowY: 'auto' }}>
-        <h3 class="sidebar-heading">Unassigned ({unassigned.length})</h3>
+        <h3 class="sidebar-heading">Unassigned ({unassignedTotal})</h3>
         {loading ? (
           <div class="sidebar-empty">Loading...</div>
         ) : unassigned.length === 0 ? (
@@ -272,6 +332,22 @@ export function FacesPage(_props: RoutableProps) {
                 </button>
               </div>
             ))}
+          </div>
+        )}
+
+        {!loading && hasMoreUnassigned && (
+          <div ref={unassignedLoadMoreRef} class="unassigned-pagination">
+            <button
+              class="btn btn-small"
+              onClick={() => void loadMoreUnassigned()}
+              disabled={unassignedLoadingMore}
+            >
+              {unassignedLoadingMore ? 'Loading…' : 'Load more'}
+            </button>
+            <span>Showing {unassigned.length} of {unassignedTotal}</span>
+            {unassignedLoadError && (
+              <span class="unassigned-pagination-error">{unassignedLoadError}</span>
+            )}
           </div>
         )}
 

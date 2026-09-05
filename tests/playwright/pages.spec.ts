@@ -86,7 +86,10 @@ async function mockApi(page: Page, storageConfigured = true): Promise<string[]> 
     } else if (path === "/api/v1/tags") {
       json = { tags: [] };
     } else if (path === "/api/v1/clusters/unassigned") {
-      json = { faces: [] };
+      if (url.searchParams.get("limit") !== "40" || url.searchParams.get("offset") !== "0") {
+        unexpectedRequests.push(`${route.request().method()} ${url.pathname}${url.search}`);
+      }
+      json = { faces: [], total: 0, hasMore: false };
     } else if (path === "/api/v1/clusters") {
       json = { clusters: [] };
     } else if (path === "/api/v1/gpu-logs") {

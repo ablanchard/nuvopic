@@ -704,8 +704,13 @@ export const api = {
       return fetchApiJson<{ clusters: Cluster[] }>(`${API_BASE}/clusters`);
     },
 
-    getUnassigned: (): Promise<{ faces: ClusterFace[] }> => {
-      return fetchApiJson<{ faces: ClusterFace[] }>(`${API_BASE}/clusters/unassigned`);
+    getUnassigned: (
+      limit = 40,
+      offset = 0,
+    ): Promise<{ faces: ClusterFace[]; total: number; hasMore: boolean }> => {
+      return fetchApiJson<{ faces: ClusterFace[]; total: number; hasMore: boolean }>(
+        `${API_BASE}/clusters/unassigned?limit=${limit}&offset=${offset}`,
+      );
     },
 
     getFilteredOut: (): Promise<{ faces: ClusterFace[]; total: number }> => {
