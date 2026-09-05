@@ -3,6 +3,7 @@ import { api, type RuntimeSession } from '../api/client';
 import { SettingsSidebar } from './SettingsSidebar';
 import type { RoutableProps } from 'preact-router';
 import { SETTINGS_PATH } from '../routes';
+import { AwsS3Connect } from './AwsS3Connect';
 
 const MASKED_VALUE = '__MASKED__';
 const SECRET_KEYS = new Set(['s3_secret_access_key']);
@@ -223,6 +224,7 @@ export function SettingsPage(props: SettingsPageProps) {
     ? Object.entries(groupedSections).filter(([section]) => section === STORAGE_SECTION)
     : Object.entries(groupedSections);
   const storageConfigured = Boolean(s3Config.s3_bucket?.effectiveValue);
+  const usingAwsConnector = draft.storage_provider === 'amazon-s3';
 
   return (
     <div class="app-content">
@@ -252,7 +254,11 @@ export function SettingsPage(props: SettingsPageProps) {
               <div key={section} class="settings-section" id={`settings-${section.toLowerCase().replace(/\s+/g, '-')}`}>
                 <h2 class="settings-section-title">{section}</h2>
                 <div class="settings-card">
-                  {keys.map((key) => {
+                  {keys.filter((key) => !(
+                    section === STORAGE_SECTION &&
+                    usingAwsConnector &&
+                    key !== 'storage_provider'
+                  )).map((key) => {
                     const def = SETTING_DEFS[key];
                     const value = draft[key] ?? '';
 
@@ -357,6 +363,13 @@ export function SettingsPage(props: SettingsPageProps) {
               </div>
             ))}
 
+            {usingAwsConnector && (
+              <div class="settings-section">
+                <h2 class="settings-section-title">AWS connection</h2>
+                <AwsS3Connect onConnected={onboarding ? props.onStorageConfigured : undefined} />
+              </div>
+            )}
+
             {!onboarding && !storageConfigured && (
               <div class="settings-section">
                 <div class="settings-card">
@@ -373,7 +386,7 @@ export function SettingsPage(props: SettingsPageProps) {
               </div>
             )}
 
-            <div class="settings-actions">
+            {!usingAwsConnector && <div class="settings-actions">
               <button
                 class="btn btn-primary"
                 onClick={handleSave}
@@ -390,7 +403,7 @@ export function SettingsPage(props: SettingsPageProps) {
                   Reset
                 </button>
               )}
-            </div>
+            </div>}
 
             {status && (
               <div class={`settings-status settings-status--${status.type}`}>

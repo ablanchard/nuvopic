@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import crypto from "node:crypto";
 import {
   getAllSettings,
+  getAllRuntimeSettings,
   getSetting,
   upsertSettings,
   getS3ConfigInfo,
@@ -10,6 +11,12 @@ import {
   buildResolvedS3ConfigFromSettings,
 } from "../../db/settings.js";
 import { invalidateS3Client, validateS3Connection } from "../../s3/client.js";
+import {
+  beginAwsConnection,
+  getAwsConnectionStatus,
+  verifyAwsConnection,
+} from "../../s3/aws-connection.js";
+import { getAuthInfo } from "../../auth/handlers.js";
 
 /** Setting key prefixes that relate to S3 configuration. */
 const S3_SETTING_PREFIX = "s3_";
@@ -27,6 +34,16 @@ const AUTO_IMPORT_KEYS = new Set([
   "auto_import_gpu_mode",
   "auto_import_scan_interval_minutes",
 ]);
+const AWS_CONNECTOR_SETTING_KEYS = new Set([
+  "s3_auth_mode",
+  "s3_role_arn",
+  "s3_external_id",
+  "aws_connect_account_id",
+  "aws_connect_bucket",
+  "aws_connect_region",
+  "aws_connect_role_name",
+  "aws_connect_pending",
+]);
 
 const settings = new Hono();
 
@@ -38,7 +55,18 @@ function hasAnyS3Value(settingsMap: Record<string, string>): boolean {
 }
 
 function findMissingRequiredS3Fields(settingsMap: Record<string, string>): string[] {
+  if (settingsMap.s3_auth_mode === "aws-role") {
+    return ["s3_bucket", "s3_region", "s3_role_arn", "s3_external_id"].filter(
+      (key) => !settingsMap[key]?.trim()
+    );
+  }
   return S3_REQUIRED_KEYS.filter((key) => !settingsMap[key]?.trim());
+}
+
+function requireStorageOwner(c: Parameters<typeof getAuthInfo>[0]): Response | null {
+  const role = getAuthInfo(c).role;
+  if (role === "owner" || role === "admin") return null;
+  return c.json({ error: "Only a workspace owner can connect storage" }, 403);
 }
 
 // GET /api/v1/settings — returns all settings as { key: value }
@@ -59,6 +87,66 @@ settings.get("/s3", async (c) => {
   return c.json(info);
 });
 
+settings.get("/aws/connect", async (c) => {
+  const forbidden = requireStorageOwner(c);
+  if (forbidden) return forbidden;
+
+  return c.json(await getAwsConnectionStatus(), 200, {
+    "Cache-Control": "no-store",
+  });
+});
+
+settings.post("/aws/connect", async (c) => {
+  const forbidden = requireStorageOwner(c);
+  if (forbidden) return forbidden;
+
+  const body = await c.req.json<{
+    bucket?: unknown;
+    region?: unknown;
+    accountId?: unknown;
+  }>();
+  if (
+    typeof body.bucket !== "string" ||
+    typeof body.region !== "string" ||
+    typeof body.accountId !== "string"
+  ) {
+    return c.json({ error: "Bucket, region, and AWS account ID are required" }, 400);
+  }
+
+  try {
+    return c.json(await beginAwsConnection({
+      bucket: body.bucket,
+      region: body.region,
+      accountId: body.accountId,
+    }), 200, { "Cache-Control": "no-store" });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to start AWS setup";
+    const status = message.includes("not configured") ? 503 : 400;
+    return c.json({ error: message }, status, { "Cache-Control": "no-store" });
+  }
+});
+
+settings.post("/aws/connect/verify", async (c) => {
+  const forbidden = requireStorageOwner(c);
+  if (forbidden) return forbidden;
+
+  try {
+    return c.json(await verifyAwsConnection(), 200, {
+      "Cache-Control": "no-store",
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error:
+          "CloudFormation connection could not be verified: " +
+          (error instanceof Error ? error.message : "Unknown AWS error"),
+      },
+      400,
+      { "Cache-Control": "no-store" }
+    );
+  }
+});
+
 // PUT /api/v1/settings — upsert settings from { key: value } pairs
 settings.put("/", async (c) => {
   const body = await c.req.json();
@@ -67,17 +155,28 @@ settings.put("/", async (c) => {
     return c.json({ error: "Expected a JSON object of { key: value } pairs" }, 400);
   }
 
-  const currentSettings = await getAllSettings();
+  const currentSettings = await getAllRuntimeSettings();
   const entries: Record<string, string> = {};
   let hasS3Change = false;
 
   for (const [key, value] of Object.entries(body)) {
+    if (AWS_CONNECTOR_SETTING_KEYS.has(key)) {
+      return c.json({ error: `Setting "${key}" is managed by the AWS connector` }, 400);
+    }
     if (typeof value !== "string") {
       return c.json({ error: `Value for "${key}" must be a string` }, 400);
     }
     if (value === MASKED_VALUE) continue;
     entries[key] = value;
     if (key.startsWith(S3_SETTING_PREFIX)) hasS3Change = true;
+  }
+
+  if (
+    (entries.storage_provider && entries.storage_provider !== "amazon-s3") ||
+    entries.s3_access_key_id ||
+    entries.s3_secret_access_key
+  ) {
+    entries.s3_auth_mode = "access-key";
   }
 
   if (entries.auto_import_enabled && !["true", "false"].includes(entries.auto_import_enabled)) {
@@ -127,13 +226,19 @@ settings.put("/", async (c) => {
       const s3Config = buildResolvedS3ConfigFromSettings(mergedSettings);
       try {
         await validateS3Connection(
-          {
-            endpoint: s3Config.endpoint || undefined,
-            region: s3Config.region!,
-            accessKeyId: s3Config.accessKeyId!,
-            secretAccessKey: s3Config.secretAccessKey!,
-            forcePathStyle: s3Config.forcePathStyle || undefined,
-          },
+          s3Config.authMode === "aws-role"
+            ? {
+                region: s3Config.region!,
+                roleArn: s3Config.roleArn!,
+                externalId: s3Config.externalId!,
+              }
+            : {
+                endpoint: s3Config.endpoint || undefined,
+                region: s3Config.region!,
+                accessKeyId: s3Config.accessKeyId!,
+                secretAccessKey: s3Config.secretAccessKey!,
+                forcePathStyle: s3Config.forcePathStyle || undefined,
+              },
           s3Config.bucket!
         );
       } catch (error) {

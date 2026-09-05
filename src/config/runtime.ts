@@ -109,3 +109,23 @@ export function getJwksCacheTtlMs(): number {
 export function getSettingsKek(): string | null {
   return process.env.SETTINGS_KEK?.trim() || null;
 }
+
+export function getAwsConnectPrincipalArn(): string | null {
+  return process.env.AWS_CONNECT_PRINCIPAL_ARN?.trim() || null;
+}
+
+export function getAwsConnectTemplateUrl(): string | null {
+  return process.env.AWS_CONNECT_TEMPLATE_URL?.trim() || null;
+}
+
+export function getAwsConnectAccessKeyId(): string | null {
+  return process.env.AWS_CONNECT_ACCESS_KEY_ID?.trim() || null;
+}
+
+export function getAwsConnectSecretAccessKey(): string | null {
+  return process.env.AWS_CONNECT_SECRET_ACCESS_KEY?.trim() || null;
+}
+
+export function getAwsConnectSessionToken(): string | null {
+  return process.env.AWS_CONNECT_SESSION_TOKEN?.trim() || null;
+}

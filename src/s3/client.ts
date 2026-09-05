@@ -8,8 +8,14 @@ import {
   type HeadObjectCommandOutput,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { fromTemporaryCredentials } from "@aws-sdk/credential-providers";
 import { getResolvedS3Config } from "../db/settings.js";
 import { getCurrentDatabaseCacheKey } from "../db/client.js";
+import {
+  getAwsConnectAccessKeyId,
+  getAwsConnectSecretAccessKey,
+  getAwsConnectSessionToken,
+} from "../config/runtime.js";
 
 const s3Clients = new Map<string, S3Client>();
 
@@ -28,9 +34,49 @@ const folderImageCountCache = new Map<string, FolderImageCountCacheEntry>();
 export interface S3Config {
   endpoint?: string;
   region: string;
-  accessKeyId: string;
-  secretAccessKey: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  roleArn?: string;
+  externalId?: string;
   forcePathStyle?: boolean;
+}
+
+function credentialsForConfig(config: S3Config) {
+  if (config.roleArn && config.externalId) {
+    const accessKeyId = getAwsConnectAccessKeyId();
+    const secretAccessKey = getAwsConnectSecretAccessKey();
+    const sessionToken = getAwsConnectSessionToken();
+
+    if (Boolean(accessKeyId) !== Boolean(secretAccessKey)) {
+      throw new Error(
+        "AWS_CONNECT_ACCESS_KEY_ID and AWS_CONNECT_SECRET_ACCESS_KEY must be configured together"
+      );
+    }
+
+    const masterCredentials = accessKeyId && secretAccessKey
+      ? { accessKeyId, secretAccessKey, sessionToken: sessionToken || undefined }
+      : undefined;
+
+    return fromTemporaryCredentials({
+      masterCredentials,
+      clientConfig: { region: config.region },
+      params: {
+        RoleArn: config.roleArn,
+        ExternalId: config.externalId,
+        RoleSessionName: "nuvopic-s3-read",
+        DurationSeconds: 3600,
+      },
+    });
+  }
+
+  if (!config.accessKeyId || !config.secretAccessKey) {
+    throw new Error("S3 credentials are not configured");
+  }
+
+  return {
+    accessKeyId: config.accessKeyId,
+    secretAccessKey: config.secretAccessKey,
+  };
 }
 
 /**
@@ -40,9 +86,26 @@ export interface S3Config {
 async function buildS3Config(): Promise<S3Config> {
   const resolved = await getResolvedS3Config();
 
-  if (!resolved.region || !resolved.accessKeyId || !resolved.secretAccessKey) {
+  if (!resolved.region) {
     throw new Error(
-      "S3 region, access key ID, and secret access key are required. " +
+      "S3 region is required. Configure storage in NuvoPic Settings."
+    );
+  }
+
+  if (resolved.authMode === "aws-role") {
+    if (!resolved.roleArn || !resolved.externalId) {
+      throw new Error("The AWS S3 connection has not been verified yet.");
+    }
+    return {
+      region: resolved.region,
+      roleArn: resolved.roleArn,
+      externalId: resolved.externalId,
+    };
+  }
+
+  if (!resolved.accessKeyId || !resolved.secretAccessKey) {
+    throw new Error(
+      "S3 access key ID and secret access key are required. " +
         "Configure them in NuvoPic Settings."
     );
   }
@@ -66,10 +129,7 @@ export async function getS3Client(): Promise<S3Client> {
     s3Client = new S3Client({
       endpoint: config.endpoint,
       region: config.region,
-      credentials: {
-        accessKeyId: config.accessKeyId,
-        secretAccessKey: config.secretAccessKey,
-      },
+      credentials: credentialsForConfig(config),
       forcePathStyle: config.forcePathStyle,
     });
     s3Clients.set(cacheKey, s3Client);
@@ -472,10 +532,7 @@ export async function validateS3Connection(
   const client = new S3Client({
     endpoint: config.endpoint,
     region: config.region,
-    credentials: {
-      accessKeyId: config.accessKeyId,
-      secretAccessKey: config.secretAccessKey,
-    },
+    credentials: credentialsForConfig(config),
     forcePathStyle: config.forcePathStyle,
   });
 

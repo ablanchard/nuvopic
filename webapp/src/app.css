@@ -1606,6 +1606,79 @@ body {
   color: #900;
 }
 
+.aws-connect-card {
+  gap: 1.1rem;
+}
+
+.aws-connect-heading,
+.aws-connect-success,
+.aws-connect-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.9rem;
+}
+
+.aws-connect-heading p,
+.aws-connect-success p,
+.aws-connect-step p {
+  margin: 0.3rem 0 0;
+  color: #666;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.aws-connect-mark,
+.aws-connect-step > span,
+.aws-connect-success > span {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.aws-connect-mark {
+  width: 48px;
+  height: 34px;
+  border-radius: 7px;
+  background: #232f3e;
+  color: #ff9900;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.aws-connect-fields,
+.aws-connect-steps {
+  display: grid;
+  gap: 1rem;
+}
+
+.aws-connect-field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.aws-connect-step > span,
+.aws-connect-success > span {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #e8f1fc;
+  color: #0066cc;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.aws-connect-success > span {
+  background: #e6f9ed;
+  color: #1a7f37;
+}
+
+.aws-launch {
+  align-self: start;
+  justify-self: start;
+  text-decoration: none;
+}
+
 .setting-text-input {
   width: 100%;
   padding: 0.4rem 0.6rem;
@@ -1681,6 +1754,15 @@ body {
 
   .settings-actions {
     flex-wrap: wrap;
+  }
+
+  .aws-connect-field-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .aws-launch {
+    width: 100%;
+    text-align: center;
   }
 }
 

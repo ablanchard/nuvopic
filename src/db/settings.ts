@@ -20,6 +20,9 @@ export interface ResolvedS3Config {
   endpoint: string | null;
   accessKeyId: string | null;
   secretAccessKey: string | null;
+  authMode: "access-key" | "aws-role";
+  roleArn: string | null;
+  externalId: string | null;
   forcePathStyle: boolean;
 }
 
@@ -35,13 +38,24 @@ const DEFAULTS: FaceQualitySettings = {
 
 export const SECRET_SETTING_KEYS = new Set([
   "s3_secret_access_key",
+  "s3_external_id",
   "webhook_secret",
 ]);
 
 export const MASKED_VALUE = "__MASKED__";
 
 const INTERNAL_SETTING_KEYS = new Set(["__settings_wrapped_dek_v1"]);
-const HIDDEN_SETTING_KEYS = new Set(["webhook_secret"]);
+const HIDDEN_SETTING_KEYS = new Set([
+  "webhook_secret",
+  "s3_auth_mode",
+  "s3_role_arn",
+  "s3_external_id",
+  "aws_connect_account_id",
+  "aws_connect_bucket",
+  "aws_connect_region",
+  "aws_connect_role_name",
+  "aws_connect_pending",
+]);
 const WRAPPED_DEK_SETTING_KEY = "__settings_wrapped_dek_v1";
 const ENCRYPTED_VALUE_PREFIX = "enc:v1";
 const WRAPPED_KEY_PREFIX = "wrap:v1";
@@ -170,10 +184,16 @@ function unwrapWorkspaceDek(raw: Record<string, string>): Buffer | null {
   return unwrapDek(wrappedDek);
 }
 
-function stripInternalKeys(raw: Record<string, string>): Record<string, string> {
+function stripInternalKeys(
+  raw: Record<string, string>,
+  includeHidden = false
+): Record<string, string> {
   const filtered: Record<string, string> = {};
   for (const [key, value] of Object.entries(raw)) {
-    if (!INTERNAL_SETTING_KEYS.has(key) && !HIDDEN_SETTING_KEYS.has(key)) {
+    if (
+      !INTERNAL_SETTING_KEYS.has(key) &&
+      (includeHidden || !HIDDEN_SETTING_KEYS.has(key))
+    ) {
       filtered[key] = value;
     }
   }
@@ -181,9 +201,10 @@ function stripInternalKeys(raw: Record<string, string>): Record<string, string> 
 }
 
 function maybeDecryptSettings(
-  raw: Record<string, string>
+  raw: Record<string, string>,
+  includeHidden = false
 ): Record<string, string> {
-  const filtered = stripInternalKeys(raw);
+  const filtered = stripInternalKeys(raw, includeHidden);
   const dek = raw[WRAPPED_DEK_SETTING_KEY] ? unwrapWorkspaceDek(raw) : null;
 
   for (const key of Object.keys(filtered)) {
@@ -199,6 +220,12 @@ function maybeDecryptSettings(
 export async function getAllSettings(): Promise<Record<string, string>> {
   const raw = await getRawSettings();
   return maybeDecryptSettings(raw);
+}
+
+/** Resolve settings for trusted server-side use, including connector metadata. */
+export async function getAllRuntimeSettings(): Promise<Record<string, string>> {
+  const raw = await getRawSettings();
+  return maybeDecryptSettings(raw, true);
 }
 
 /** Get a single setting by key. Returns null if not found. */
@@ -300,6 +327,9 @@ function resolveS3ConfigFromSettings(allSettings: Record<string, string>): Resol
     endpoint: resolve("s3_endpoint"),
     accessKeyId: resolve("s3_access_key_id"),
     secretAccessKey: resolve("s3_secret_access_key"),
+    authMode: resolve("s3_auth_mode") === "aws-role" ? "aws-role" : "access-key",
+    roleArn: resolve("s3_role_arn"),
+    externalId: resolve("s3_external_id"),
     forcePathStyle: resolve("s3_force_path_style") === "true",
   };
 }
@@ -315,18 +345,16 @@ export async function getS3Bucket(): Promise<string | null> {
 
 /** Resolve the full S3 config from DB settings only. */
 export async function getResolvedS3Config(): Promise<ResolvedS3Config> {
-  const allSettings = await getAllSettings();
+  const allSettings = await getAllRuntimeSettings();
   return resolveS3ConfigFromSettings(allSettings);
 }
 
 export async function isS3Configured(): Promise<boolean> {
   const resolved = await getResolvedS3Config();
-  return Boolean(
-    resolved.bucket &&
-      resolved.region &&
-      resolved.accessKeyId &&
-      resolved.secretAccessKey
-  );
+  if (!resolved.bucket || !resolved.region) return false;
+  return resolved.authMode === "aws-role"
+    ? Boolean(resolved.roleArn && resolved.externalId)
+    : Boolean(resolved.accessKeyId && resolved.secretAccessKey);
 }
 
 /**
@@ -334,7 +362,7 @@ export async function isS3Configured(): Promise<boolean> {
  * Secret values are masked and envValue is always null because runtime reads DB only.
  */
 export async function getS3ConfigInfo(): Promise<Record<string, S3ConfigInfo>> {
-  const allSettings = await getAllSettings();
+  const allSettings = await getAllRuntimeSettings();
   const resolved = resolveS3ConfigFromSettings(allSettings);
   const result: Record<string, S3ConfigInfo> = {};
 

@@ -440,6 +440,11 @@ For the evaluated PGlite tradeoffs and the recommended cold workspace tier, see
 | `S3_REGION` | Migration only | One-time import source for the DB-backed S3 region | |
 | `S3_ENDPOINT` | Migration only | One-time import source for the DB-backed endpoint | AWS default |
 | `S3_FORCE_PATH_STYLE` | Migration only | One-time import source for path-style mode | `false` |
+| `AWS_CONNECT_TEMPLATE_URL` | AWS guided setup | Public S3 URL of the versioned CloudFormation template | |
+| `AWS_CONNECT_PRINCIPAL_ARN` | AWS guided setup | NuvoPic IAM principal trusted by customer read-only roles | |
+| `AWS_CONNECT_ACCESS_KEY_ID` | No | Service principal access key; omit when the AWS default credential chain is available | |
+| `AWS_CONNECT_SECRET_ACCESS_KEY` | No | Service principal secret key; required with `AWS_CONNECT_ACCESS_KEY_ID` | |
+| `AWS_CONNECT_SESSION_TOKEN` | No | Optional session token for temporary service credentials | |
 | `PROCESSING_MODE` | No | `"modal"`, `"vastai"`, or `"local"` | Auto-detect |
 | `BATCH_GPU_PROVIDER` | No | GPU provider for batch ops: `"modal"`, `"vastai"`, or `"local"` | Same as PROCESSING_MODE |
 | `GPU_PROVIDER_ROUTING_ENABLED` | No | Route small batches to Modal and large batches to Vast.ai when both are configured | `true` |

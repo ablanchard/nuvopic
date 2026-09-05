@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1109.0",
+    "@aws-sdk/credential-providers": "^3.1127.0",
     "@aws-sdk/s3-request-presigner": "^3.1109.0",
     "@hono/node-server": "^2.1.0",
     "dotenv": "^17.3.1",

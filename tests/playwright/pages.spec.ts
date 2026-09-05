@@ -3,6 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 type JsonValue = Record<string, unknown> | unknown[];
 
 const configuredSettings = {
+  storage_provider: "s3-compatible",
   s3_bucket: "playwright-bucket",
   s3_region: "us-east-1",
   s3_endpoint: "",
@@ -22,6 +23,8 @@ function pipelineStats() {
 
 async function mockApi(page: Page, storageConfigured = true): Promise<string[]> {
   const unexpectedRequests: string[] = [];
+  let currentStorageConfigured = storageConfigured;
+  let awsConnectionState: "not_started" | "pending" | "connected" = "not_started";
 
   await page.route("**/api/v1/**", async (route) => {
     const url = new URL(route.request().url());
@@ -42,7 +45,7 @@ async function mockApi(page: Page, storageConfigured = true): Promise<string[]> 
         role: "owner",
         subject: "playwright-user",
         workspaceId: null,
-        storageConfigured,
+        storageConfigured: currentStorageConfigured,
         storageSetupPath: "/app/setup/storage",
         profilePath: null,
         adminPath: null,
@@ -60,6 +63,35 @@ async function mockApi(page: Page, storageConfigured = true): Promise<string[]> 
       );
     } else if (path === "/api/v1/settings") {
       json = configuredSettings;
+    } else if (path === "/api/v1/settings/aws/connect") {
+      if (route.request().method() === "POST") {
+        awsConnectionState = "pending";
+      }
+      json = {
+        state: awsConnectionState,
+        available: true,
+        bucket: awsConnectionState === "not_started" ? null : "family-photos",
+        region: awsConnectionState === "not_started" ? null : "eu-west-1",
+        accountId: awsConnectionState === "not_started" ? null : "123456789012",
+        roleName: awsConnectionState === "not_started" ? null : "NuvoPicRead-playwright",
+        roleArn: null,
+        launchUrl: awsConnectionState === "pending"
+          ? "https://eu-west-1.console.aws.amazon.com/cloudformation/home"
+          : null,
+      };
+    } else if (path === "/api/v1/settings/aws/connect/verify") {
+      awsConnectionState = "connected";
+      currentStorageConfigured = true;
+      json = {
+        state: "connected",
+        available: true,
+        bucket: "family-photos",
+        region: "eu-west-1",
+        accountId: "123456789012",
+        roleName: "NuvoPicRead-playwright",
+        roleArn: "arn:aws:iam::123456789012:role/NuvoPicRead-playwright",
+        launchUrl: null,
+      };
     } else if (path === "/api/v1/photos/timeline") {
       json = { groups: [], total: 0 };
     } else if (path === "/api/v1/photos/reprocess/stats") {
@@ -76,6 +108,8 @@ async function mockApi(page: Page, storageConfigured = true): Promise<string[]> 
           costPerHour: 0,
         },
       };
+    } else if (path === "/api/v1/photos/location-facets") {
+      json = { facets: [] };
     } else if (path === "/api/v1/photos") {
       json = {
         photos: [],
@@ -241,6 +275,28 @@ test.describe("current NuvoPic pages", () => {
     expect(unexpectedRequests).toEqual([]);
   });
 
+  test("guides Amazon S3 setup through CloudFormation", async ({ page }) => {
+    const unexpectedRequests = await mockApi(page, false);
+    await page.goto("/app/setup/storage");
+
+    await page.getByLabel("Storage Provider").selectOption("amazon-s3");
+    await expect(page.getByText("Connect Amazon S3 securely")).toBeVisible();
+    await expect(page.getByLabel("Access Key ID")).toHaveCount(0);
+    await expect(page.getByLabel("Secret Access Key")).toHaveCount(0);
+
+    await page.getByLabel("Bucket name or S3 URL").fill("s3://family-photos");
+    await page.getByLabel("AWS region").fill("eu-west-1");
+    await page.getByLabel("AWS account ID").fill("123456789012");
+    await page.getByRole("button", { name: "Prepare AWS setup" }).click();
+
+    const launch = page.getByRole("link", { name: "Open AWS CloudFormation ↗" });
+    await expect(launch).toBeVisible();
+    await expect(launch).toHaveAttribute("target", "_blank");
+    await page.getByRole("button", { name: "I created the stack — verify" }).click();
+    await expect(page).toHaveURL("/app/photos");
+    expect(unexpectedRequests).toEqual([]);
+  });
+
   test("keeps mobile navigation and settings controls readable", async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 800 });
     const unexpectedRequests = await mockApi(page);
@@ -249,7 +305,7 @@ test.describe("current NuvoPic pages", () => {
     const nav = page.locator(".nav-links");
     await nav.evaluate((element) => {
       for (const label of ["Profile", "Admin"]) {
-        const link = document.createElement("a");
+        const link = element.ownerDocument.createElement("a");
         link.className = "nav-link";
         link.textContent = label;
         element.append(link);

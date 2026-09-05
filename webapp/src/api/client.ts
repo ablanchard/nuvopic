@@ -421,6 +421,17 @@ type S3ConfigResponse = Record<
   { envValue: string | null; effectiveValue: string | null; effectiveSource: 'db' | 'env' | null }
 >;
 
+export interface AwsConnectionStatus {
+  state: 'not_started' | 'pending' | 'connected';
+  available: boolean;
+  bucket: string | null;
+  region: string | null;
+  accountId: string | null;
+  roleName: string | null;
+  roleArn: string | null;
+  launchUrl: string | null;
+}
+
 interface ManagedTokenResponse {
   token?: string;
   accessToken?: string;
@@ -855,6 +866,28 @@ export const api = {
 
     getS3Config: (): Promise<S3ConfigResponse> => {
       return fetchApiJson<S3ConfigResponse>(`${API_BASE}/settings/s3`);
+    },
+
+    getAwsConnection: (): Promise<AwsConnectionStatus> => {
+      return fetchApiJson<AwsConnectionStatus>(`${API_BASE}/settings/aws/connect`);
+    },
+
+    beginAwsConnection: (input: {
+      bucket: string;
+      region: string;
+      accountId: string;
+    }): Promise<AwsConnectionStatus> => {
+      return fetchApiJson<AwsConnectionStatus>(`${API_BASE}/settings/aws/connect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      });
+    },
+
+    verifyAwsConnection: (): Promise<AwsConnectionStatus> => {
+      return fetchApiJson<AwsConnectionStatus>(`${API_BASE}/settings/aws/connect/verify`, {
+        method: 'POST',
+      });
     },
   },
 
