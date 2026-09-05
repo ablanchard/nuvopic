@@ -11,4 +11,9 @@ COPY --chown=appuser:appuser webapp/dist ./webapp/dist
 COPY --chown=appuser:appuser src/db/schema.sql ./src/db/schema.sql
 COPY --chown=appuser:appuser scripts/init-db.ts ./scripts/init-db.ts
 
+RUN mkdir -p /var/cache/nuvopic/face-thumbnails \
+    && chown -R appuser:appuser /var/cache/nuvopic
+
 USER appuser
+
+ENV FACE_THUMBNAIL_CACHE_DIR=/var/cache/nuvopic/face-thumbnails

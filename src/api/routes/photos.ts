@@ -15,7 +15,7 @@ import {
 } from "../../db/search.js";
 import { getPhotosToReprocess, getPhotosToReprocessCaption, getPhotosToReprocessFaces, getAllPhotosForReprocess, getExistingS3Paths, getVersionStats } from "../../db/queries.js";
 import { getPhotoById } from "../../db/queries.js";
-import { getFaceById, getFacesByPhotoId } from "../../db/queries.js";
+import { getFaceThumbnailRecord, getFacesByPhotoId } from "../../db/queries.js";
 import { processPhoto, type GpuMode } from "../../processor.js";
 import {
   isGpuEnabled,
@@ -39,7 +39,8 @@ import {
 
 const photos = new Hono();
 const THUMBNAIL_CACHE_DIR = path.join(os.tmpdir(), "nuvopic-thumbnails");
-const FACE_SOURCE_SIZE = 2048;
+const FACE_THUMBNAIL_CACHE_DIR =
+  process.env.FACE_THUMBNAIL_CACHE_DIR?.trim() || THUMBNAIL_CACHE_DIR;
 const faceSourcePromises = new Map<
   string,
   Promise<{ data: Buffer; width: number; height: number }>
@@ -164,17 +165,9 @@ function getFaceThumbnailCachePath(
 ): string {
   const key = crypto
     .createHash("sha1")
-    .update(`${photoId}:${faceId}:${s3Path}:${size}:face-webp:v1`)
+    .update(`${photoId}:${faceId}:${s3Path}:${size}:face-webp:v2`)
     .digest("hex");
-  return path.join(THUMBNAIL_CACHE_DIR, `face-${key}.webp`);
-}
-
-function getFaceSourceCachePath(photoId: string, s3Path: string): string {
-  const key = crypto
-    .createHash("sha1")
-    .update(`${photoId}:${s3Path}:${FACE_SOURCE_SIZE}:face-source-webp:v1`)
-    .digest("hex");
-  return path.join(THUMBNAIL_CACHE_DIR, `face-source-${key}.webp`);
+  return path.join(FACE_THUMBNAIL_CACHE_DIR, `face-${key}.webp`);
 }
 
 async function readCachedThumbnail(cachePath: string): Promise<Buffer | null> {
@@ -197,54 +190,60 @@ async function getFaceSource(
   bucket: string,
   key: string
 ): Promise<{ data: Buffer; width: number; height: number }> {
-  const cachePath = getFaceSourceCachePath(photoId, s3Path);
-  const existing = faceSourcePromises.get(cachePath);
+  const sourceKey = `${photoId}:${s3Path}`;
+  const existing = faceSourcePromises.get(sourceKey);
   if (existing) return existing;
 
   const pending = (async () => {
-    const cached = await readCachedThumbnail(cachePath);
-    if (cached) {
-      const metadata = await sharp(cached).metadata();
-      if (metadata.width && metadata.height) {
-        return { data: cached, width: metadata.width, height: metadata.height };
-      }
-    }
-
     const source = await getObjectAsBuffer(bucket, key);
-    const resized = await sharp(source, { failOn: "none" })
-      // Face bounding boxes use the source pixel coordinate system, so do not
-      // apply EXIF rotation here.
-      .resize(FACE_SOURCE_SIZE, FACE_SOURCE_SIZE, {
-        fit: "inside",
-        withoutEnlargement: true,
-      })
-      .webp({ quality: 82, effort: 4 })
-      .toBuffer({ resolveWithObject: true });
-
-    await writeCachedThumbnail(cachePath, resized.data);
+    const metadata = await sharp(source, { failOn: "none" }).metadata();
+    if (!metadata.width || !metadata.height) {
+      throw new Error("Could not determine face source dimensions");
+    }
     return {
-      data: resized.data,
-      width: resized.info.width,
-      height: resized.info.height,
+      data: source,
+      width: metadata.width,
+      height: metadata.height,
     };
   })();
 
-  faceSourcePromises.set(cachePath, pending);
+  // Different faces from the same photo commonly enter the viewport together.
+  // Share the S3 download while it is in flight, but do not retain full-size
+  // originals in process memory after the waiting requests receive them.
+  faceSourcePromises.set(sourceKey, pending);
   try {
     return await pending;
   } finally {
-    faceSourcePromises.delete(cachePath);
+    faceSourcePromises.delete(sourceKey);
   }
 }
 
-function thumbnailResponse(buffer: Buffer, cacheStatus: "HIT" | "MISS"): Response {
+function thumbnailResponse(
+  buffer: Buffer,
+  cacheStatus: "HIT" | "MISS",
+  cacheControl = "public, max-age=86400"
+): Response {
   return new Response(buffer, {
     headers: {
       "content-type": "image/webp",
-      "cache-control": "public, max-age=86400",
+      "cache-control": cacheControl,
       "x-nuvopic-thumbnail-cache": cacheStatus,
     },
   });
+}
+
+function faceThumbnailResponse(
+  buffer: Buffer,
+  cacheStatus: "HIT" | "MISS"
+): Response {
+  // Face IDs change when face detection is rerun, and the client URL carries
+  // an explicit format version. Keep authenticated crops in the user's private
+  // browser cache so revisiting this page does not repeat 178 API requests.
+  return thumbnailResponse(
+    buffer,
+    cacheStatus,
+    "private, max-age=31536000, immutable"
+  );
 }
 
 // List photos with pagination and filters
@@ -886,37 +885,35 @@ photos.get("/:id/thumbnail", async (c) => {
   return thumbnailResponse(thumbnail, "MISS");
 });
 
-// Get a small face crop using the same source fetch and local cache as photo thumbnails.
+// Get a small face crop generated directly from the original and cached locally.
 photos.get("/:id/faces/:faceId/thumbnail", async (c) => {
   const photoId = c.req.param("id");
   const faceId = c.req.param("faceId");
   const size = clampFaceThumbnailSize(c.req.query("size"));
-  const [photo, face] = await Promise.all([
-    getPhotoById(photoId),
-    getFaceById(faceId),
-  ]);
-
-  if (!photo) {
-    return c.json({ error: "Photo not found" }, 404);
-  }
-  if (!face || face.photo_id !== photoId) {
+  const face = await getFaceThumbnailRecord(photoId, faceId);
+  if (!face) {
     return c.json({ error: "Face not found in photo" }, 404);
   }
 
-  const parsed = parseS3Path(photo.s3_path);
+  const parsed = parseS3Path(face.s3_path);
   if (!parsed) {
     return c.json({ error: "Invalid s3_path format" }, 500);
   }
 
   const cachePath = getFaceThumbnailCachePath(
-    photo.id,
-    face.id,
-    photo.s3_path,
+    face.photo_id,
+    face.face_id,
+    face.s3_path,
     size
   );
   const cached = await readCachedThumbnail(cachePath);
   if (cached) {
-    return thumbnailResponse(cached, "HIT");
+    return faceThumbnailResponse(cached, "HIT");
+  }
+
+  const existingGeneration = faceThumbnailPromises.get(cachePath);
+  if (existingGeneration) {
+    return faceThumbnailResponse(await existingGeneration, "HIT");
   }
 
   const box = face.bounding_box;
@@ -931,41 +928,37 @@ photos.get("/:id/faces/:faceId/thumbnail", async (c) => {
     return c.json({ error: "Invalid face bounding box" }, 422);
   }
 
-  const faceSource = await getFaceSource(
-    photo.id,
-    photo.s3_path,
-    parsed.bucket,
-    parsed.key
-  );
-  const imageWidth = faceSource.width;
-  const imageHeight = faceSource.height;
-  const scaleX = photo.width ? imageWidth / photo.width : 1;
-  const scaleY = photo.height ? imageHeight / photo.height : 1;
-  const faceWidth = box.width * scaleX;
-  const faceHeight = box.height * scaleY;
-  const centerX = (box.x + box.width / 2) * scaleX;
-  const centerY = (box.y + box.height / 2) * scaleY;
-  const cropSize = Math.max(
-    1,
-    Math.floor(Math.min(Math.max(faceWidth, faceHeight) * 1.4, imageWidth, imageHeight))
-  );
-  const left = Math.round(
-    Math.max(0, Math.min(imageWidth - cropSize, centerX - cropSize / 2))
-  );
-  const top = Math.round(
-    Math.max(0, Math.min(imageHeight - cropSize, centerY - cropSize / 2))
-  );
-
-  const existingGeneration = faceThumbnailPromises.get(cachePath);
-  if (existingGeneration) {
-    return thumbnailResponse(await existingGeneration, "HIT");
-  }
-
   const generation = (async () => {
+    const faceSource = await getFaceSource(
+      face.photo_id,
+      face.s3_path,
+      parsed.bucket,
+      parsed.key
+    );
+    const imageWidth = faceSource.width;
+    const imageHeight = faceSource.height;
+    const scaleX = face.photo_width ? imageWidth / face.photo_width : 1;
+    const scaleY = face.photo_height ? imageHeight / face.photo_height : 1;
+    const faceWidth = box.width * scaleX;
+    const faceHeight = box.height * scaleY;
+    const centerX = (box.x + box.width / 2) * scaleX;
+    const centerY = (box.y + box.height / 2) * scaleY;
+    const cropSize = Math.max(
+      1,
+      Math.floor(Math.min(Math.max(faceWidth, faceHeight) * 1.4, imageWidth, imageHeight))
+    );
+    const left = Math.round(
+      Math.max(0, Math.min(imageWidth - cropSize, centerX - cropSize / 2))
+    );
+    const top = Math.round(
+      Math.max(0, Math.min(imageHeight - cropSize, centerY - cropSize / 2))
+    );
+
     const thumbnail = await sharp(faceSource.data, { failOn: "none" })
+      // Face bounding boxes use the unrotated source pixel coordinate system.
       .extract({ left, top, width: cropSize, height: cropSize })
       .resize(size, size, { fit: "fill", withoutEnlargement: false })
-      .webp({ quality: 78, effort: 4 })
+      .webp({ quality: 78, effort: 2 })
       .toBuffer();
 
     await writeCachedThumbnail(cachePath, thumbnail);
@@ -974,7 +967,7 @@ photos.get("/:id/faces/:faceId/thumbnail", async (c) => {
 
   faceThumbnailPromises.set(cachePath, generation);
   try {
-    return thumbnailResponse(await generation, "MISS");
+    return faceThumbnailResponse(await generation, "MISS");
   } finally {
     faceThumbnailPromises.delete(cachePath);
   }

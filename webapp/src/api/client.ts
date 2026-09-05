@@ -618,7 +618,7 @@ export const api = {
       signal?: AbortSignal,
     ): Promise<Blob> => {
       return fetchApiBlob(
-        `${API_BASE}/photos/${photoId}/faces/${faceId}/thumbnail?size=${size}`,
+        `${API_BASE}/photos/${photoId}/faces/${faceId}/thumbnail?size=${size}&v=2`,
         { signal },
       );
     },

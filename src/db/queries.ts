@@ -225,6 +225,37 @@ export async function getFaceById(faceId: string): Promise<FaceRecord | null> {
   return result.rows[0] ?? null;
 }
 
+export interface FaceThumbnailRecord {
+  face_id: string;
+  photo_id: string;
+  s3_path: string;
+  photo_width: number | null;
+  photo_height: number | null;
+  bounding_box: FaceRecord["bounding_box"];
+}
+
+/** Load all metadata needed for an authorized face crop in one query. */
+export async function getFaceThumbnailRecord(
+  photoId: string,
+  faceId: string
+): Promise<FaceThumbnailRecord | null> {
+  const result = await query<FaceThumbnailRecord>(
+    `SELECT
+       f.id AS face_id,
+       f.photo_id,
+       f.bounding_box,
+       ph.s3_path,
+       ph.width AS photo_width,
+       ph.height AS photo_height
+     FROM faces f
+     JOIN photos ph ON ph.id = f.photo_id
+     WHERE f.id = $1 AND f.photo_id = $2`,
+    [faceId, photoId]
+  );
+
+  return result.rows[0] ?? null;
+}
+
 export async function getPhotosToReprocess(
   belowVersion: string,
   pathPrefix?: string

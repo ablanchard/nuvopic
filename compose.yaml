@@ -131,6 +131,8 @@ services:
     depends_on:
       control-plane:
         condition: service_healthy
+    volumes:
+      - face_thumbnail_cache:/var/cache/nuvopic/face-thumbnails
     networks:
       - edge
       - backend
@@ -234,6 +236,7 @@ volumes:
   postgres_data:
   caddy_data:
   caddy_config:
+  face_thumbnail_cache:
 
 networks:
   edge:

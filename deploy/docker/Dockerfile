@@ -79,11 +79,15 @@ COPY --from=production-dependencies /app/node_modules ./node_modules
 COPY --from=backend-builder /app/dist ./dist
 COPY --from=webapp-builder /app/webapp/dist ./webapp/dist
 
-# Create non-root user
-RUN useradd --create-home --uid 10001 appuser
+# Create non-root user and the writable mount point used by the persistent
+# face-thumbnail cache.
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /var/cache/nuvopic/face-thumbnails \
+    && chown -R appuser:appuser /var/cache/nuvopic
 USER appuser
 
 ENV NODE_ENV=production
+ENV FACE_THUMBNAIL_CACHE_DIR=/var/cache/nuvopic/face-thumbnails
 
 EXPOSE 8080
 
