@@ -1,4 +1,4 @@
-import { query } from "./client.js";
+import { query, withTransaction } from "./client.js";
 import type { PhotoDatePrecision, PhotoDateSource } from "../extractors/exif.js";
 
 export interface PhotoRecord {
@@ -68,6 +68,30 @@ export interface InsertFaceParams {
   confidence?: number | null;
 }
 
+function toFaceEmbeddingLiteral(embedding: number[]): string {
+  if (embedding.length !== 512 || embedding.some((value) => !Number.isFinite(value))) {
+    throw new Error(
+      `Face embedding must contain exactly 512 finite values; received ${embedding.length}`
+    );
+  }
+  return `[${embedding.join(",")}]`;
+}
+
+function intersectionOverUnion(
+  left: InsertFaceParams["boundingBox"],
+  right: InsertFaceParams["boundingBox"]
+): number {
+  const x1 = Math.max(left.x, right.x);
+  const y1 = Math.max(left.y, right.y);
+  const x2 = Math.min(left.x + left.width, right.x + right.width);
+  const y2 = Math.min(left.y + left.height, right.y + right.height);
+  const intersection = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  if (intersection === 0) return 0;
+  const union =
+    left.width * left.height + right.width * right.height - intersection;
+  return union > 0 ? intersection / union : 0;
+}
+
 export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
   const result = await query<{ id: string }>(
     `INSERT INTO photos (s3_path, taken_at, taken_at_precision, taken_at_source, location_lat, location_lng, location_name, location_region, location_country, description, placeholder, width, height, process_version, caption_version, faces_version)
@@ -121,7 +145,7 @@ export async function insertFace(params: InsertFaceParams): Promise<string> {
     [
       params.photoId,
       JSON.stringify(params.boundingBox),
-      `[${params.embedding.join(",")}]`,
+      toFaceEmbeddingLiteral(params.embedding),
       params.confidence ?? null,
     ]
   );
@@ -131,6 +155,121 @@ export async function insertFace(params: InsertFaceParams): Promise<string> {
 
 export async function deleteFacesByPhotoId(photoId: string): Promise<void> {
   await query("DELETE FROM faces WHERE photo_id = $1", [photoId]);
+}
+
+/**
+ * Replace a photo's detections while preserving stable face IDs for detections
+ * in the same position. Stable IDs retain names, manual assignments,
+ * exclusions, and rejection feedback across face-model reprocessing.
+ */
+export async function replaceFacesForPhoto(
+  photoId: string,
+  detections: Omit<InsertFaceParams, "photoId">[]
+): Promise<void> {
+  await withTransaction(async (client) => {
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
+      "nuvopic:face-clustering",
+    ]);
+    const existing = await client.query<{
+      id: string;
+      bounding_box: InsertFaceParams["boundingBox"];
+      cluster_id: string | null;
+    }>(
+      `SELECT id, bounding_box, cluster_id
+       FROM faces
+       WHERE photo_id = $1
+       ORDER BY id
+       FOR UPDATE`,
+      [photoId]
+    );
+
+    const unmatchedExisting = new Map(existing.rows.map((face) => [face.id, face]));
+    const affectedClusterIds = new Set<string>();
+
+    const candidates = detections.flatMap((detection, detectionIndex) =>
+      existing.rows.map((face) => ({
+        detectionIndex,
+        face,
+        overlap: intersectionOverUnion(face.bounding_box, detection.boundingBox),
+      }))
+    );
+    candidates.sort((left, right) => right.overlap - left.overlap);
+    const matchedByDetection = new Map<number, (typeof existing.rows)[number]>();
+    const matchedExistingIds = new Set<string>();
+    for (const candidate of candidates) {
+      if (candidate.overlap < 0.5) break;
+      if (
+        matchedByDetection.has(candidate.detectionIndex) ||
+        matchedExistingIds.has(candidate.face.id)
+      ) {
+        continue;
+      }
+      matchedByDetection.set(candidate.detectionIndex, candidate.face);
+      matchedExistingIds.add(candidate.face.id);
+    }
+
+    for (const [detectionIndex, detection] of detections.entries()) {
+      const bestMatch = matchedByDetection.get(detectionIndex);
+      // Detector boxes can move slightly between model versions. An IoU of
+      // 0.5 is strict enough to avoid transferring identity to a nearby face.
+      if (bestMatch) {
+        await client.query(
+          `UPDATE faces
+           SET bounding_box = $1, embedding = $2::vector, confidence = $3
+           WHERE id = $4`,
+          [
+            JSON.stringify(detection.boundingBox),
+            toFaceEmbeddingLiteral(detection.embedding),
+            detection.confidence ?? null,
+            bestMatch.id,
+          ]
+        );
+        unmatchedExisting.delete(bestMatch.id);
+        if (bestMatch.cluster_id) affectedClusterIds.add(bestMatch.cluster_id);
+      } else {
+        await client.query(
+          `INSERT INTO faces (photo_id, bounding_box, embedding, confidence)
+           VALUES ($1, $2, $3::vector, $4)`,
+          [
+            photoId,
+            JSON.stringify(detection.boundingBox),
+            toFaceEmbeddingLiteral(detection.embedding),
+            detection.confidence ?? null,
+          ]
+        );
+      }
+    }
+
+    const removedIds = [...unmatchedExisting.keys()];
+    for (const face of unmatchedExisting.values()) {
+      if (face.cluster_id) affectedClusterIds.add(face.cluster_id);
+    }
+    if (removedIds.length > 0) {
+      await client.query(`DELETE FROM faces WHERE id = ANY($1::uuid[])`, [
+        removedIds,
+      ]);
+    }
+
+    if (affectedClusterIds.size > 0) {
+      const ids = [...affectedClusterIds];
+      await client.query(
+        `UPDATE face_clusters c
+         SET representative_embedding = (
+           SELECT AVG(f.embedding)
+           FROM faces f
+           WHERE f.cluster_id = c.id AND f.embedding IS NOT NULL
+         )
+         WHERE c.id = ANY($1::uuid[])`,
+        [ids]
+      );
+      await client.query(
+        `DELETE FROM face_clusters c
+         WHERE c.id = ANY($1::uuid[])
+           AND NOT EXISTS (SELECT 1 FROM faces f WHERE f.cluster_id = c.id)`,
+        [ids]
+      );
+    }
+  });
 }
 
 export async function getPhotoByS3Path(

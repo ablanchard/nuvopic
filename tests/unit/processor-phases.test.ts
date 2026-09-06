@@ -105,8 +105,7 @@ vi.mock("../../src/db/queries.js", () => ({
     if (params.updateFacesVersion) photo.faces_version = params.facesVersion;
     return photo.id as string;
   }),
-  deleteFacesByPhotoId: vi.fn(),
-  insertFace: vi.fn(async () => "face-id"),
+  replaceFacesForPhoto: vi.fn(),
 }));
 
 vi.mock("../../src/metering/gpu-metering.js", () => ({

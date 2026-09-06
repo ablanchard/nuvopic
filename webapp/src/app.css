@@ -1060,6 +1060,76 @@ body {
   margin-bottom: 2rem;
 }
 
+.merge-suggestions {
+  margin: 1rem 0 1.5rem;
+  padding: 1rem;
+  border: 1px solid var(--border-color, #d9dde3);
+  border-radius: 10px;
+  background: var(--surface-color, #fff);
+}
+
+.merge-suggestions-header,
+.merge-suggestion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.merge-suggestions-header h2,
+.merge-suggestions-header p {
+  margin: 0;
+}
+
+.merge-suggestions-header p {
+  margin-top: 0.25rem;
+  color: var(--text-muted, #68707c);
+  font-size: 0.875rem;
+}
+
+.merge-suggestion-list {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.merge-suggestion {
+  padding: 0.75rem;
+  border-radius: 8px;
+  background: var(--background-color, #f6f7f9);
+}
+
+.merge-suggestion-identities {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.merge-suggestion-arrow,
+.merge-suggestion-score {
+  color: var(--text-muted, #68707c);
+}
+
+.merge-suggestion-score {
+  margin-left: auto;
+  white-space: nowrap;
+  font-size: 0.875rem;
+}
+
+@media (max-width: 760px) {
+  .merge-suggestions-header,
+  .merge-suggestion {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .merge-suggestion-score {
+    margin-left: 0;
+  }
+}
+
 .clusters-section h3 {
   margin: 0 0 1rem;
   font-size: 1rem;

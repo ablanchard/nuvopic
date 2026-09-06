@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'preact/hooks';
 import { api } from '../api/client';
-import type { Cluster, ClusterFace, ClusterStrategy } from '../api/client';
+import type { Cluster, ClusterFace, ClusterStrategy, MergeSuggestion } from '../api/client';
 import { ClusterCard } from './ClusterCard';
 import { FaceCrop } from './FaceCrop';
 import { FaceMetrics } from './FaceMetrics';
@@ -23,7 +23,7 @@ function sortClusters(clusters: Cluster[]): Cluster[] {
 export function FacesPage(_props: RoutableProps) {
   // Clustering parameters
   const [threshold, setThreshold] = useState(0.6);
-  const [strategy, setStrategy] = useState<ClusterStrategy>('first');
+  const [strategy, setStrategy] = useState<ClusterStrategy>('average');
 
   // Data
   const [clusters, setClusters] = useState<Cluster[]>([]);
@@ -36,6 +36,7 @@ export function FacesPage(_props: RoutableProps) {
   const [wontAssign, setWontAssign] = useState<ClusterFace[]>([]);
   const [wontAssignTotal, setWontAssignTotal] = useState(0);
   const [reloadToken, setReloadToken] = useState(0);
+  const [mergeSuggestions, setMergeSuggestions] = useState<MergeSuggestion[]>([]);
 
   // Face quality filters
   const [minConfidence, setMinConfidence] = useState(DEFAULT_MIN_CONFIDENCE);
@@ -51,6 +52,8 @@ export function FacesPage(_props: RoutableProps) {
   const [clustering, setClustering] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [changingWontAssignFaceId, setChangingWontAssignFaceId] = useState<string | null>(null);
+  const [mergingSuggestion, setMergingSuggestion] = useState<string | null>(null);
+  const [autoMerging, setAutoMerging] = useState(false);
   const unassignedLoadMoreRef = useRef<HTMLDivElement>(null);
   const unassignedLoadingMoreRef = useRef(false);
   const unassignedRequestVersionRef = useRef(0);
@@ -68,11 +71,12 @@ export function FacesPage(_props: RoutableProps) {
     setUnassignedLoadingMore(false);
     setUnassignedLoadError(null);
     try {
-      const [clustersRes, unassignedRes, filteredOutRes, wontAssignRes] = await Promise.all([
+      const [clustersRes, unassignedRes, filteredOutRes, wontAssignRes, suggestionsRes] = await Promise.all([
         api.clusters.list(),
         api.clusters.getUnassigned(UNASSIGNED_PAGE_SIZE, 0),
         api.clusters.getFilteredOut(),
         api.clusters.getWontAssign(),
+        api.clusters.getMergeSuggestions().catch(() => ({ suggestions: [] })),
       ]);
       setClusters(clustersRes.clusters);
       if (unassignedRequestVersion === unassignedRequestVersionRef.current) {
@@ -83,6 +87,7 @@ export function FacesPage(_props: RoutableProps) {
       setFilteredOutTotal(filteredOutRes.total);
       setWontAssign(wontAssignRes.faces);
       setWontAssignTotal(wontAssignRes.total);
+      setMergeSuggestions(suggestionsRes.suggestions);
       setReloadToken((value) => value + 1);
     } catch (err) {
       console.error('Failed to load clusters:', err);
@@ -198,6 +203,42 @@ export function FacesPage(_props: RoutableProps) {
       setStatus(`Recluster failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
       setClustering(false);
+    }
+  };
+
+  const handleSuggestedMerge = async (suggestion: MergeSuggestion) => {
+    const key = `${suggestion.sourceClusterId}:${suggestion.targetClusterId}`;
+    setMergingSuggestion(key);
+    setStatus(null);
+    try {
+      await api.clusters.merge(suggestion.sourceClusterId, suggestion.targetClusterId);
+      setStatus('Clusters merged');
+      await refresh();
+    } catch (err) {
+      setStatus(`Merge failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setMergingSuggestion(null);
+    }
+  };
+
+  const handleAutoMerge = async () => {
+    const confirmed = window.confirm(
+      'Automatically merge only exact identities and high-confidence matches? Differently named people and same-photo faces are always excluded.'
+    );
+    if (!confirmed) return;
+    setAutoMerging(true);
+    setStatus(null);
+    try {
+      const result = await api.clusters.autoMerge();
+      setStatus(
+        `Automatically merged ${result.merged} pair${result.merged === 1 ? '' : 's'}; ` +
+        `${result.remainingSuggestions} suggestion${result.remainingSuggestions === 1 ? '' : 's'} remain`
+      );
+      await refresh();
+    } catch (err) {
+      setStatus(`Automatic merge failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setAutoMerging(false);
     }
   };
 
@@ -541,6 +582,55 @@ export function FacesPage(_props: RoutableProps) {
             <div class="clustering-status">{status}</div>
           )}
         </div>
+
+        {mergeSuggestions.length > 0 && (
+          <section class="merge-suggestions">
+            <div class="merge-suggestions-header">
+              <div>
+                <h2>Suggested merges</h2>
+                <p>Ranked by cluster similarity and cross-face support.</p>
+              </div>
+              <button
+                class="btn btn-primary"
+                onClick={handleAutoMerge}
+                disabled={autoMerging || clustering || mergingSuggestion !== null}
+              >
+                {autoMerging ? 'Auto-merging…' : 'Auto-merge high confidence'}
+              </button>
+            </div>
+            <div class="merge-suggestion-list">
+              {mergeSuggestions.map((suggestion) => {
+                const key = `${suggestion.sourceClusterId}:${suggestion.targetClusterId}`;
+                return (
+                  <div class="merge-suggestion" key={key}>
+                    <div class="merge-suggestion-identities">
+                      <span>
+                        {suggestion.sourcePersonName || 'Unnamed cluster'} ({suggestion.sourceFaceCount})
+                      </span>
+                      <span class="merge-suggestion-arrow">→</span>
+                      <span>
+                        {suggestion.targetPersonName || 'Unnamed cluster'} ({suggestion.targetFaceCount})
+                      </span>
+                    </div>
+                    <div class="merge-suggestion-score">
+                      {suggestion.reason === 'same-person'
+                        ? 'Same named identity'
+                        : `${Math.round(suggestion.similarity * 100)}% similar · ` +
+                          `${Math.round(Math.min(suggestion.sourceCoverage, suggestion.targetCoverage) * 100)}% support`}
+                    </div>
+                    <button
+                      class="btn btn-small btn-secondary"
+                      onClick={() => handleSuggestedMerge(suggestion)}
+                      disabled={mergingSuggestion !== null || autoMerging}
+                    >
+                      {mergingSuggestion === key ? 'Merging…' : 'Review and merge'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         {/* Cluster Grid */}
         {loading ? (

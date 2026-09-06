@@ -70,13 +70,11 @@ DATABASE_URL='postgres://user:pass@host:5432/db' npm run init-db
 
 Make sure the `pgvector` extension is enabled in your database (most managed providers have it available).
 
-## Step 4: Download AI Models
+## Step 4: Configure inference
 
-```bash
-npm run download-models
-```
-
-The face-api.js models are included in the Docker image. The Transformers.js captioning model will be auto-downloaded on first use.
+Configure the Modal inference endpoint described in the project README. The
+application intentionally does not mix legacy face-api.js descriptors with
+the 512-dimensional InsightFace embeddings used for clustering.
 
 ## Step 5: Deploy
 

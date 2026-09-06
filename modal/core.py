@@ -178,7 +178,9 @@ class FaceAnalyzer:
                             "width": int(bbox[2] - bbox[0]),
                             "height": int(bbox[3] - bbox[1]),
                         },
-                        "embedding": face.embedding.tolist(),  # 512-dim float list
+                        # Unit-normalized embeddings keep averaged cluster
+                        # centroids from being biased by descriptor magnitude.
+                        "embedding": face.normed_embedding.tolist(),
                         "confidence": float(face.det_score),
                     }
                 )

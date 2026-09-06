@@ -18,6 +18,8 @@ process.env.S3_SECRET_ACCESS_KEY = "minioadmin";
 process.env.S3_REGION = "us-east-1";
 process.env.S3_FORCE_PATH_STYLE = "true";
 process.env.SETTINGS_KEK = "test-settings-kek";
+process.env.PROCESSING_MODE = "modal";
+process.env.MODAL_ENDPOINT_URL = "http://127.0.0.1:9090/analyze";
 
 async function waitForPostgres(maxAttempts = 30): Promise<void> {
   const pool = new Pool({

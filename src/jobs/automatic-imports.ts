@@ -842,7 +842,7 @@ export async function processPendingAutomaticImports(limit = 5): Promise<number>
   }
   if (shouldCluster) {
     try {
-      await clusterUnassignedFaces({ threshold: 0.6, strategy: "first" });
+      await clusterUnassignedFaces({ threshold: 0.6, strategy: "average" });
     } catch (error) {
       logger.warn("Automatic import face clustering failed:", error);
     }

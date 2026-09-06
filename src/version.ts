@@ -18,7 +18,7 @@ export const PROCESS_VERSION = "4.2.0";
 export const CAPTION_VERSION = "1.0.0";
 
 /** Face detection version — bump when changing the face detection/embedding model. */
-export const FACES_VERSION = "1.0.0";
+export const FACES_VERSION = "2.0.0";
 
 /**
  * Changelog describing what changed in each version.
@@ -50,6 +50,7 @@ export const CAPTION_CHANGELOG: Record<string, string> = {
 };
 
 export const FACES_CHANGELOG: Record<string, string> = {
+  "2.0.0": "Normalize InsightFace embeddings and preserve curated face IDs during reprocessing",
   "1.0.0": "InsightFace buffalo_l with 512-dim embeddings",
 };
 

@@ -149,6 +149,26 @@ export interface ReclusterResult {
   newClusters: number;
 }
 
+export interface MergeSuggestion {
+  sourceClusterId: string;
+  targetClusterId: string;
+  sourcePersonId: string | null;
+  targetPersonId: string | null;
+  sourcePersonName: string | null;
+  targetPersonName: string | null;
+  sourceFaceCount: number;
+  targetFaceCount: number;
+  similarity: number;
+  sourceCoverage: number;
+  targetCoverage: number;
+  reason: 'same-person' | 'high-similarity';
+}
+
+export interface AutoMergeResult {
+  merged: number;
+  remainingSuggestions: number;
+}
+
 export interface GpuLog {
   id: string;
   parentId: string | null;
@@ -755,6 +775,22 @@ export const api = {
 
     recluster: (opts: { threshold: number; strategy: ClusterStrategy }): Promise<ReclusterResult> => {
       return fetchApiJson<ReclusterResult>(`${API_BASE}/clusters/recluster`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts),
+      });
+    },
+
+    getMergeSuggestions: (minSimilarity = 0.54): Promise<{ suggestions: MergeSuggestion[] }> => {
+      return fetchApiJson<{ suggestions: MergeSuggestion[] }>(
+        `${API_BASE}/clusters/merge-suggestions?minSimilarity=${minSimilarity}`,
+      );
+    },
+
+    autoMerge: (
+      opts: { threshold?: number; minCoverage?: number; maxMerges?: number } = {},
+    ): Promise<AutoMergeResult> => {
+      return fetchApiJson<AutoMergeResult>(`${API_BASE}/clusters/auto-merge`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(opts),

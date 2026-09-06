@@ -243,6 +243,17 @@ CREATE TABLE IF NOT EXISTS face_rejections (
     PRIMARY KEY (face_id, cluster_id)
 );
 
+-- Durable "not the same person" feedback. Unlike cluster UUIDs, matched face
+-- IDs survive reprocessing, so this constraint remains useful after unnamed
+-- clusters are rebuilt.
+CREATE TABLE IF NOT EXISTS face_pair_rejections (
+    face_id_a UUID REFERENCES faces(id) ON DELETE CASCADE,
+    face_id_b UUID REFERENCES faces(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT NOW(),
+    CHECK (face_id_a < face_id_b),
+    PRIMARY KEY (face_id_a, face_id_b)
+);
+
 -- User confirmed a face belongs in a cluster (locked across reclusters)
 CREATE TABLE IF NOT EXISTS face_manual_assignments (
     face_id UUID PRIMARY KEY REFERENCES faces(id) ON DELETE CASCADE,
@@ -278,6 +289,24 @@ BEGIN
             FOREIGN KEY (cluster_id) REFERENCES face_clusters(id) ON DELETE SET NULL;
     END IF;
 END $$;
+
+-- Preserve existing cluster-based rejection feedback in the durable pairwise
+-- form before future reclustering removes ephemeral unnamed cluster IDs.
+INSERT INTO face_pair_rejections (face_id_a, face_id_b)
+SELECT LEAST(r.face_id, member.id), GREATEST(r.face_id, member.id)
+FROM face_rejections r
+JOIN faces member ON member.cluster_id = r.cluster_id
+WHERE member.id <> r.face_id
+ON CONFLICT DO NOTHING;
+
+-- A cluster's identity is authoritative for every face assigned to it. Older
+-- clustering code could assign a face to a named cluster without copying the
+-- person ID (or leave an old person ID when moving it to an unnamed cluster).
+UPDATE faces face
+SET person_id = cluster.person_id
+FROM face_clusters cluster
+WHERE face.cluster_id = cluster.id
+  AND face.person_id IS DISTINCT FROM cluster.person_id;
 
 -- Migration: add confidence column to faces table (detection score from InsightFace)
 DO $$
@@ -677,6 +706,12 @@ CREATE INDEX IF NOT EXISTS idx_faces_photo_id ON faces(photo_id);
 CREATE INDEX IF NOT EXISTS idx_faces_person_id ON faces(person_id);
 CREATE INDEX IF NOT EXISTS idx_photo_tags_tag_id ON photo_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_faces_cluster_id ON faces(cluster_id);
+CREATE INDEX IF NOT EXISTS idx_face_manual_assignments_cluster_id
+    ON face_manual_assignments(cluster_id);
+CREATE INDEX IF NOT EXISTS idx_face_rejections_cluster_id
+    ON face_rejections(cluster_id);
+CREATE INDEX IF NOT EXISTS idx_face_pair_rejections_face_id_b
+    ON face_pair_rejections(face_id_b);
 CREATE INDEX IF NOT EXISTS idx_gpu_logs_parent_id ON gpu_logs(parent_id);
 CREATE INDEX IF NOT EXISTS idx_gpu_logs_type ON gpu_logs(type);
 CREATE INDEX IF NOT EXISTS idx_gpu_logs_status ON gpu_logs(status);
@@ -766,6 +801,12 @@ CREATE TRIGGER refresh_gpu_log_group_after_child
 -- HNSW index for fast cosine similarity search on face embeddings
 CREATE INDEX IF NOT EXISTS idx_faces_embedding_cosine
     ON faces USING hnsw (embedding vector_cosine_ops);
+
+-- Clustering and merge suggestions search cluster representatives, not the
+-- individual-face index above.
+CREATE INDEX IF NOT EXISTS idx_face_clusters_representative_embedding_cosine
+    ON face_clusters USING hnsw (representative_embedding vector_cosine_ops)
+    WHERE representative_embedding IS NOT NULL;
 
 -- Function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()

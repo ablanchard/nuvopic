@@ -32,8 +32,7 @@ import {
 } from "./metering/gpu-metering.js";
 import {
   insertPhoto,
-  insertFace,
-  deleteFacesByPhotoId,
+  replaceFacesForPhoto,
   getPhotoByS3Path,
   updatePhotoGpuFields,
   type PhotoRecord,
@@ -146,10 +145,6 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
     }
   }
 
-  const tLookupStart = Date.now();
-  const existingPhoto = await getPhotoByS3Path(s3Path);
-  const tLookupMs = Date.now() - tLookupStart;
-
   const tInsertStart = Date.now();
   const photoId = await insertPhoto({
     s3Path,
@@ -174,24 +169,20 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
   let tFacesMs = 0;
   if (!data.skipFaces) {
     const tFacesStart = Date.now();
-    if (existingPhoto) {
-      await deleteFacesByPhotoId(photoId);
-    }
-
-    for (const face of faces) {
-      await insertFace({
-        photoId,
+    await replaceFacesForPhoto(
+      photoId,
+      faces.map((face) => ({
         boundingBox: face.boundingBox,
         embedding: face.embedding,
         confidence: face.confidence,
-      });
-    }
+      }))
+    );
     tFacesMs = Date.now() - tFacesStart;
   }
 
   const tSaveTotal = Date.now() - tSave0;
   if (tSaveTotal > 100) {
-    logger.info(`[perf] saveToDb ${s3Key}: total=${tSaveTotal}ms (lookup=${tLookupMs}ms insert=${tInsertMs}ms faces=${tFacesMs}ms)`);
+    logger.info(`[perf] saveToDb ${s3Key}: total=${tSaveTotal}ms (insert=${tInsertMs}ms faces=${tFacesMs}ms)`);
   }
 
   const output: ProcessPhotoOutput = {
@@ -1027,15 +1018,14 @@ async function saveGpuResults(
   if (facesSucceeded) {
     const current = await getPhotoByS3Path(s3Path);
     if (!current) throw new Error(`CPU checkpoint is missing for ${s3Path}`);
-    await deleteFacesByPhotoId(current.id);
-    for (const face of faces) {
-      await insertFace({
-        photoId: current.id,
+    await replaceFacesForPhoto(
+      current.id,
+      faces.map((face) => ({
         boundingBox: face.boundingBox,
         embedding: face.embedding,
         confidence: face.confidence,
-      });
-    }
+      }))
+    );
     await updatePhotoGpuFields({
       s3Path,
       updateCaption: false,

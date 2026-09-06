@@ -565,7 +565,7 @@ export async function processNextReprocessBatch(): Promise<boolean> {
     const finished = await updateProgressAndRelease(job);
     if (finished && (job.gpu_mode === "all" || job.gpu_mode === "faces-only")) {
       try {
-        const result = await clusterUnassignedFaces({ threshold: 0.6, strategy: "first" });
+        const result = await clusterUnassignedFaces({ threshold: 0.6, strategy: "average" });
         logger.info(
           `Reprocess job ${job.id}: auto-clustered ${result.clustered} faces into ${result.newClusters} clusters`
         );

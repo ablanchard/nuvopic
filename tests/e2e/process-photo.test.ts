@@ -7,9 +7,8 @@ import {
 import pg from "pg";
 import * as fs from "fs";
 import * as path from "path";
+import { spawn, type ChildProcess } from "child_process";
 import { handler } from "../../src/index.js";
-import { loadFaceModels } from "../../src/extractors/faces.js";
-import { loadCaptionModel } from "../../src/extractors/caption.js";
 
 const { Pool } = pg;
 
@@ -22,12 +21,39 @@ const TEST_PHOTOS = [
   "vicky-hladynets-C8Ta0gwPbQg-unsplash.jpg",
 ];
 
+let inferenceServer: ChildProcess | null = null;
+
+async function waitForInferenceServer(maxAttempts = 30): Promise<void> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const response = await fetch("http://127.0.0.1:9090/health");
+      if (response.ok) return;
+    } catch {
+      // The fixture may still be binding its port.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Test inference server did not become ready");
+}
+
 describe("Photo Processing E2E", () => {
   let s3Client: S3Client;
   let pool: pg.Pool;
   const uploadedKeys: string[] = [];
 
   beforeAll(async () => {
+    try {
+      const response = await fetch("http://127.0.0.1:9090/health");
+      if (!response.ok) throw new Error(`health returned ${response.status}`);
+    } catch {
+      inferenceServer = spawn(
+        process.execPath,
+        [path.join(process.cwd(), "tests/playwright/fixtures/inference-server.mjs")],
+        { stdio: "inherit" }
+      );
+      await waitForInferenceServer();
+    }
+
     // Initialize S3 client
     s3Client = new S3Client({
       endpoint: process.env.S3_ENDPOINT,
@@ -44,36 +70,28 @@ describe("Photo Processing E2E", () => {
       connectionString: process.env.DATABASE_URL,
     });
 
-    // Pre-load models to avoid timeout on first test
-    console.log("Pre-loading AI models...");
-    await Promise.all([
-      loadFaceModels().catch((e) =>
-        console.warn("Face models not available:", e.message)
-      ),
-      loadCaptionModel().catch((e) =>
-        console.warn("Caption model loading:", e.message)
-      ),
-    ]);
-    console.log("Models loaded");
   }, 180000); // 3 minute timeout for model loading
 
   afterAll(async () => {
-    // Cleanup uploaded files from S3
-    for (const key of uploadedKeys) {
-      try {
-        await s3Client.send(
+    // Keep teardown bounded if a test MinIO webhook is slow to acknowledge
+    // object deletion, and close the client's keep-alive sockets explicitly.
+    await Promise.allSettled(
+      uploadedKeys.map((key) =>
+        s3Client.send(
           new DeleteObjectCommand({
             Bucket: process.env.S3_BUCKET,
             Key: key,
-          })
-        );
-      } catch {
-        // Ignore if file doesn't exist
-      }
-    }
+          }),
+          { abortSignal: AbortSignal.timeout(5_000) }
+        )
+      )
+    );
+    s3Client.destroy();
 
     await pool.end();
-  });
+    inferenceServer?.kill("SIGTERM");
+    inferenceServer = null;
+  }, 30_000);
 
   it("should process a photo with a face and store metadata", async () => {
     const photoName = TEST_PHOTOS[0]; // christopher-campbell portrait
