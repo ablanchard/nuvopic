@@ -83,8 +83,8 @@ COPY --from=webapp-builder /app/webapp/dist ./webapp/dist
 # Create non-root user and the writable mount point used by the persistent
 # face-thumbnail cache.
 RUN useradd --create-home --uid 10001 appuser \
-    && mkdir -p /var/cache/nuvopic/face-thumbnails \
-    && chown -R appuser:appuser /var/cache/nuvopic
+    && mkdir -p /var/cache/nuvopic/face-thumbnails /var/tmp/nuvopic \
+    && chown -R appuser:appuser /var/cache/nuvopic /var/tmp/nuvopic
 USER appuser
 
 ENV NODE_ENV=production

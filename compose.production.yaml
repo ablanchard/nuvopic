@@ -27,6 +27,10 @@ services:
   data-plane:
     build: !reset null
     image: ${DATA_PLANE_IMAGE:?Set DATA_PLANE_IMAGE to an immutable image reference}
+    environment:
+      TMPDIR: /var/tmp/nuvopic
+    volumes:
+      - video_work:/var/tmp/nuvopic
     read_only: true
     tmpfs:
       - /tmp:size=256m,mode=1777
@@ -84,3 +88,6 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+volumes:
+  video_work:
