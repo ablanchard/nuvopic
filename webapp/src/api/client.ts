@@ -22,6 +22,8 @@ export interface RuntimeSession {
 }
 
 export interface Photo {
+  mediaType?: 'image' | 'video';
+  durationSeconds?: number | null;
   id: string;
   fullImageUrl: string;
   thumbnailUrl: string;
@@ -623,6 +625,21 @@ export const api = {
 
       const query = params.toString();
       return fetchApiJson<PhotoListResponse>(`${API_BASE}/photos${query ? `?${query}` : ''}`);
+    },
+
+    videoFeed: (filters: PhotoFilters): Promise<{ ids: string[] }> => {
+      const params = new URLSearchParams();
+      if (filters.search) params.set('q', filters.search);
+      if (filters.tag) params.set('tag', filters.tag);
+      if (filters.person) params.set('person', filters.person);
+      if (filters.smartTag) params.set('smartTag', filters.smartTag);
+      if (filters.from) params.set('from', filters.from);
+      if (filters.to) params.set('to', filters.to);
+      if (filters.dateUnknown) params.set('dateUnknown', 'true');
+      if (filters.city) params.set('city', filters.city);
+      if (filters.region) params.set('region', filters.region);
+      if (filters.country) params.set('country', filters.country);
+      return fetchApiJson<{ ids: string[] }>(`${API_BASE}/photos/video-feed?${params}`);
     },
 
     get: (id: string): Promise<Photo> => {

@@ -65,6 +65,7 @@ WORKDIR /app
 
 # Install runtime dependencies for native modules
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
     libcairo2 \
     libpango-1.0-0 \
     libpangocairo-1.0-0 \

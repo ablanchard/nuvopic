@@ -66,6 +66,7 @@ export function PhotoCard({ photo, onClick }: PhotoCardProps) {
         />
       )}
       {!placeholderSrc && !loaded && <div class="photo-card-empty" />}
+        {photo.mediaType === 'video' && <span class="video-badge">▶ {photo.durationSeconds != null ? `${Math.floor(photo.durationSeconds / 60)}:${String(Math.floor(photo.durationSeconds % 60)).padStart(2, '0')}` : 'Video'}</span>}
       <div class="photo-card-overlay">
         {photo.faceCount > 0 && (
           <span class="face-badge">{photo.faceCount} face{photo.faceCount > 1 ? 's' : ''}</span>

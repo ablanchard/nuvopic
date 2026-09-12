@@ -25,6 +25,9 @@ jobs:
       - name: Build backend
         run: npm run build
 
+      - name: Install video tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Run unit tests
         run: npm test
 

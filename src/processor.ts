@@ -1,3 +1,5 @@
+import { isVideo } from './media.js';
+import { extractVideo } from './extractors/video.js';
 import crypto from "node:crypto";
 import { getObjectAsBuffer, getS3Path } from "./s3/client.js";
 import {
@@ -109,6 +111,7 @@ export interface ProcessPhotoOutput {
 // Internal: save extracted data to DB (shared by single + batch paths)
 // ---------------------------------------------------------------------------
 interface ExtractedData {
+  video?: Awaited<ReturnType<typeof extractVideo>>;
   s3Path: string;
   s3Key: string;
   width: number | null;
@@ -160,6 +163,9 @@ async function saveToDb(data: ExtractedData): Promise<ProcessPhotoOutput> {
     placeholder,
     width,
     height,
+    mediaType: data.video ? "video" : "image",
+    durationSeconds: data.video?.durationSeconds,
+    videoPoster: data.video?.poster,
     processVersion: PROCESS_VERSION,
     captionVersion: data.captionVersion,
     facesVersion: data.facesVersion,
@@ -376,7 +382,8 @@ async function prepareCpuPhoto(
 
     const errors: string[] = [];
     const startedAt = Date.now();
-    const imageBuffer = await getObjectAsBuffer(s3Bucket, s3Key);
+    const video = isVideo(s3Key) ? await extractVideo(s3Bucket, s3Key) : undefined;
+    const imageBuffer = video?.poster ?? await getObjectAsBuffer(s3Bucket, s3Key);
     let width: number | null = null;
     let height: number | null = null;
     try {
@@ -389,14 +396,15 @@ async function prepareCpuPhoto(
     }
 
     const [exifResult, placeholderResult] = await Promise.allSettled([
-      extractExif(imageBuffer),
+      video ? Promise.resolve({ takenAt: video.takenAt, location: null }) : extractExif(imageBuffer),
       generatePlaceholder(imageBuffer),
     ]);
     const output = await saveToDb({
       s3Path,
       s3Key,
-      width,
-      height,
+      video,
+      width: video?.width ?? width,
+      height: video?.height ?? height,
       exif: parseExifResult(exifResult, errors),
       placeholder: parsePlaceholderResult(placeholderResult, errors),
       caption: null,
@@ -433,7 +441,7 @@ function requiredGpuMode(
   photo: PhotoRecord,
   force = false
 ): GpuMode {
-  if (requested === "skip") return "skip";
+  if (requested === "skip" || isVideo(photo.s3_path)) return "skip";
   const needsCaption =
     (requested === "all" || requested === "caption-only") &&
     (force || photo.caption_version !== CAPTION_VERSION);

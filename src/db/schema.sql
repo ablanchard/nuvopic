@@ -759,7 +759,7 @@ BEGIN
                  AND summary.last_completed_at IS NOT NULL
                THEN ROUND(EXTRACT(EPOCH FROM (
                     summary.last_completed_at - summary.first_started_at
-               )) * 1000)::INTEGER
+               )) * 1000)::DOUBLE PRECISION
                ELSE NULL
            END
       FROM child_summary summary
@@ -823,3 +823,11 @@ CREATE TRIGGER update_photos_updated_at
     BEFORE UPDATE ON photos
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
+
+-- Video metadata and reusable poster; existing rows remain images.
+ALTER TABLE photos ADD COLUMN IF NOT EXISTS media_type TEXT NOT NULL DEFAULT 'image' CHECK (media_type IN ('image', 'video'));
+ALTER TABLE photos ADD COLUMN IF NOT EXISTS duration_seconds DOUBLE PRECISION;
+ALTER TABLE photos ADD COLUMN IF NOT EXISTS video_poster BYTEA;
+
+-- Interrupted jobs can remain open for more than the 24.8-day INTEGER limit.
+ALTER TABLE gpu_logs ALTER COLUMN duration_ms TYPE DOUBLE PRECISION;

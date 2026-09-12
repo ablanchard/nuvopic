@@ -32,6 +32,8 @@ export interface PhotoWithStats {
   location_country: string | null;
   width: number | null;
   height: number | null;
+  media_type?: 'image' | 'video';
+  duration_seconds?: number | null;
   placeholder: string | null;
   face_count: number;
   tags: string[];
@@ -173,6 +175,8 @@ export async function searchPhotos(filters: PhotoFilters): Promise<{
       p.width,
       p.height,
       p.placeholder,
+      p.media_type,
+      p.duration_seconds,
       (SELECT COUNT(*)::int FROM faces f WHERE f.photo_id = p.id AND ${fqFilter}) as face_count,
       COALESCE(
         (SELECT array_agg(t.name ORDER BY t.name)
@@ -332,6 +336,8 @@ export async function getPhotoWithDetails(id: string): Promise<PhotoWithStats | 
       p.width,
       p.height,
       p.placeholder,
+      p.media_type,
+      p.duration_seconds,
       (SELECT COUNT(*)::int FROM faces f WHERE f.photo_id = p.id AND ${fqFilter}) as face_count,
       COALESCE(
         (SELECT array_agg(t.name ORDER BY t.name)
@@ -346,4 +352,14 @@ export async function getPhotoWithDetails(id: string): Promise<PhotoWithStats | 
   );
 
   return result.rows[0] ?? null;
+}
+
+/** Snapshot every matching video, independent of the gallery's loaded pages. */
+export async function getFilteredVideoIds(filters: UnpaginatedPhotoFilters): Promise<string[]> {
+  const { whereClause, params } = await buildPhotoFilterSql(filters);
+  const result = await query<{ id: string }>(
+    `SELECT p.id FROM photos p ${whereClause || 'WHERE TRUE'}
+     AND p.media_type = 'video' ORDER BY p.id`, params
+  );
+  return result.rows.map((row) => row.id);
 }

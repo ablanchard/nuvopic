@@ -1,3 +1,4 @@
+import { isSupportedMedia as isSupportedImage } from './media.js';
 import crypto from "node:crypto";
 import { processPhoto, processPhotoBatch, type ProcessPhotoOutput } from "./processor.js";
 import { getRealtimeGpuProvider } from "./extractors/gpu-client.js";
@@ -30,14 +31,6 @@ interface DirectInvocation {
 interface HandlerResponse {
   statusCode: number;
   body: string;
-}
-
-// Supported image extensions
-const SUPPORTED_EXTENSIONS = [".jpg", ".jpeg", ".png", ".heic", ".webp"];
-
-function isSupportedImage(key: string): boolean {
-  const lower = key.toLowerCase();
-  return SUPPORTED_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
 function isS3Event(event: unknown): event is S3Event {

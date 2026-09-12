@@ -1,3 +1,4 @@
+import { isVideo } from '../../media.js';
 import { Hono } from "hono";
 import crypto from "node:crypto";
 import * as fs from "node:fs/promises";
@@ -6,6 +7,7 @@ import * as path from "node:path";
 import sharp from "sharp";
 import {
   searchPhotos,
+  getFilteredVideoIds,
   getPhotoWithDetails,
   getTimelineIndex,
   getFilteredPhotosForReprocess,
@@ -125,6 +127,9 @@ function filterOutdatedPhotos(
   photosToFilter: FilteredPhotoForReprocess[],
   mode: string
 ): FilteredPhotoForReprocess[] {
+  if (mode === "caption" || mode === "faces") {
+    photosToFilter = photosToFilter.filter((photo) => !isVideo(photo.s3_path));
+  }
   if (mode === "caption") {
     return photosToFilter.filter((photo) =>
       isOutdated(photo.caption_version, CAPTION_VERSION)
@@ -138,8 +143,8 @@ function filterOutdatedPhotos(
   return photosToFilter.filter(
     (photo) =>
       isOutdated(photo.process_version, PROCESS_VERSION) ||
-      isOutdated(photo.caption_version, CAPTION_VERSION) ||
-      isOutdated(photo.faces_version, FACES_VERSION)
+      (!isVideo(photo.s3_path) && (isOutdated(photo.caption_version, CAPTION_VERSION) ||
+      isOutdated(photo.faces_version, FACES_VERSION)))
   );
 }
 
@@ -246,6 +251,15 @@ function faceThumbnailResponse(
   );
 }
 
+// Snapshot the full filtered selection without transferring posters or video files.
+photos.get("/video-feed", async (c) => {
+  const filters = parseReprocessPhotoFilters({
+    ...c.req.query(), search: c.req.query("q"),
+    dateUnknown: c.req.query("dateUnknown") === "true",
+  })!;
+  return c.json({ ids: await getFilteredVideoIds(filters) });
+});
+
 // List photos with pagination and filters
 photos.get("/", async (c) => {
   const q = c.req.query("q");
@@ -283,6 +297,8 @@ photos.get("/", async (c) => {
       id: p.id,
       fullImageUrl: `/api/v1/photos/${p.id}/image`,
       thumbnailUrl: `/api/v1/photos/${p.id}/thumbnail?size=512`,
+      mediaType: p.media_type ?? "image",
+      durationSeconds: p.duration_seconds ?? null,
       placeholder: p.placeholder,
       takenAt: p.taken_at,
       ...dateMetadata(p),
@@ -813,6 +829,8 @@ photos.get("/:id", async (c) => {
     s3Path: photo.s3_path,
     fullImageUrl: `/api/v1/photos/${photo.id}/image`,
     thumbnailUrl: `/api/v1/photos/${photo.id}/thumbnail?size=512`,
+    mediaType: photo.media_type ?? "image",
+    durationSeconds: photo.duration_seconds ?? null,
     placeholder: photo.placeholder,
     takenAt: photo.taken_at,
     ...dateMetadata(photo),
@@ -868,13 +886,14 @@ photos.get("/:id/thumbnail", async (c) => {
     return c.json({ error: "Invalid s3_path format" }, 500);
   }
 
-  const cachePath = getThumbnailCachePath(photo.id, photo.s3_path, size);
+  const cachePath = getThumbnailCachePath(photo.id, `${photo.s3_path}:${photo.updated_at.toISOString()}`, size);
   const cached = await readCachedThumbnail(cachePath);
   if (cached) {
     return thumbnailResponse(cached, "HIT");
   }
 
-  const source = await getObjectAsBuffer(parsed.bucket, parsed.key);
+  const source = photo.media_type === "video" ? photo.video_poster : await getObjectAsBuffer(parsed.bucket, parsed.key);
+  if (!source) return c.json({ error: "Video poster unavailable; reimport the video" }, 404);
   const thumbnail = await sharp(source, { failOn: "none" })
     .rotate()
     .resize(size, size, { fit: "cover", withoutEnlargement: true })

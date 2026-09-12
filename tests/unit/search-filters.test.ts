@@ -10,6 +10,7 @@ vi.mock("../../src/db/client.js", () => ({
 
 import {
   getFilteredPhotosForReprocess,
+  getFilteredVideoIds,
   getLocationFacets,
 } from "../../src/db/search.js";
 
@@ -95,5 +96,25 @@ describe("getFilteredPhotosForReprocess", () => {
     expect(result).toEqual([
       { city: "Barcelona", region: "Catalonia", country: "Spain", count: 7 },
     ]);
+  });
+});
+
+describe("video feed selection", () => {
+  it("selects only videos across the entire filtered collection", async () => {
+    queryMock.mockReset();
+    const rows = Array.from({ length: 250 }, (_, index) => ({ id: String(index) }));
+    queryMock.mockResolvedValue({ rows });
+    const ids = await getFilteredVideoIds({ search: "beach", dateUnknown: true,
+      personId: "person", tagIds: ["tag"], locationCountry: "Spain",
+      locationRegion: "Catalonia", locationCity: "Barcelona" });
+    const [sql, params] = queryMock.mock.calls[0];
+    expect(ids).toHaveLength(250);
+    expect(sql).toContain("p.media_type = 'video'");
+    expect(sql).toContain("p.taken_at IS NULL");
+    expect(sql).toContain("p.description ILIKE");
+    expect(sql).toContain("fc.person_id =");
+    expect(sql).toContain("pt.tag_id = ANY");
+    expect(sql).not.toMatch(/LIMIT|OFFSET/);
+    expect(params).toEqual(["%beach%", "person", "Spain", "Catalonia", "Barcelona", ["tag"]]);
   });
 });

@@ -1,3 +1,4 @@
+import { IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, isSupportedMedia } from '../media.js';
 import {
   S3Client,
   GetObjectCommand,
@@ -321,13 +322,10 @@ export async function listAllObjects(
   return keys;
 }
 
-/** Supported image extensions for import/browsing. */
-export const SUPPORTED_EXTENSIONS = [".jpg", ".jpeg", ".png", ".heic", ".webp"];
-
-export function isSupportedImage(key: string): boolean {
-  const lower = key.toLowerCase();
-  return SUPPORTED_EXTENSIONS.some((ext) => lower.endsWith(ext));
-}
+/** Supported media extensions for import/browsing. */
+export const SUPPORTED_EXTENSIONS = [...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS];
+// Retain the public name used by existing integrations.
+export const isSupportedImage = isSupportedMedia;
 
 export interface FolderEntry {
   prefix: string;       // Full prefix (e.g. "Photos/2024/")

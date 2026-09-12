@@ -335,3 +335,131 @@ test.describe("current NuvoPic pages", () => {
     expect(unexpectedRequests).toEqual([]);
   });
 });
+
+test('videos show duration, play in the viewer, and offer an original on failure', async ({ page }) => {
+  await mockApi(page);
+  await page.route('**/api/v1/photos?**', (route) => route.fulfill({ json: {
+    photos: [{ id: 'video', mediaType: 'video', durationSeconds: 2,
+      thumbnailUrl: '/api/v1/photos/video/thumbnail', fullImageUrl: '/api/v1/photos/video/image',
+      placeholder: null, takenAt: null, dateUnknown: true, datePrecision: 'unknown', dateSource: 'unknown',
+      description: null, width: 160, height: 90, faceCount: 0, tags: [], location: null }],
+    pagination: { page: 1, limit: 50, total: 1, hasMore: false },
+  } }));
+  await page.route('**/api/v1/photos/timeline**', (route) => route.fulfill({ json: { groups: [{ year: null, month: null, count: 1 }], total: 1 } }));
+  await page.route('**/api/v1/photos/video/thumbnail*', (route) => route.fulfill({ status: 404 }));
+  await page.route('**/api/v1/photos/video/image', (route) => route.fulfill({ json: { url: '/test-video.mp4' } }));
+  await page.route('**/test-video.mp4', (route) => route.fulfill({ path: 'tests/fixtures/video.mp4', contentType: 'video/mp4' }));
+  await page.goto('/app/photos');
+  await expect(page.locator('.video-badge')).toHaveText('▶ 0:02');
+  await page.locator('.photo-card').click();
+  const video = page.locator('video');
+  await expect(video).toBeVisible();
+  await expect(video).toHaveAttribute('controls', '');
+  await expect(video).toHaveAttribute('preload', 'auto');
+  await expect.poll(() => video.evaluate((element) => (element as unknown as { duration: number }).duration)).toBe(2);
+  await video.evaluate((element) => (element as unknown as { play(): Promise<void> }).play());
+  await expect.poll(() => video.evaluate((element) => (element as unknown as { currentTime: number }).currentTime)).toBeGreaterThan(0);
+  await video.dispatchEvent('error');
+  await expect(page.getByRole('link', { name: 'Open original' })).toHaveAttribute('href', '/test-video.mp4');
+});
+
+test('video feed snapshots filters, navigates without repeats and stops on close', async ({ page }) => {
+  await mockApi(page);
+  let selectionQuery = '';
+  await page.route('**/api/v1/photos/video-feed?**', (route) => {
+    selectionQuery = new URL(route.request().url()).searchParams.get('q') || '';
+    return route.fulfill({ json: { ids: ['one', 'two', 'three'] } });
+  });
+  await page.route('**/api/v1/photos/*/image', (route) => {
+    const id = new URL(route.request().url()).pathname.split('/')[4];
+    return route.fulfill({ json: { url: `/feed-${id}.mp4` } });
+  });
+  await page.route('**/feed-*.mp4', (route) => route.fulfill({ path: 'tests/fixtures/video.mp4', contentType: 'video/mp4' }));
+  await page.goto('/app/photos');
+  await page.getByPlaceholder('Search by description or person...').filter({ visible: true }).fill('beach');
+  await page.waitForResponse((response) => response.url().includes('/photos/timeline?') && response.url().includes('beach'));
+  await page.getByRole('button', { name: 'Watch videos' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Video feed' });
+  await expect(dialog).toBeVisible();
+  expect(selectionQuery).toBe('beach');
+  const video = dialog.locator('video[aria-label="Current video"]');
+  const seen = new Set<string>();
+  for (let i = 0; i < 3; i++) {
+    await expect(video).toHaveAttribute('src', /feed-/);
+    await video.evaluate((element: HTMLVideoElement) => { element.loop = true; });
+    const src = (await video.getAttribute('src'))!;
+    expect(seen.has(src)).toBe(false);
+    seen.add(src);
+    await expect(dialog).toContainText(`${i + 1} / 3`);
+    if (i < 2) {
+      await page.keyboard.press('ArrowDown');
+      await expect(video).not.toHaveAttribute('src', src);
+    }
+  }
+  await page.getByRole('button', { name: 'Previous video' }).click();
+  await expect(dialog).toContainText('2 / 3');
+  await dialog.locator('.video-feed-stage').evaluate((element) => {
+    element.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, touches: [new Touch({ identifier: 0, target: element, clientY: 500 })] }));
+    element.dispatchEvent(new TouchEvent('touchend', { bubbles: true, changedTouches: [new Touch({ identifier: 0, target: element, clientY: 100 })] }));
+  });
+  await expect(dialog).toContainText('3 / 3');
+  await page.getByRole('button', { name: 'Unmute videos', exact: true }).click();
+  expect(await video.evaluate((element: HTMLVideoElement) => element.muted)).toBe(false);
+  await video.dispatchEvent('ended');
+  await expect(dialog).toContainText('1 / 3');
+  await page.getByRole('button', { name: 'Close video feed' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('video')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Watch videos' })).toBeFocused();
+});
+
+test('video feed handles empty filters and failed selections', async ({ page }) => {
+  await mockApi(page);
+  let failed = true;
+  await page.route('**/api/v1/photos/video-feed?**', (route) => failed
+    ? route.fulfill({ status: 500, json: { error: 'Unavailable' } })
+    : route.fulfill({ json: { ids: [] } }));
+  await page.goto('/app/photos');
+  await page.getByRole('button', { name: 'Watch videos' }).click();
+  await expect(page.getByRole('alert')).toContainText('Could not load videos');
+  failed = false;
+  await page.getByRole('button', { name: 'Retry' }).click();
+  await expect(page.getByText('No videos match your current filters.')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Video feed' })).toHaveCount(0);
+});
+
+test('video feed reuses the silently preloaded player, including across shuffled rounds', async ({ page }) => {
+  await mockApi(page);
+  const signedRequests: Record<string, number> = {};
+  await page.route('**/api/v1/photos/video-feed?**', (route) => route.fulfill({ json: { ids: ['alpha', 'beta'] } }));
+  await page.route('**/api/v1/photos/*/image', (route) => {
+    const id = new URL(route.request().url()).pathname.split('/')[4];
+    signedRequests[id] = (signedRequests[id] || 0) + 1;
+    return route.fulfill({ json: { url: `/buffer-${id}.mp4?request=${signedRequests[id]}` } });
+  });
+  await page.route('**/buffer-*.mp4?**', (route) => route.fulfill({ path: 'tests/fixtures/video.mp4', contentType: 'video/mp4' }));
+  await page.goto('/app/photos');
+  await page.getByRole('button', { name: 'Watch videos' }).click();
+  const active = page.locator('video[aria-label="Current video"]');
+  const preloaded = page.locator('video[aria-label="Next video"]');
+  for (let step = 0; step < 2; step++) {
+    await active.evaluate((video: HTMLVideoElement) => { video.loop = true; });
+    await expect.poll(() => preloaded.evaluate((video: HTMLVideoElement) => video.readyState)).toBeGreaterThanOrEqual(3);
+    const nextUrl = (await preloaded.getAttribute('src'))!;
+    expect(await preloaded.evaluate((video: HTMLVideoElement) => video.paused && video.muted && video.buffered.length > 0)).toBe(true);
+    await preloaded.evaluate((video) => { video.setAttribute('data-preloaded', 'retained'); });
+    const oldPlayer = await active.elementHandle();
+    await page.getByRole('button', { name: 'Next video', exact: true }).click();
+    await expect(active).toHaveAttribute('src', nextUrl);
+    await expect(active).toHaveAttribute('data-preloaded', 'retained');
+    expect(await oldPlayer!.evaluate((video: HTMLVideoElement) => video.paused && !video.hasAttribute('src'))).toBe(true);
+    await expect(page.locator('.video-feed-stage video')).toHaveCount(2);
+  }
+  const players = await page.locator('.video-feed-stage video').elementHandles();
+  await page.getByRole('button', { name: 'Close video feed' }).click();
+  await expect(page.locator('video')).toHaveCount(0);
+  for (const player of players) {
+    expect(await player.evaluate((video: HTMLVideoElement) => video.paused && !video.hasAttribute('src'))).toBe(true);
+  }
+});

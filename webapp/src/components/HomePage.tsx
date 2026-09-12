@@ -204,7 +204,20 @@ export function HomePage(_props: RoutableProps) {
                   class={`modal-image modal-image--preview ${previewImageSrc ? '' : 'modal-image--placeholder'}`}
                 />
               )}
-              {fullImageSrc && (
+              {fullImageSrc && selectedPhoto.mediaType === 'video' && (
+                <video
+                  key={selectedPhoto.id}
+                  src={fullImageSrc}
+                  poster={previewImageSrc || selectedPhoto.placeholder || undefined}
+                  class="modal-image modal-image--original"
+                  controls
+                  playsInline
+                  preload="auto"
+                  onLoadedMetadata={() => setFullImageLoaded(true)}
+                  onError={() => setFullImageFailed(true)}
+                />
+              )}
+              {fullImageSrc && selectedPhoto.mediaType !== 'video' && (
                 <img
                   src={fullImageSrc}
                   alt={selectedPhoto.description || 'Photo'}
@@ -218,10 +231,12 @@ export function HomePage(_props: RoutableProps) {
                 />
               )}
               {!fullImageLoaded && !fullImageFailed && (
-                <span class="modal-image-status" role="status">Loading full resolution…</span>
+                <span class="modal-image-status" role="status">{selectedPhoto.mediaType === 'video' ? 'Loading video…' : 'Loading full resolution…'}</span>
               )}
               {fullImageFailed && (
-                <span class="modal-image-status modal-image-status--error">Full resolution unavailable</span>
+                <span class="modal-image-status modal-image-status--error">{selectedPhoto.mediaType === 'video' ? 'This video cannot be played in your browser. ' : 'Full resolution unavailable'}
+                  {selectedPhoto.mediaType === 'video' && fullImageSrc && <a href={fullImageSrc} target="_blank" rel="noopener noreferrer">Open original</a>}
+                </span>
               )}
             </div>
             <div class="modal-info">

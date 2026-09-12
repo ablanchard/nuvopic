@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   stop: vi.fn(),
   reprovision: vi.fn(),
   extractExif: vi.fn(),
+  extractVideo: vi.fn(),
   placeholder: vi.fn(),
   queueStageLogs: vi.fn(),
   startStageLog: vi.fn(),
@@ -24,6 +25,8 @@ vi.mock("../../src/s3/client.js", () => ({
     return Buffer.from(key);
   }),
 }));
+
+vi.mock("../../src/extractors/video.js", () => ({ extractVideo: state.extractVideo }));
 
 vi.mock("sharp", () => ({
   default: vi.fn(() => ({ metadata: vi.fn().mockResolvedValue({ width: 10, height: 20 }) })),
@@ -139,6 +142,7 @@ describe("processor CPU/GPU phase checkpoints", () => {
     state.photos.clear();
     vi.clearAllMocks();
     state.extractExif.mockResolvedValue({ takenAt: null, location: null });
+    state.extractVideo.mockResolvedValue({ width: 1920, height: 1080, durationSeconds: 30, takenAt: null, poster: Buffer.from("poster") });
     state.placeholder.mockResolvedValue("placeholder");
     state.start.mockImplementation(async () => state.events.push("gpu-start"));
     state.stop.mockResolvedValue(undefined);
@@ -156,6 +160,17 @@ describe("processor CPU/GPU phase checkpoints", () => {
       ref.status = "running";
       return true;
     });
+  });
+
+  it("imports videos without allocating a GPU or decoding them as images", async () => {
+    const results = await processPhotoBatch([{ s3Bucket: "bucket", s3Key: "clip.MP4", gpuMode: "all", forceGpu: true }]);
+    expect(results[0].photoId).toBeTruthy();
+    expect(results[0].gpuStatus).toBe("completed");
+    expect(state.extractVideo).toHaveBeenCalledWith("bucket", "clip.MP4");
+    expect(state.extractExif).not.toHaveBeenCalled();
+    expect(state.start).not.toHaveBeenCalled();
+    expect(state.caption).not.toHaveBeenCalled();
+    expect(state.faces).not.toHaveBeenCalled();
   });
 
   it("commits every CPU checkpoint before starting the GPU", async () => {

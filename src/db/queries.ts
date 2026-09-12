@@ -16,6 +16,9 @@ export interface PhotoRecord {
   placeholder: string | null;
   width: number | null;
   height: number | null;
+  media_type?: 'image' | 'video';
+  duration_seconds?: number | null;
+  video_poster?: Buffer | null;
   process_version: string | null;
   caption_version: string | null;
   faces_version: string | null;
@@ -51,6 +54,9 @@ export interface InsertPhotoParams {
   placeholder?: string | null;
   width?: number | null;
   height?: number | null;
+  mediaType?: 'image' | 'video';
+  durationSeconds?: number | null;
+  videoPoster?: Buffer | null;
   processVersion?: string | null;
   captionVersion?: string | null;
   facesVersion?: string | null;
@@ -94,8 +100,8 @@ function intersectionOverUnion(
 
 export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
   const result = await query<{ id: string }>(
-    `INSERT INTO photos (s3_path, taken_at, taken_at_precision, taken_at_source, location_lat, location_lng, location_name, location_region, location_country, description, placeholder, width, height, process_version, caption_version, faces_version)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+    `INSERT INTO photos (s3_path, taken_at, taken_at_precision, taken_at_source, location_lat, location_lng, location_name, location_region, location_country, description, placeholder, width, height, process_version, caption_version, faces_version, media_type, duration_seconds, video_poster)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
      ON CONFLICT (s3_path) DO UPDATE SET
        taken_at = CASE WHEN photos.taken_at_source = 'manual' THEN photos.taken_at ELSE EXCLUDED.taken_at END,
        taken_at_precision = CASE WHEN photos.taken_at_source = 'manual' THEN photos.taken_at_precision ELSE EXCLUDED.taken_at_precision END,
@@ -112,6 +118,9 @@ export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
        process_version = COALESCE(EXCLUDED.process_version, photos.process_version),
        caption_version = COALESCE(EXCLUDED.caption_version, photos.caption_version),
        faces_version = COALESCE(EXCLUDED.faces_version, photos.faces_version),
+       media_type = EXCLUDED.media_type,
+       duration_seconds = EXCLUDED.duration_seconds,
+       video_poster = EXCLUDED.video_poster,
        updated_at = NOW()
      RETURNING id`,
     [
@@ -131,6 +140,9 @@ export async function insertPhoto(params: InsertPhotoParams): Promise<string> {
       params.processVersion ?? null,
       params.captionVersion ?? null,
       params.facesVersion ?? null,
+      params.mediaType ?? "image",
+      params.durationSeconds ?? null,
+      params.videoPoster ?? null,
     ]
   );
 
@@ -427,7 +439,7 @@ export async function getPhotosToReprocessCaption(
   }
   const result = await query<Pick<PhotoRecord, "id" | "s3_path" | "caption_version">>(
     `SELECT id, s3_path, caption_version FROM photos
-     WHERE (caption_version IS NULL OR caption_version < $1)${pathClause}
+     WHERE media_type = 'image' AND (caption_version IS NULL OR caption_version < $1)${pathClause}
      ORDER BY created_at ASC`,
     params
   );
@@ -447,7 +459,7 @@ export async function getPhotosToReprocessFaces(
   }
   const result = await query<Pick<PhotoRecord, "id" | "s3_path" | "faces_version">>(
     `SELECT id, s3_path, faces_version FROM photos
-     WHERE (faces_version IS NULL OR faces_version < $1)${pathClause}
+     WHERE media_type = 'image' AND (faces_version IS NULL OR faces_version < $1)${pathClause}
      ORDER BY created_at ASC`,
     params
   );

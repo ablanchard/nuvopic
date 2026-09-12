@@ -155,7 +155,7 @@ app.post("/process", async (c) => {
 app.use("/*", serveStatic({ root: "./webapp/dist" }));
 app.get("*", serveStatic({ path: "./webapp/dist/index.html" }));
 
-const server = serve({ fetch: app.fetch, port: PORT }, () => {
+const server = serve({ fetch: app.fetch, port: PORT, hostname: process.env.HOST }, () => {
   logger.info(`Server listening on port ${PORT}`);
   logger.info(`Deploy mode: ${getDeployMode()}`);
   logger.info(

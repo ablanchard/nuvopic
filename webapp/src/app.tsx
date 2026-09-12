@@ -1,3 +1,4 @@
+import { VideoFeed } from './components/VideoFeed';
 import Router, { getCurrentUrl, route } from 'preact-router';
 import { SearchBar } from './components/SearchBar';
 import { SizeSlider } from './components/SizeSlider';
@@ -174,6 +175,7 @@ export function App() {
             <SizeSlider />
           </div>
         )}
+        {currentPath === PHOTOS_PATH && storageConfigured && <VideoFeed />}
       </header>
 
       <Router onChange={(e) => setCurrentPath(e.url)}>

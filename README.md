@@ -2,6 +2,31 @@
 
 A self-hosted app to visualize and organize your photos stored on cloud storage, with AI-powered photo processing. Runs on any cloud provider or your own server.
 
+## Video support
+
+MP4, MOV, M4V, WebM, MKV, and AVI files are included in manual imports,
+automatic storage scans, and S3 notifications. Videos appear alongside photos
+with a poster and duration badge. Import extracts creation time, dimensions,
+and duration. Video AI captions and face recognition are currently skipped.
+
+On the Photos page, **Watch videos** opens a fullscreen shuffled feed of every
+video matching the current filters, including results beyond the loaded grid.
+Swipe vertically, scroll, use the arrow keys, or use Previous/Next to navigate.
+Videos advance automatically and reshuffle after each round. Playback starts
+muted; use Unmute for sound. Close or Escape returns to the gallery. Browsers
+without fullscreen support use a full-window view. Once the active video is ready, the next video preloads silently. Switching reuses
+that buffered player; closing the feed cancels both video loads.
+
+Install `ffmpeg` (including `ffprobe`) on the server before importing videos;
+the production Docker image includes it. Run `npm run init-db` to add the
+video metadata columns before starting the updated server.
+
+Original videos play directly from signed S3 URLs with native playback controls.
+There is no transcoding: playback depends on the browser's container and codec
+support. If playback fails, the viewer offers an original-file link. Imports
+stream videos to temporary disk, which must have room for concurrently imported
+files; posters are stored in PostgreSQL so browsing does not redownload videos.
+
 ## Features
 
 - **EXIF extraction**: Date taken, GPS coordinates
